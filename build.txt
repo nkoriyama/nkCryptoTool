@@ -1,0 +1,15 @@
+
+mingw w64
+g++ -Wall -Wextra -std=c++17 -I  "E:\mingw64\opt\include" nkencdec.cpp -L "E:\mingw64\opt\lib" -lcrypto -o nkencdec
+
+WSL
+ g++ -Wall -Wextra -std=c++17 nkencdec.cpp -lcrypto -o nkencdec 
+
+
+Lint etc
+cpplint --filter=-legal/copyright .\nkencdec.cpp
+clang-format -style=Google -i .\nkencdec.cpp
+
+cmake
+cmake -G "Ninja" .. -DOPENSSL_ROOT_DIR="C:/msys64/mingw64"
+cmake -G "MinGW Makefiles" .. -DOPENSSL_ROOT_DIR="C:/msys64/mingw64"
