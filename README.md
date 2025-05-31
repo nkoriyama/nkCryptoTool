@@ -57,13 +57,13 @@ nkCryptoTool プログラムは、ECCモード (--ecc またはデフォルト) 
 
 ECC 暗号化公開鍵を生成し、対応する秘密鍵をデフォルトの場所に保存します。パスフレーズで秘密鍵を保護することも可能です（入力なしでEnterを押すとパスフレーズなし）。
 
-nkcryptotool --gen-enc-key [public_key_file]
+nkcryptotool --mode ecc --gen-enc-key
 
 ### 署名鍵ペアの生成 (ECC)
 
 ECC 署名公開鍵を生成し、対応する秘密鍵をデフォルトの場所に保存します。パスフレーズで秘密鍵を保護することも可能です。
 
-nkcryptotool --gen-signing-key [public_key_file]
+nkcryptotool --mode ecc --gen-signing-key
 
 ### 暗号化 (ECC + AES-256-GCM)
 
