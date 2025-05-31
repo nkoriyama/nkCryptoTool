@@ -64,8 +64,8 @@ void nkCryptoToolPQC::printOpenSSLErrors() {
 }
 
 // Helper function to load public key
-EVP_PKEY* nkCryptoToolPQC::loadPublicKey(const std::string& public_key_path) {
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.c_str(), "rb"));
+EVP_PKEY* nkCryptoToolPQC::loadPublicKey(const std::filesystem::path& public_key_path) {
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
         std::cerr << "Error: Could not open public key file for reading: " << public_key_path << std::endl;
         printOpenSSLErrors();
@@ -81,8 +81,8 @@ EVP_PKEY* nkCryptoToolPQC::loadPublicKey(const std::string& public_key_path) {
 }
 
 // Helper function to load private key
-EVP_PKEY* nkCryptoToolPQC::loadPrivateKey(const std::string& private_key_path) {
-    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.c_str(), "rb"));
+EVP_PKEY* nkCryptoToolPQC::loadPrivateKey(const std::filesystem::path& private_key_path) {
+    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         std::cerr << "Error: Could not open private key file for reading: " << private_key_path << std::endl;
         printOpenSSLErrors();
@@ -279,7 +279,7 @@ bool nkCryptoToolPQC::aesGcmDecrypt(const std::vector<unsigned char>& ciphertext
     return true;
 }
 
-bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::string& public_key_path, const std::string& private_key_path, const std::string& passphrase) {
+bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     // Uses ML-KEM-1024 for encryption key generation.
     // OpenSSL 3.5 supports ML-KEM-1024.
     // Parameters like 'ML-KEM.retain_seed' or 'ML-KEM.prefer_seed' are typically
@@ -308,7 +308,7 @@ bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::string& public_key_pa
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
 
     // Write private key to file
-    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.c_str(), "wb"));
+    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
     if (!priv_bio) {
         std::cerr << "Error: Could not open private key file for writing: " << private_key_path << std::endl;
         printOpenSSLErrors();
@@ -323,7 +323,7 @@ bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::string& public_key_pa
     }
 
     // Write public key to file
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.c_str(), "wb"));
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
     if (!pub_bio) {
         std::cerr << "Error: Could not open public key file for writing: " << public_key_path << std::endl;
         printOpenSSLErrors();
@@ -338,7 +338,7 @@ bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::string& public_key_pa
     return true;
 }
 
-bool nkCryptoToolPQC::generateSigningKeyPair(const std::string& public_key_path, const std::string& private_key_path, const std::string& passphrase) {
+bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     // ML-DSA (Dilithium) variants supported by OpenSSL 3.5:
     // ML-DSA-44 (security category 2, 128-bit strength)
     // ML-DSA-65 (security category 3, 192-bit strength) - Corresponds to ML-DSA-87
@@ -370,7 +370,7 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::string& public_key_path,
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
 
     // Write private key to file
-    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.c_str(), "wb"));
+    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
     if (!priv_bio) {
         std::cerr << "Error: Could not open private key file for writing: " << private_key_path << std::endl;
         printOpenSSLErrors();
@@ -385,7 +385,7 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::string& public_key_path,
     }
 
     // Write public key to file
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.c_str(), "wb"));
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
     if (!pub_bio) {
         std::cerr << "Error: Could not open public key file for writing: " << public_key_path << std::endl;
         printOpenSSLErrors();
@@ -400,7 +400,7 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::string& public_key_path,
     return true;
 }
 
-bool nkCryptoToolPQC::encryptFile(const std::string& input_filepath, const std::string& output_filepath, const std::string& recipient_public_key_path) {
+bool nkCryptoToolPQC::encryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path) {
     try {
         std::vector<unsigned char> plaintext = readFile(input_filepath);
 
@@ -511,7 +511,7 @@ bool nkCryptoToolPQC::encryptFile(const std::string& input_filepath, const std::
     }
 }
 
-bool nkCryptoToolPQC::decryptFile(const std::string& input_filepath, const std::string& output_filepath, const std::string& user_private_key_path, const std::string& sender_public_key_path) {
+bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
     try {
         std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
 
@@ -636,8 +636,8 @@ bool nkCryptoToolPQC::decryptFile(const std::string& input_filepath, const std::
         return false;
     }
 }
-bool nkCryptoToolPQC::signFile(const std::string& input_filepath, const std::string& signature_filepath, 
-                           const std::string& signing_private_key_path, const std::string& digest_algo) {
+bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, 
+                           const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
     EVP_PKEY_CTX* sctx = nullptr;
     EVP_SIGNATURE* sig_alg = nullptr;
 
@@ -728,7 +728,7 @@ bool nkCryptoToolPQC::signFile(const std::string& input_filepath, const std::str
     }
 }
 
-bool nkCryptoToolPQC::verifySignature(const std::string& input_filepath, const std::string& signature_filepath, const std::string& signing_public_key_path) {
+bool nkCryptoToolPQC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
     EVP_PKEY_CTX* vctx = nullptr;
     EVP_SIGNATURE* sig_alg = nullptr;
 
@@ -808,20 +808,20 @@ bool nkCryptoToolPQC::verifySignature(const std::string& input_filepath, const s
 }
 
 // Implement virtual methods for default key paths
-std::string nkCryptoToolPQC::getEncryptionPrivateKeyPath() const {
-    return getKeyBaseDirectory() + PATH_SEPARATOR + "private_enc_pqc.key";
+std::filesystem::path nkCryptoToolPQC::getEncryptionPrivateKeyPath() const {
+    return getKeyBaseDirectory() / "private_enc_pqc.key";
 }
 
-std::string nkCryptoToolPQC::getSigningPrivateKeyPath() const {
-    return getKeyBaseDirectory() + PATH_SEPARATOR + "private_sign_pqc.key";
+std::filesystem::path nkCryptoToolPQC::getSigningPrivateKeyPath() const {
+    return getKeyBaseDirectory() / "private_sign_pqc.key";
 }
 
-std::string nkCryptoToolPQC::getEncryptionPublicKeyPath() const {
-    return getKeyBaseDirectory() + PATH_SEPARATOR + "public_enc_pqc.key";
+std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const {
+    return getKeyBaseDirectory() / "public_enc_pqc.key";
 }
 
-std::string nkCryptoToolPQC::getSigningPublicKeyPath() const {
-    return getKeyBaseDirectory() + PATH_SEPARATOR + "public_sign_pqc.key";
+std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const {
+    return getKeyBaseDirectory() / "public_sign_pqc.key";
 }
 
 // Constructor and Destructor

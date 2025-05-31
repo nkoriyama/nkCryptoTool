@@ -5,12 +5,7 @@
 #include <iostream>
 
 // Initialize static member variables
-std::string nkCryptoToolBase::key_base_directory = "keys"; // Default directory
-#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
-const std::string nkCryptoToolBase::PATH_SEPARATOR = "\\";
-#else
-const std::string nkCryptoToolBase::PATH_SEPARATOR = "/";
-#endif
+std::filesystem::path nkCryptoToolBase::key_base_directory = "keys"; // Default directory
 
 nkCryptoToolBase::nkCryptoToolBase() {
     // Constructor
@@ -20,7 +15,7 @@ nkCryptoToolBase::~nkCryptoToolBase() {
     // Destructor
 }
 
-void nkCryptoToolBase::setKeyBaseDirectory(const std::string& dir) {
+void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
     key_base_directory = dir;
     // Attempt to create the directory if it doesn't exist
     try {
@@ -40,11 +35,11 @@ void nkCryptoToolBase::setKeyBaseDirectory(const std::string& dir) {
     }
 }
 
-std::string nkCryptoToolBase::getKeyBaseDirectory() {
+std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() {
     return key_base_directory;
 }
 
-std::vector<unsigned char> nkCryptoToolBase::readFile(const std::string& filepath) {
+std::vector<unsigned char> nkCryptoToolBase::readFile(const std::filesystem::path& filepath) {
     std::ifstream file(filepath, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file for reading: " << filepath << std::endl;
@@ -62,7 +57,7 @@ std::vector<unsigned char> nkCryptoToolBase::readFile(const std::string& filepat
     return buffer;
 }
 
-bool nkCryptoToolBase::writeFile(const std::string& filepath, const std::vector<unsigned char>& data) {
+bool nkCryptoToolBase::writeFile(const std::filesystem::path& filepath, const std::vector<unsigned char>& data) {
     std::ofstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file for writing: " << filepath << std::endl;

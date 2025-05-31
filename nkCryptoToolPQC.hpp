@@ -6,6 +6,7 @@
 #include "nkCryptoToolBase.hpp"
 #include <string>
 #include <vector>
+#include <filesystem>
 #include <openssl/evp.h> // Required for EVP_PKEY and other OpenSSL types
 #include <openssl/bio.h> // Required for BIO
 
@@ -23,8 +24,8 @@ private:
     void printOpenSSLErrors();
 
     // Helper functions for PQC operations, moved from nkCryptoToolECC.hpp as they are common utilities
-    EVP_PKEY* loadPublicKey(const std::string& public_key_path);
-    EVP_PKEY* loadPrivateKey(const std::string& private_key_path);
+    EVP_PKEY* loadPublicKey(const std::filesystem::path& public_key_path);
+    EVP_PKEY* loadPrivateKey(const std::filesystem::path& private_key_path);
 
     // Helper function for HKDF derivation
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
@@ -44,22 +45,22 @@ public:
     ~nkCryptoToolPQC();
 
     // Override key generation methods
-    bool generateEncryptionKeyPair(const std::string& public_key_path, const std::string& private_key_path, const std::string& passphrase) override;
-    bool generateSigningKeyPair(const std::string& public_key_path, const std::string& private_key_path, const std::string& passphrase) override;
+    bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override; // Make sure this matches the base class exactly
+    bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
     // Override encryption/decryption methods
-    bool encryptFile(const std::string& input_filepath, const std::string& output_filepath, const std::string& recipient_public_key_path) override;
-    bool decryptFile(const std::string& input_filepath, const std::string& output_filepath, const std::string& user_private_key_path, const std::string& sender_public_key_path) override;
+    bool encryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path) override;
+    bool decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) override;
 
     // Override signing/verification methods
-    bool signFile(const std::string& input_filepath, const std::string& signature_filepath, const std::string& signing_private_key_path, const std::string& digest_algo) override;
-    bool verifySignature(const std::string& input_filepath, const std::string& signature_filepath, const std::string& signing_public_key_path) override;
+    bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) override;
+    bool verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) override;
 
     // Override methods for default key paths
-    std::string getEncryptionPrivateKeyPath() const override;
-    std::string getSigningPrivateKeyPath() const override;
-    std::string getEncryptionPublicKeyPath() const override;
-    std::string getSigningPublicKeyPath() const override;
+    std::filesystem::path getEncryptionPrivateKeyPath() const override;
+    std::filesystem::path getSigningPrivateKeyPath() const override;
+    std::filesystem::path getEncryptionPublicKeyPath() const override;
+    std::filesystem::path getSigningPublicKeyPath() const override;
 };
 
 #endif // NKCRYPTOTOOLPQC_HPP
