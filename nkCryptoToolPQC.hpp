@@ -50,8 +50,17 @@ public:
 
     // Override encryption/decryption methods
     bool encryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path) override;
+    bool encryptFileHybrid(
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& recipient_mlkem_public_key_path,
+        const std::filesystem::path& recipient_ecdh_public_key_path) override;
     bool decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) override;
-
+    bool decryptFileHybrid(
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& recipient_mlkem_private_key_path,
+        const std::filesystem::path& recipient_ecdh_private_key_path) override;
     // Override signing/verification methods
     bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) override;
     bool verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) override;

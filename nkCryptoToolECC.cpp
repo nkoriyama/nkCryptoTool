@@ -626,6 +626,12 @@ bool nkCryptoToolECC::encryptFile(const std::filesystem::path& input_filepath, c
     }
 }
 
+bool nkCryptoToolECC::encryptFileHybrud(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_ecdh_public_key_path, const std::filesystem::path& recipient_public_key_path) {
+    // This function is not implemented in the original code, so we will return false.
+    std::cerr << "Error: Hybrid encryption is not implemented." << std::endl;
+    return false;
+}
+
 bool nkCryptoToolECC::decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
     try {
         std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
@@ -798,6 +804,12 @@ bool nkCryptoToolECC::decryptFile(const std::filesystem::path& input_filepath, c
         printOpenSSLErrors();
         return false;
     }
+}
+
+bool nkCryptoToolECC::decryptFileHybrid(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
+    // This function is not implemented in the original code, so we will return false.
+    std::cerr << "Error: Hybrid decryption is not implemented." << std::endl;
+    return false;
 }
 
 bool nkCryptoToolECC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {

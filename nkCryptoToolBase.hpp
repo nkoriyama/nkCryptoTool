@@ -35,7 +35,17 @@ public:
 
     // Encryption/Decryption methods (virtual for specific implementations)
     virtual bool encryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path) = 0;
+    virtual bool encryptFileHybrid(
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& recipient_mlkem_public_key_path,
+        const std::filesystem::path& recipient_ecdh_public_key_path) = 0;
     virtual bool decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) = 0;
+    virtual bool decryptFileHybrid(
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& recipient_mlkem_private_key_path,
+        const std::filesystem::path& recipient_ecdh_private_key_path) = 0;
 
     // Signing/Verification methods (virtual for specific implementations)
     virtual bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) = 0;

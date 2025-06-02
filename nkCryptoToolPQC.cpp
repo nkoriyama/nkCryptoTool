@@ -511,6 +511,18 @@ bool nkCryptoToolPQC::encryptFile(const std::filesystem::path& input_filepath, c
     }
 }
 
+bool nkCryptoToolPQC::encryptFileHybrid(
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& output_filepath,
+    const std::filesystem::path& recipient_mlkem_public_key_path,
+    const std::filesystem::path& recipient_ecdh_public_key_path) {
+    // Hybrid encryption using ML-KEM for key encapsulation and ECDH for symmetric key derivation
+    // This function is not implemented in this example, but it would follow a similar pattern
+    // to encryptFile, using both ML-KEM and ECDH keys.
+    std::cerr << "Hybrid encryption is not implemented in this example." << std::endl;
+    return false;
+} 
+
 bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
     try {
         std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
@@ -636,6 +648,19 @@ bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, c
         return false;
     }
 }
+
+bool nkCryptoToolPQC::decryptFileHybrid(
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& output_filepath,
+    const std::filesystem::path& user_private_key_path,
+    const std::filesystem::path& sender_public_key_path) {
+    // Hybrid decryption using ML-KEM for key decapsulation and ECDH for symmetric key derivation
+    // This function is not implemented in this example, but it would follow a similar pattern
+    // to decryptFile, using both ML-KEM and ECDH keys.
+    std::cerr << "Hybrid decryption is not implemented in this example." << std::endl;
+    return false;
+}
+
 bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, 
                            const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
     EVP_PKEY_CTX* sctx = nullptr;
