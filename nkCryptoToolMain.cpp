@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 #include <memory> // For std::unique_ptr
+#include <filesystem> // For std::filesystem::path
 
 // For getopt_long
 #ifdef _WIN32
@@ -69,6 +70,7 @@ void display_usage() {
     std::cout << "Modes:\n";
     std::cout << "  ecc       : Use ECC (Elliptic Curve Cryptography)\n";
     std::cout << "  pqc       : Use PQC (ML_KEM/ML_DSA Cryptography)\n";
+    std::cout << "  hybrid    : Use Hybrid (ML_KEM + ECDH Cryptography)\n";
     std::cout << "\n";
     std::cout << "Options for Key Generation:\n";
     std::cout << "  --gen-enc-key       : Generate ECC/KEM encryption key pair\n";
@@ -76,17 +78,21 @@ void display_usage() {
     std::cout << "  -p, --passphrase <pass> : Passphrase for private key encryption (optional, will prompt if not provided)\n";
     std::cout << "  --key-dir <dir>     : Specify base directory for keys (default: 'keys')\n";
     std::cout << "\n";
-    std::cout << "Options for Encryption:\n";
+    std::cout << "Options for Encryption (PQC/Hybrid Mode):\n";
     std::cout << "  --encrypt           : Encrypt a file\n";
     std::cout << "  -o, --output <file> : Output file path (for encryption/decryption)\n";
-    std::cout << "  --recipient-pubkey <file> : Recipient's public key file (for encryption)\n";
+    std::cout << "  --recipient-mlkem-pubkey <file> : Recipient's ML-KEM public key file (for hybrid encryption)\n";
+    std::cout << "  --recipient-ecdh-pubkey <file>  : Recipient's ECDH public key file (for hybrid encryption)\n";
+    std::cout << "  --recipient-pubkey <file>       : Recipient's public key file (for PQC encryption)\n";
     std::cout << "  <input_file>        : Input file to encrypt\n";
     std::cout << "\n";
-    std::cout << "Options for Decryption:\n";
+    std::cout << "Options for Decryption (PQC/Hybrid Mode):\n";
     std::cout << "  --decrypt           : Decrypt a file\n";
     std::cout << "  -o, --output <file> : Output file path (for encryption/decryption)\n";
-    std::cout << "  --user-privkey <file> : Your private key file (for decryption)\n";
-    std::cout << "  --sender-pubkey <file> : Sender's public key file (for decryption - for key derivation, not signature)\n";
+    std::cout << "  --recipient-mlkem-privkey <file> : Recipient's ML-KEM private key file (for hybrid decryption)\n";
+    std::cout << "  --recipient-ecdh-privkey <file>  : Recipient's ECDH private key file (for hybrid decryption)\n";
+    std::cout << "  --user-privkey <file>            : Your private key file (for PQC decryption)\n";
+    std::cout << "  --sender-pubkey <file>           : Sender's public key file (for PQC decryption - for key derivation, not signature)\n";
     std::cout << "  <input_file>        : Input file to decrypt\n";
     std::cout << "\n";
     std::cout << "Options for Signing:\n";
@@ -109,11 +115,10 @@ int main(int argc, char *argv[]) {
     // ERR_load_crypto_strings(); // Deprecated in OpenSSL 3.0
     // OpenSSL_add_all_algorithms(); // Deprecated in OpenSSL 3.0
 
-    // Load the OQS provider for PQC algorithms
-    OSSL_PROVIDER* oqsprov = OSSL_PROVIDER_load(NULL, "default");
-    if (!oqsprov) {
-        std::cerr << "Error: Failed to load OQS provider. PQC algorithms may not be available." << std::endl;
-        // Print OpenSSL errors for more details
+    // Load the default provider for PQC algorithms
+    OSSL_PROVIDER* default_prov = OSSL_PROVIDER_load(NULL, "default");
+    if (!default_prov) {
+        std::cerr << "Error: Failed to load default OpenSSL provider. PQC algorithms may not be available." << std::endl;
         unsigned long err_code;
         while ((err_code = ERR_get_error()) != 0) {
             char err_buf[256];
@@ -127,8 +132,14 @@ int main(int argc, char *argv[]) {
     std::string passphrase_str;
     std::string key_dir = "keys";
     std::string input_file, output_file, signature_file;
-    std::string recipient_public_key_file, user_private_key_file, sender_public_key_file,
-                signing_private_key_file, signing_public_key_file;
+    std::string recipient_public_key_file; // For PQC non-hybrid
+    std::string user_private_key_file;     // For PQC non-hybrid
+    std::string sender_public_key_file;    // For PQC non-hybrid
+    std::string recipient_mlkem_pubkey_file; // For Hybrid encryption
+    std::string recipient_ecdh_pubkey_file;  // For Hybrid encryption
+    std::string recipient_mlkem_privkey_file; // For Hybrid decryption
+    std::string recipient_ecdh_privkey_file;  // For Hybrid decryption
+    std::string signing_private_key_file, signing_public_key_file;
     std::string digest_algo = "sha256"; // Default digest algorithm
 
     bool gen_enc_key_mode = false;
@@ -150,9 +161,13 @@ int main(int argc, char *argv[]) {
         {"sign", no_argument, nullptr, 0},
         {"verify", no_argument, nullptr, 0},
         {"output", required_argument, nullptr, 'o'},
-        {"recipient-pubkey", required_argument, nullptr, 0},
-        {"user-privkey", required_argument, nullptr, 0},
-        {"sender-pubkey", required_argument, nullptr, 0},
+        {"recipient-pubkey", required_argument, nullptr, 0}, // For PQC non-hybrid
+        {"user-privkey", required_argument, nullptr, 0},     // For PQC non-hybrid
+        {"sender-pubkey", required_argument, nullptr, 0},    // For PQC non-hybrid
+        {"recipient-mlkem-pubkey", required_argument, nullptr, 0}, // For Hybrid encryption
+        {"recipient-ecdh-pubkey", required_argument, nullptr, 0},  // For Hybrid encryption
+        {"recipient-mlkem-privkey", required_argument, nullptr, 0}, // For Hybrid decryption
+        {"recipient-ecdh-privkey", required_argument, nullptr, 0},  // For Hybrid decryption
         {"signature", required_argument, nullptr, 0},
         {"signing-privkey", required_argument, nullptr, 0},
         {"signing-pubkey", required_argument, nullptr, 0},
@@ -197,6 +212,14 @@ int main(int argc, char *argv[]) {
                     user_private_key_file = optarg;
                 } else if (std::string(long_options[long_index].name) == "sender-pubkey") {
                     sender_public_key_file = optarg;
+                } else if (std::string(long_options[long_index].name) == "recipient-mlkem-pubkey") {
+                    recipient_mlkem_pubkey_file = optarg;
+                } else if (std::string(long_options[long_index].name) == "recipient-ecdh-pubkey") {
+                    recipient_ecdh_pubkey_file = optarg;
+                } else if (std::string(long_options[long_index].name) == "recipient-mlkem-privkey") {
+                    recipient_mlkem_privkey_file = optarg;
+                } else if (std::string(long_options[long_index].name) == "recipient-ecdh-privkey") {
+                    recipient_ecdh_privkey_file = optarg;
                 } else if (std::string(long_options[long_index].name) == "signature") {
                     signature_file = optarg;
                 } else if (std::string(long_options[long_index].name) == "signing-privkey") {
@@ -210,8 +233,8 @@ int main(int argc, char *argv[]) {
             default:
                 display_usage();
                 // Unload provider before exiting
-                if (oqsprov) {
-                    OSSL_PROVIDER_unload(oqsprov);
+                if (default_prov) {
+                    OSSL_PROVIDER_unload(default_prov);
                 }
                 return 1;
         }
@@ -226,14 +249,14 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<nkCryptoToolBase> crypto_handler;
     if (mode == "ecc") {
         crypto_handler = std::make_unique<nkCryptoToolECC>();
-    } else if (mode == "pqc") {
+    } else if (mode == "pqc" || mode == "hybrid") { // PQC and Hybrid modes use nkCryptoToolPQC
         crypto_handler = std::make_unique<nkCryptoToolPQC>();
     } else {
-        std::cerr << "Error: Invalid or unsupported mode specified. Currently 'ecc' and 'pqc' are supported." << std::endl;
+        std::cerr << "Error: Invalid or unsupported mode specified. Currently 'ecc', 'pqc', and 'hybrid' are supported." << std::endl;
         display_usage();
         // Unload provider before exiting
-        if (oqsprov) {
-            OSSL_PROVIDER_unload(oqsprov);
+        if (default_prov) {
+            OSSL_PROVIDER_unload(default_prov);
         }
         return 1;
     }
@@ -303,49 +326,68 @@ int main(int argc, char *argv[]) {
         }
         if (!success) {
             // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
+            if (default_prov) {
+                OSSL_PROVIDER_unload(default_prov);
             }
             return 1;
         }
     } else if (encrypt_mode) { // Handle encryption
-        if (recipient_public_key_file.empty() || output_file.empty() || non_option_args.size() != 1) {
-            std::cerr << "Error: Encryption mode requires --recipient-pubkey, -o (output file), and exactly one input file." << std::endl;
+        if (output_file.empty() || non_option_args.size() != 1) {
+            std::cerr << "Error: Encryption mode requires -o (output file) and exactly one input file." << std::endl;
             display_usage();
-            // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
-            }
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
             return 1;
         }
         input_file = non_option_args[0];
 
-        // Encryption does not require the user's private key passphrase
-        // (it uses the recipient's public key)
         global_passphrase_for_pem_cb = ""; // Ensure passphrase is empty for encryption
 
-        bool encrypt_success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+        bool encrypt_success = false;
+        if (mode == "pqc") {
+            if (recipient_public_key_file.empty()) {
+                std::cerr << "Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
+                display_usage();
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+            encrypt_success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+        } else if (mode == "hybrid") {
+            if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
+                std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
+                display_usage();
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+            // Cast to nkCryptoToolPQC* to call hybrid specific functions
+            nkCryptoToolPQC* pqc_handler = dynamic_cast<nkCryptoToolPQC*>(crypto_handler.get());
+            if (pqc_handler) {
+                encrypt_success = pqc_handler->encryptFileHybrid(input_file, output_file,
+                                                                 recipient_mlkem_pubkey_file,
+                                                                 recipient_ecdh_pubkey_file);
+            } else {
+                std::cerr << "Error: Hybrid mode selected but handler is not nkCryptoToolPQC." << std::endl;
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
+            display_usage();
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+            return 1;
+        }
+
         if (encrypt_success) {
             std::cout << "File encrypted successfully to " << output_file << std::endl;
         } else {
             std::cerr << "Error: File encryption failed. Please check the program's output for OpenSSL errors." << std::endl;
-            // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
-            }
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
             return 1;
         }
     } else if (decrypt_mode) { // Handle decryption
-        // Requires user's private key (--user-privkey), sender's public key
-        // (--sender-pubkey), output file (-o), and exactly one input file
-        if (user_private_key_file.empty() || sender_public_key_file.empty() ||
-            output_file.empty() || non_option_args.size() != 1) {
-            std::cerr << "Error: Decryption mode requires --user-privkey, --sender-pubkey, -o (output file), and exactly one input file." << std::endl;
+        if (output_file.empty() || non_option_args.size() != 1) {
+            std::cerr << "Error: Decryption mode requires -o (output file) and exactly one input file." << std::endl;
             display_usage();
-            // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
-            }
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
             return 1;
         }
         input_file = non_option_args[0];
@@ -384,16 +426,46 @@ int main(int argc, char *argv[]) {
         }
         global_passphrase_for_pem_cb = passphrase_str; // Set global passphrase for callback for private key loading
 
-        bool decrypt_success = crypto_handler->decryptFile(input_file, output_file,
+        bool decrypt_success = false;
+        if (mode == "pqc") {
+            if (user_private_key_file.empty() || sender_public_key_file.empty()) {
+                std::cerr << "Error: PQC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
+                display_usage();
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+            decrypt_success = crypto_handler->decryptFile(input_file, output_file,
                                                           user_private_key_file, sender_public_key_file);
+        } else if (mode == "hybrid") {
+            if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
+                std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
+                display_usage();
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+            // Cast to nkCryptoToolPQC* to call hybrid specific functions
+            nkCryptoToolPQC* pqc_handler = dynamic_cast<nkCryptoToolPQC*>(crypto_handler.get());
+            if (pqc_handler) {
+                decrypt_success = pqc_handler->decryptFileHybrid(input_file, output_file,
+                                                                 recipient_mlkem_privkey_file,
+                                                                 recipient_ecdh_privkey_file);
+            } else {
+                std::cerr << "Error: Hybrid mode selected but handler is not nkCryptoToolPQC." << std::endl;
+                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
+            display_usage();
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
+            return 1;
+        }
+        
         if (decrypt_success) {
             std::cout << "File decrypted successfully to " << output_file << std::endl;
         } else {
             std::cerr << "Error: File decryption failed. Please check the program's output for OpenSSL errors." << std::endl;
-            // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
-            }
+            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
             return 1;
         }
     } else if (sign_mode) { // Handle signing
@@ -404,8 +476,8 @@ int main(int argc, char *argv[]) {
             std::cerr << "Error: Signing mode requires --signing-privkey, --signature, and exactly one input file." << std::endl;
             display_usage();
             // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
+            if (default_prov) {
+                OSSL_PROVIDER_unload(default_prov);
             }
             return 1;
         }
@@ -449,8 +521,8 @@ int main(int argc, char *argv[]) {
                                       signing_private_key_file, digest_algo)) {
             std::cerr << "Error: File signing failed." << std::endl;
             // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
+            if (default_prov) {
+                OSSL_PROVIDER_unload(default_prov);
             }
             return 1;
         }
@@ -464,8 +536,8 @@ int main(int argc, char *argv[]) {
                       << "--signature, and exactly one input file (original file)." << std::endl;
             display_usage();
             // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
+            if (default_prov) {
+                OSSL_PROVIDER_unload(default_prov);
             }
             return 1;
         }
@@ -479,8 +551,8 @@ int main(int argc, char *argv[]) {
             std::cerr << "Verification failed." << std::endl;
             // verify_signature function already prints specific failure message
             // Unload provider before exiting
-            if (oqsprov) {
-                OSSL_PROVIDER_unload(oqsprov);
+            if (default_prov) {
+                OSSL_PROVIDER_unload(default_prov);
             }
             return 1;
         }
@@ -489,8 +561,8 @@ int main(int argc, char *argv[]) {
         std::cerr << "Error: No valid mode specified." << std::endl;
         display_usage();
         // Unload provider before exiting
-        if (oqsprov) {
-            OSSL_PROVIDER_unload(oqsprov);
+        if (default_prov) {
+            OSSL_PROVIDER_unload(default_prov);
         }
         return 1;
     }
@@ -503,8 +575,8 @@ int main(int argc, char *argv[]) {
     // freeing on context destruction.
 
     // Unload the OQS provider
-    if (oqsprov) {
-        OSSL_PROVIDER_unload(oqsprov);
+    if (default_prov) {
+        OSSL_PROVIDER_unload(default_prov);
     }
 
     return 0; // Success

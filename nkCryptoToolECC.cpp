@@ -626,7 +626,7 @@ bool nkCryptoToolECC::encryptFile(const std::filesystem::path& input_filepath, c
     }
 }
 
-bool nkCryptoToolECC::encryptFileHybrud(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_ecdh_public_key_path, const std::filesystem::path& recipient_public_key_path) {
+bool nkCryptoToolECC::encryptFileHybrid(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_ecdh_public_key_path, const std::filesystem::path& recipient_public_key_path) {
     // This function is not implemented in the original code, so we will return false.
     std::cerr << "Error: Hybrid encryption is not implemented." << std::endl;
     return false;
