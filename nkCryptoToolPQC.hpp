@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <openssl/evp.h> // EVP_PKEYやその他のOpenSSL型に必要
 #include <openssl/bio.h> // BIOに必要
+#include <openssl/provider.h> // Required for OSSL_PROVIDER_load
 
 // OpenSSL PQC型のための前方宣言（必要な場合）
 // ただし、一般的にはPQCアルゴリズムはEVP_PKEYとEVP_CIPHER/EVP_MDを介して統合されます。

@@ -6,13 +6,15 @@
 #include <vector>
 #include <memory>
 #include <openssl/pem.h>
-#include <openssl/evp.h>
+#include <openssl/evp.h> // This header now includes declarations for EVP_KEYMGMT_fetch
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/kdf.h> // For EVP_KDF (HKDF)
 #include <string>
 #include <algorithm>
+#include <openssl/obj_mac.h> // For NID_X9_62_prime256v1
+// #include <openssl/keymgmt.h> // This line should be REMOVED as it's now in evp.h
 
 // External callback for PEM passphrase
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
@@ -210,7 +212,7 @@ bool nkCryptoToolPQC::aesGcmEncrypt(const std::vector<unsigned char>& plaintext,
     return true;
 }
 
-// AES-GCM複合のヘルパー関数
+// AES-GCM復号化のヘルパー関数
 bool nkCryptoToolPQC::aesGcmDecrypt(const std::vector<unsigned char>& ciphertext,
                                 const std::vector<unsigned char>& key,
                                 const std::vector<unsigned char>& iv,
@@ -570,17 +572,36 @@ bool nkCryptoToolPQC::encryptFileHybrid(
         }
 
         // 送信者側で一時的なECDH鍵ペアを生成
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_from_name(nullptr, "prime256v1", nullptr));
+        // EVP_KEYMGMT_fetch を使用してEC鍵管理アルゴリズムを明示的にフェッチ (これは不要、EVP_PKEY_CTX_new_idで十分)
+        // std::unique_ptr<EVP_KEYMGMT, decltype(&EVP_KEYMGMT_free)> ec_keymgmt(EVP_KEYMGMT_fetch(NULL, "EC", NULL), &EVP_KEYMGMT_free);
+        // if (!ec_keymgmt) {
+        //     std::cerr << "Error: EVP_KEYMGMT_fetch failed for EC (ECDH key gen). Check OpenSSL providers." << std::endl;
+        //     printOpenSSLErrors();
+        //     return false;
+        // }
+
+        // フェッチした鍵管理アルゴリズムを使って EVP_PKEY_CTX を作成
+        // std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_from_pkey_mgmt(ec_keymgmt.get(), NULL));
+        // 修正: EVP_PKEY_CTX_new_id を使用し、NIDを設定する方式に戻す
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr));
         if (!ecdh_gen_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new_from_name failed for prime256v1 (ECDH key gen)." << std::endl;
+            std::cerr << "Error: EVP_PKEY_CTX_new_id failed for EVP_PKEY_EC (ECDH key gen)." << std::endl;
             printOpenSSLErrors();
             return false;
         }
+
         if (EVP_PKEY_keygen_init(ecdh_gen_pctx.get()) <= 0) {
             std::cerr << "Error: EVP_PKEY_keygen_init failed (ECDH key gen)." << std::endl;
             printOpenSSLErrors();
             return false;
         }
+        // ここで曲線を明示的に設定
+        if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ecdh_gen_pctx.get(), NID_X9_62_prime256v1) <= 0) {
+            std::cerr << "Error: EVP_PKEY_CTX_set_ec_paramgen_curve_nid failed for prime256v1 (ECDH key gen)." << std::endl;
+            printOpenSSLErrors();
+            return false;
+        }
+
         EVP_PKEY* raw_sender_ecdh_priv_key = nullptr;
         if (EVP_PKEY_keygen(ecdh_gen_pctx.get(), &raw_sender_ecdh_priv_key) <= 0) {
             std::cerr << "Error: EVP_PKEY_keygen failed (ECDH key gen)." << std::endl;
@@ -701,16 +722,10 @@ bool nkCryptoToolPQC::encryptFileHybrid(
     }
 }
 
-// ファイルを複合
+// ファイルを復号化 (PQC単独の復号化)
 bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
     try {
         std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
-
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_priv_key(loadPrivateKey(user_private_key_path));
-        if (!user_priv_key) {
-            std::cerr << "Error: Failed to load user private key." << std::endl;
-            return false;
-        }
 
         size_t offset = 0;
         auto get_len_from_buffer = [](const std::vector<unsigned char>& buffer, size_t& current_offset) {
@@ -758,15 +773,21 @@ bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, c
 
         std::vector<unsigned char> ciphertext(encrypted_input_data.begin() + offset, encrypted_input_data.end());
 
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new(user_priv_key.get(), nullptr));
+        // ML-KEM鍵デカプセル化
+        // 修正: user_private_key_path を使用する
+        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> priv_key(loadPrivateKey(user_private_key_path));
+        if (!priv_key) {
+            std::cerr << "Error: Failed to load user private key for PQC decryption." << std::endl;
+            return false;
+        }
+
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new(priv_key.get(), nullptr));
         if (!pctx) {
             std::cerr << "Error: EVP_PKEY_CTX_new failed (KEM decapsulate)." << std::endl;
             printOpenSSLErrors();
             return false;
         }
 
-        // デカプセル化のために初期化
-        // 修正: params引数にnullptrを渡す
         if (1 != EVP_PKEY_decapsulate_init(pctx.get(), nullptr)) {
             std::cerr << "Error: EVP_PKEY_decapsulate_init failed (KEM decapsulate)." << std::endl;
             printOpenSSLErrors();
@@ -774,9 +795,7 @@ bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, c
         }
 
         size_t shared_secret_len;
-        // 共有シークレットのバッファ長を決定
-        // EVP_PKEY_decapsulate(EVP_PKEY_CTX *ctx, unsigned char *ss, size_t *sslen, const unsigned char *wrappedkey, size_t wrappedkeylen)
-        // 最初にnullバッファで呼び出して長さを取得
+        // 修正: enc_key を使用する
         if (1 != EVP_PKEY_decapsulate(pctx.get(), nullptr, &shared_secret_len, enc_key.data(), enc_key.size())) {
             std::cerr << "Error: EVP_PKEY_decapsulate failed to get length (KEM decapsulate)." << std::endl;
             printOpenSSLErrors();
@@ -784,7 +803,7 @@ bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, c
         }
 
         std::vector<unsigned char> shared_secret(shared_secret_len);
-        // デカプセル化を実行
+        // 修正: enc_key を使用する
         if (1 != EVP_PKEY_decapsulate(pctx.get(), shared_secret.data(), &shared_secret_len, enc_key.data(), enc_key.size())) {
             std::cerr << "Error: EVP_PKEY_decapsulate failed (KEM decapsulate)." << std::endl;
             printOpenSSLErrors();
@@ -828,7 +847,7 @@ bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, c
     }
 }
 
-// ファイルをハイブリッド複合
+// ファイルをハイブリッド復号化
 bool nkCryptoToolPQC::decryptFileHybrid(
     const std::filesystem::path& input_filepath,
     const std::filesystem::path& output_filepath,
@@ -849,6 +868,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
             return len;
         };
 
+        // mlkem_enc_key_len | mlkem_enc_key
         size_t mlkem_enc_key_len = get_len_from_buffer(encrypted_input_data, offset);
         if (offset + mlkem_enc_key_len > encrypted_input_data.size()) {
             std::cerr << "Error: ML-KEM encapsulated key data out of bounds." << std::endl;
@@ -857,6 +877,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
         std::vector<unsigned char> mlkem_enc_key(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + mlkem_enc_key_len);
         offset += mlkem_enc_key_len;
 
+        // sender_ecdh_pub_key_len | sender_ecdh_pub_key
         size_t sender_ecdh_pub_key_len = get_len_from_buffer(encrypted_input_data, offset);
         if (offset + sender_ecdh_pub_key_len > encrypted_input_data.size()) {
             std::cerr << "Error: Sender ECDH public key data out of bounds." << std::endl;
@@ -865,6 +886,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
         std::vector<unsigned char> sender_ecdh_pub_key_bytes(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + sender_ecdh_pub_key_len);
         offset += sender_ecdh_pub_key_len;
 
+        // salt_len | salt
         size_t salt_len = get_len_from_buffer(encrypted_input_data, offset);
         if (offset + salt_len > encrypted_input_data.size()) {
             std::cerr << "Error: Salt data out of bounds." << std::endl;
@@ -873,6 +895,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
         std::vector<unsigned char> salt(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + salt_len);
         offset += salt_len;
 
+        // iv_len | iv
         size_t iv_len = get_len_from_buffer(encrypted_input_data, offset);
         if (offset + iv_len > encrypted_input_data.size()) {
             std::cerr << "Error: IV data out of bounds." << std::endl;
@@ -881,6 +904,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
         std::vector<unsigned char> aes_iv(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + iv_len);
         offset += iv_len;
 
+        // tag_len | tag
         size_t tag_len = get_len_from_buffer(encrypted_input_data, offset);
         if (offset + tag_len > encrypted_input_data.size()) {
             std::cerr << "Error: Tag data out of bounds." << std::endl;
@@ -889,6 +913,7 @@ bool nkCryptoToolPQC::decryptFileHybrid(
         std::vector<unsigned char> tag(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + tag_len);
         offset += tag_len;
 
+        // ciphertext
         std::vector<unsigned char> ciphertext(encrypted_input_data.begin() + offset, encrypted_input_data.end());
 
         // 1. ML-KEM鍵デカプセル化

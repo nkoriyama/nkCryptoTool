@@ -48,6 +48,13 @@
 #include <openssl/provider.h> // Required for OSSL_PROVIDER_load
 #include <openssl/err.h> // Required for ERR_get_error, ERR_error_string_n
 
+// --- IMPORTANT: Global variable and callback definition ---
+// These should be defined ONLY ONCE in the entire project.
+// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also define these,
+// you MUST remove their definitions from those files.
+// Instead, declare them as 'extern' in a common header (e.g., nkCryptoToolBase.hpp)
+// if they need to be accessed from other .cpp files.
+
 // Global variable for PEM passphrase callback
 std::string global_passphrase_for_pem_cb;
 
@@ -64,7 +71,11 @@ int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     return static_cast<int>(len);
 }
 
-// Function to display usage information
+// --- IMPORTANT: display_usage() function definition ---
+// This function should be defined ONLY ONCE in the entire project.
+// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also define this,
+// you MUST remove its definition from those files.
+// It's generally a utility for main, so keeping it here is fine.
 void display_usage() {
     std::cout << "Usage: nkCryptoTool.exe --mode <mode> [options] [arguments]\n";
     std::cout << "Modes:\n";
@@ -110,6 +121,10 @@ void display_usage() {
     std::cout << "\n";
 }
 
+// --- IMPORTANT: main() function definition ---
+// The main function must be defined ONLY ONCE in the entire project.
+// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also contain a main() function,
+// you MUST remove them from those files.
 int main(int argc, char *argv[]) {
     // OpenSSL Initialization (mostly handled internally by OpenSSL 3.0+)
     // ERR_load_crypto_strings(); // Deprecated in OpenSSL 3.0
@@ -304,16 +319,47 @@ int main(int argc, char *argv[]) {
 
         bool success = false;
         if (gen_enc_key_mode) {
-            success = crypto_handler->generateEncryptionKeyPair(
-                crypto_handler->getEncryptionPublicKeyPath(),
-                crypto_handler->getEncryptionPrivateKeyPath(),
-                passphrase_str);
-            if (success) {
-                std::cout << "Encryption key pair generated successfully." << std::endl;
-            } else {
-                std::cerr << "Error: Failed to generate encryption key pair." << std::endl;
+            if (mode == "hybrid") {
+                // Generate ML-KEM keys for hybrid mode
+                nkCryptoToolPQC pqc_generator; // Use a temporary object for PQC
+                success = pqc_generator.generateEncryptionKeyPair(
+                    std::filesystem::path(key_dir) / "public_enc_hybrid_mlkem.key",
+                    std::filesystem::path(key_dir) / "private_enc_hybrid_mlkem.key",
+                    passphrase_str
+                );
+                if (success) {
+                    std::cout << "ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
+                } else {
+                    std::cerr << "Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
+                }
+
+                // Generate ECC keys for hybrid mode
+                nkCryptoToolECC ecc_generator; // Use a temporary object for ECC
+                bool ecc_success = ecc_generator.generateEncryptionKeyPair(
+                    std::filesystem::path(key_dir) / "public_enc_hybrid_ecdh.key",
+                    std::filesystem::path(key_dir) / "private_enc_hybrid_ecdh.key",
+                    passphrase_str
+                );
+                if (ecc_success) {
+                    std::cout << "ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
+                } else {
+                    std::cerr << "Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
+                    success = false; // If ECC generation fails, overall hybrid generation fails
+                }
+                success = success && ecc_success; // Both must succeed
+            } else { // Existing PQC or ECC specific key generation
+                success = crypto_handler->generateEncryptionKeyPair(
+                    crypto_handler->getEncryptionPublicKeyPath(),
+                    crypto_handler->getEncryptionPrivateKeyPath(),
+                    passphrase_str);
+                if (success) {
+                    std::cout << "Encryption key pair generated successfully." << std::endl;
+                } else {
+                    std::cerr << "Error: Failed to generate encryption key pair." << std::endl;
+                }
             }
         } else if (gen_sign_key_mode) {
+            // Signing key generation remains mode-specific (ECC or PQC)
             success = crypto_handler->generateSigningKeyPair(
                 crypto_handler->getSigningPublicKeyPath(),
                 crypto_handler->getSigningPrivateKeyPath(),
@@ -358,17 +404,10 @@ int main(int argc, char *argv[]) {
                 if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
                 return 1;
             }
-            // Cast to nkCryptoToolPQC* to call hybrid specific functions
-            nkCryptoToolPQC* pqc_handler = dynamic_cast<nkCryptoToolPQC*>(crypto_handler.get());
-            if (pqc_handler) {
-                encrypt_success = pqc_handler->encryptFileHybrid(input_file, output_file,
-                                                                 recipient_mlkem_pubkey_file,
-                                                                 recipient_ecdh_pubkey_file);
-            } else {
-                std::cerr << "Error: Hybrid mode selected but handler is not nkCryptoToolPQC." << std::endl;
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
-            }
+            // Directly call encryptFileHybrid polymorphically
+            encrypt_success = crypto_handler->encryptFileHybrid(input_file, output_file,
+                                                                recipient_mlkem_pubkey_file,
+                                                                recipient_ecdh_pubkey_file);
         } else {
             std::cerr << "Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
             display_usage();
@@ -443,17 +482,10 @@ int main(int argc, char *argv[]) {
                 if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
                 return 1;
             }
-            // Cast to nkCryptoToolPQC* to call hybrid specific functions
-            nkCryptoToolPQC* pqc_handler = dynamic_cast<nkCryptoToolPQC*>(crypto_handler.get());
-            if (pqc_handler) {
-                decrypt_success = pqc_handler->decryptFileHybrid(input_file, output_file,
-                                                                 recipient_mlkem_privkey_file,
-                                                                 recipient_ecdh_privkey_file);
-            } else {
-                std::cerr << "Error: Hybrid mode selected but handler is not nkCryptoToolPQC." << std::endl;
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
-            }
+            // Directly call decryptFileHybrid polymorphically
+            decrypt_success = crypto_handler->decryptFileHybrid(input_file, output_file,
+                                                                recipient_mlkem_privkey_file,
+                                                                recipient_ecdh_privkey_file);
         } else {
             std::cerr << "Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
             display_usage();
