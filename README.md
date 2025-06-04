@@ -82,25 +82,29 @@ nkcryptotool --mode ecc --gen-sign-key
 
 指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は ECDH (楕円曲線ディフィー・ヘルマン) によって導出され、AES-256-GCM で暗号化されます。
 
-nkcryptotool --encrypt --input [input_file] --output [output_file] --recipient-public-key [public_key_file]
+nkCryptoTool --mode ecc --encrypt --recipient-pubkey  [public_key_file] -o  [encrypted_file]  [input_file]
+
 
 ### 復号 (ECC + AES-256-GCM)
 
-自身の暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用してECDHにより共通鍵を導出し、AES-256-GCM でデータを復号・認証します。復号秘密鍵ファイル (--decryption-key) の指定はオプションです。指定しない場合、デフォルトの場所 (~/.nkcryptotool/private_enc_ecc.key) が使用されます。
+自身の暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用してECDHにより共通鍵を導出し、AES-256-GCM でデータを復号・認証します。
 
-nkcryptotool --decrypt --input [encrypted_file] --output [output_file] --decryption-key [private_key_file] --sender-public-key [public_key_file]
+nkCryptoTool --mode ecc --decrypt --user-privkey [private_key_file]   --sender-pubkey  [public_key_file] -o [decrypted_file] [encrypted_file]
+
 
 ### 署名 (ECC)
 
-指定した秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用して、入力ファイルのハッシュを計算し、ECDSA でデジタル署名を行います。署名秘密鍵ファイル (--signing-key) の指定はオプションです。指定しない場合、デフォルトの場所 (~/.nkcryptotool/private_sign_ecc.key) が使用されます。
+指定した秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用して、入力ファイルのハッシュを計算し、ECDSA でデジタル署名を行います。
 
-nkcryptotool --sign --input [input_file] --output [signature_file] --digest-algo [hash_algorithm]
+nkCryptoTool --mode ecc --sign [input_file] --signature [signature_file]--signing-privkey [private_key_file]
+
 
 ### 署名検証 (ECC)
 
 オリジナルファイル、署名ファイル、署名者の公開鍵を使用して署名を検証します。
 
-nkcryptotool --verify --input [original_file] --signature [signature_file] --signing-public-key [public_key_file]
+nkCryptoTool --mode ecc --verify [original_file]  --signature [signature_file]  --signing-pubkey [public_key_file]
+
 
 ### 暗号化鍵ペアの生成 (PQC)
 
@@ -118,25 +122,30 @@ nkcryptotool --mode pqc --gen-sign-key
 
 指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は PQC KEM (Key Encapsulation Mechanism) によって導出され、AES-256-GCM で暗号化されます。ML-KEMが使用されます。
 
-nkcryptotool --mode pqc --encrypt --input [input_file] --output [output_file] --recipient-public-key [public_key_file]
+nkCryptoTool --mode pqc --encrypt --recipient-pubkey  [public_key_file] -o [encrypted_file] [input_file]
+
 
 ### 復号 (PQC + AES-256-GCM)
 
 自身のPQC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用してML-KEMにより共通鍵を導出し、AES-256-GCM でデータを復号・認証します。
 
 nkcryptotool --mode pqc --decrypt --input [encrypted_file] --output [output_file] --decryption-key [private_key_file] --sender-public-key [public_key_file]
+nkCryptoTool --mode pqc --decrypt --user-privkey [private_key_file] --sender-pubkey [public_key_file] -o [output_file]  [encrypted_file]
 
 ### 署名 (PQC)
 
 指定した秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）を使用して、入力ファイルのハッシュを計算し、PQC署名アルゴリズムでデジタル署名を行います。ML-DSAが使用されます。
 
-nkcryptotool --mode pqc --sign --input [input_file] --output [signature_file] --digest-algo [hash_algorithm]
+nkCryptoTool --mode pqc --sign [input_file]  --signature [signature_file]  --signing-privkey [private_key_file]
+
 
 ### 署名検証 (PQC)
 
 オリジナルファイル、署名ファイル、署名者の公開鍵を使用して署名を検証します。
 
 nkcryptotool --mode pqc --verify --input [original_file] --signature [signature_file] --signing-public-key [public_key_file]
+nkCryptoTool --mode pqc --verify  [original_file] --signature  [signature_file]  --signing-pubkey [public_key_file]
+
 
 ### 暗号化鍵ペアの生成 (Hybrid)
 
@@ -146,13 +155,14 @@ nkcryptotool --mode hybrid --gen-enc-key
 
 ## 暗号化 (HybridECC+PQC + AES-256-GCM)
 
-指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は PQC KEM (Key Encapsulation Mechanism)とECDHとの組合 によって導出され、AES-256-GCM で暗号化されます。
+指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は PQC KEM (Key Encapsulation Mechanism)とECDHとの組み合わせによって導出され、AES-256-GCM で暗号化されます。
 
 nkCryptoTool --mode hybrid --encrypt --recipient-mlkem-pubkey public_enc_hybrid_mlkem.key --recipient-ecdh-pubkey public_enc_hybrid_ecdh.key -o encrypted_hybrid.bin plain.txt
 
 ### 復号 (HybridECC+PQC + AES-256-GCM)
 
 自身のPQC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）とECC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）から共通鍵を導出し、AES-256-GCM でデータを復号・認証します。
+
 nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybrid_mlkem.key --recipient-ecdh-privkey private_enc_hybrid_ecdh.key -o decrypted_hybrid.txt encrypted_hybrid.bin
 
 ### その他のオプション
@@ -166,13 +176,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 暗号化鍵ペアの生成 (公開鍵は key-dir/public_enc_ecc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool  --mode ecc --gen-enc-key
+./build/bin/nkCryptoTool  --mode ecc --gen-enc-key --key-dir [directory]
 ```
 
 ### 署名鍵ペアの生成 (公開鍵は key-dir/public_sign_ecc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool  --mode ecc --gen-sign-key
+./build/bin/nkCryptoTool  --mode ecc --gen-sign-key --key-dir [directory]
 ```
 
 ## PQC鍵ペア生成
@@ -180,13 +190,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### PQC暗号化鍵ペアの生成 (公開鍵は public_enc_pqc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --gen-enc-key
+./build/bin/nkCryptoTool --mode pqc --gen-enc-key --key-dir [directory]
 ```
 
 ### PQC署名鍵ペアの生成 (公開鍵は public_sign_pqc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --gen-sign-key 
+./build/bin/nkCryptoTool --mode pqc --gen-sign-key  --key-dir [directory]
 ```
 
 ## Hybrid鍵ペア生成
@@ -194,7 +204,7 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### Hybrid暗号化鍵ペアの生成 (公開鍵は public_enc_hybrid_mlkem.keyとpublic_enc_hybrid_ecdh.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode hybrid --gen-enc-key
+./build/bin/nkCryptoTool --mode hybrid --gen-enc-key --key-dir [directory]
 ```
 
 ## ECCファイルの暗号化と復号
