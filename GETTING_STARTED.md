@@ -96,7 +96,6 @@ nkCryptoTool --mode ecc --gen-sign-key
 original.txt にデジタル署名を行います。署名データは original.sig に出力されます。
 
 ```bash
-./bin/nkCryptoTool --mode ecc --sign --input original.txt --output original.sig --signing-private-key keys/private_sign_ecc.key
 nkCryptoTool --mode ecc --sign original.txt --signature  original.sig --signing-privkey ..\keys\private_sign_ecc.key
 ```
 
