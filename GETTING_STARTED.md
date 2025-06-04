@@ -13,26 +13,43 @@ docker run -it ubuntu:latest /bin/bash
 
 ## 必要なツールのインストール (Ubuntuの場合)
 
+```bash
 apt update && apt install -y git cmake build-essential libssl-dev
+```
 
 ## nkCryptoToolをダウンロード
 
 git clone https://github.com/nkoriyama/nkCryptToool
 cd nkCryptoTool
 
+```bash
+git clone https://github.com/nkoriyama/nkCryptToool
+cd nkCryptoTool
+```
+
 ## Asioのダウンロード
+
 asioをnkCryptToolをクローンした所と同じ場所でクローンします。
+
+```bash
 git clone https://github.com/chriskohlhoff/asio/
+```
+
 nkCryptToolから見ると、一つ上のディレクトリにある感じのディレクトリ構成にしないと、ビルド出来ない。
+
+```bash
 ls ..
-asio nkCrtptTool
+asio/ nkCrtptTool/
+```
 
 ## ビルドディレクトリを作成し、ビルド
 
+```bash
 mkdir build
 cd build
 cmake ..
 make
+```
 
 ビルドが成功すると、./bin ディレクトリの中に nkCryptoTool という実行ファイルが作成されます。
 
@@ -41,14 +58,26 @@ make
 ここでは、最も一般的な「ECC（楕円曲線暗号）」を使って、ファイルの暗号化と復号を試します。
 鍵ペアを生成:暗号化と復号に必要な「秘密鍵」と「公開鍵」のペアを作成します。
 
-./bin/nkCryptoTool --mode ecc --gen-enc-key
+```bash
+nkCryptoTool --mode ecc --gen-enc-key
+```
 
 実行するとパスフレーズの入力を求められます。今回は練習なので、何も入力せずに Enter キーを2回押してください。成功すると、keys ディレクトリに public_enc_ecc.key と private_enc_ecc.key が作成されます。暗号化したいメッセージをファイルに保存:適当なテキストエディタで original.txt というファイルを作成し、中に何か秘密のメッセージを書き込んで保存してください。（例: echo "こんにちは、世界！これは秘密のメッセージです。" > original.txt）
 メッセージを暗号化する:original.txt を暗号化し、encrypted.bin というファイルに出力します。--recipient-public-key には、相手の（今回は自分自身の）公開鍵を指定します。
-./bin/nkCryptoTool --mode ecc --encrypt --input original.txt --output encrypted.bin --recipient-public-key keys/public_enc_ecc.key
+
+```bash
+nkCryptoTool --mode ecc --encrypt --recipient-pubkey  keys/public_enc_ecc.key -o encrypted.bin  original.txt
+
+```
+
 成功すると、「File encrypted successfully to encrypted.bin」のようなメッセージが表示されます。
 メッセージを復号する:暗号化された encrypted.bin を復号し、decrypted.txt というファイルに出力します。--user-private-key には自分の秘密鍵を、--sender-public-key には暗号化した人の公開鍵（今回は自分自身の公開鍵）を指定します。
-./bin/nkCryptoTool --mode ecc --decrypt --input encrypted.bin --output decrypted.txt --user-private-key keys/private_enc_ecc.key --sender-public-key keys/public_enc_ecc.key
+
+```bash
+nkCryptoTool--mode ecc --decrypt --user-privkey ..\keys\private_enc_ecc.key  --sender-pubkey ..\keys\public_enc_ecc.key -odecrypted.txt encrypted_ecc.bin
+
+```
+
 実行するとパスフレーズの入力を求められますが、鍵生成時にパスフレーズを設定していない場合は何も入力せずに Enter キーを押してください。成功すると、「File decrypted successfully to decrypted.txt」のようなメッセージが表示されます。decrypted.txt の中身を確認し、元のメッセージが読めることを確認してください。
 
 ステップ4:
@@ -56,11 +85,29 @@ make
 
 次に、ファイルが改ざんされていないことを確認する「デジタル署名」を試します。署名鍵ペアを生成:署名と検証に必要な鍵ペアを作成します。
 
-./bin/nkCryptoTool --mode ecc --gen-sign-key`
+```bash
+nkCryptoTool --mode ecc --gen-sign-key
+```
 
-パスフレーズは何も入力せずに Enter キーを2回押してください。keys ディレクトリに public_sign_ecc.key と private_sign_ecc.key が作成されます。ファイルを署名する:original.txt にデジタル署名を行います。署名データは original.sig に出力されます。./bin/nkCryptoTool --mode ecc --sign --input original.txt --output original.sig --signing-private-key keys/private_sign_ecc.key
-パスフレーズは何も入力せずに Enter キーを押してください。成功すると、「File signed successfully. Signature saved to original.sig」のようなメッセージが表示されます。署名を検証する:original.txt と original.sig、そして署名者の公開鍵を使って署名を検証します。
-./bin/nkCryptoTool --mode ecc --verify --input original.txt --signature original.sig --signing-public-key keys/public_sign_ecc.key
+パスフレーズは何も入力せずに Enter キーを2回押してください。keys ディレクトリに public_sign_ecc.key と private_sign_ecc.key が作成されます。
+
+### ファイルを署名する:
+
+original.txt にデジタル署名を行います。署名データは original.sig に出力されます。
+
+```bash
+./bin/nkCryptoTool --mode ecc --sign --input original.txt --output original.sig --signing-private-key keys/private_sign_ecc.key
+nkCryptoTool --mode ecc --sign original.txt --signature  original.sig --signing-privkey ..\keys\private_sign_ecc.key
+```
+
+パスフレーズは何も入力せずに Enter キーを押してください。成功すると、「File signed successfully. Signature saved to original.sig」のようなメッセージが表示されます。
+
+### 署名を検証する:original.txt と original.sig、そして署名者の公開鍵を使って署名を検証します
+
+```bash
+nkCryptoTool --mode ecc --verify original.txt --signature original.sig --signing-pubkey ..\keys\public_sign_ecc.key
+```
+
 成功すると、「Signature verified successfully.」のようなメッセージが表示されます。もし original.txt の中身を少しでも変更してから検証すると、検証が失敗することを確認できます。
 
 3.もう少し深く知りたい方へ
