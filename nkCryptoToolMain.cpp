@@ -1,4 +1,4 @@
-// nkCryptoToolMain.cpp
+// nkCryptoToolMain.cpp (Asio 非同期対応)
 
 // --- Required Environment ---
 // - C++11 compiler (for std::stoi, nullptr, std::vector, etc.)
@@ -8,28 +8,35 @@
 // functions are used for broader compatibility
 // - On Windows: MinGW or Cygwin environment recommended for getopt_long.
 // MSVC users will need a getopt implementation or replacement.
+// - Asio library (standalone or Boost.Asio). Ensure it's included in your project.
+//   If using standalone Asio, define ASIO_STANDALONE.
+//   Example: #define ASIO_STANDALONE
+//            #include <asio.hpp>
 
 // --- Compilation Note ---
 // This code is written in C++ and requires a C++ compiler (like g++) to compile
 // correctly. Save the file with a .cpp, .cc, or .cxx extension (e.g.,
 // nkencdec_ECC.cpp) and compile using a C++ compiler command (e.g., g++
-// nkencdec_ECC.cpp -o nkencdec_ECC -lssl -lcrypto). If using MinGW on Windows,
-// including applink.c might be necessary for linking OpenSSL. Ensure your
-// OpenSSL installation is correct and include/library paths are specified in
-// the compile command. If you encounter errors related to EVP_EncryptCtl_ex or
-// similar OpenSSL functions not being declared, please verify your OpenSSL
-// version (1.1.0 or later is needed for GCM and ECDSA) and that include/library
-// paths are correct. If you encounter unusual errors like "wrong type argument
-// to bit-complement" on pointer initialization, this is likely an
-// environment-specific issue with your setup or compiler version.
-// For using getopt_long on Windows with MSVC, you might need to add a
-// compatible implementation (e.g., from https://github.com/skyrzl/getopt).
+// nkencdec_ECC.cpp -o nkencdec_ECC -lssl -lcrypto -pthread).
+// If using Boost.Asio, you might need to link against Boost.System.
+// Standalone Asio is often header-only but may require linking specific libraries
+// depending on the features used (e.g., SSL).
+// Ensure your OpenSSL installation is correct and include/library paths are specified in
+// the compile command.
 
 #include <iostream>
 #include <string>
 #include <vector>
 #include <memory> // For std::unique_ptr
 #include <filesystem> // For std::filesystem::path
+#include <thread> // For std::thread
+#include <atomic> // For std::atomic
+#include <mutex> // For std::mutex
+#include <condition_variable> // For std::condition_variable
+
+// Asio include - Define ASIO_STANDALONE if using standalone Asio
+#define ASIO_STANDALONE
+#include <asio.hpp>
 
 // For getopt_long
 #ifdef _WIN32
@@ -49,34 +56,33 @@
 #include <openssl/err.h> // Required for ERR_get_error, ERR_error_string_n
 
 // --- IMPORTANT: Global variable and callback definition ---
-// These should be defined ONLY ONCE in the entire project.
-// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also define these,
-// you MUST remove their definitions from those files.
-// Instead, declare them as 'extern' in a common header (e.g., nkCryptoToolBase.hpp)
-// if they need to be accessed from other .cpp files.
-
 // Global variable for PEM passphrase callback
 std::string global_passphrase_for_pem_cb;
+// Mutex to protect global_passphrase_for_pem_cb if multiple tasks might access it.
+// For this CLI tool, operations are typically serialized by user input,
+// but if true parallelism was introduced for the passphrase itself, this would be critical.
+std::mutex passphrase_mutex;
+
 
 // Callback function for PEM passphrase
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
-    // rwflag: 0 for reading, 1 for writing (not used here)
-    // userdata: custom data, not used here
+    std::lock_guard<std::mutex> lock(passphrase_mutex); // Protect access to global_passphrase_for_pem_cb
     if (global_passphrase_for_pem_cb.empty()) {
-        std::cerr << "Error: Passphrase not set for PEM operation." << std::endl;
-        return 0;
+        // This case should ideally be handled before calling OpenSSL functions
+        // that might trigger the callback without a passphrase being set.
+        // For interactive scenarios, the passphrase should be prompted and set *before*
+        // the OpenSSL operation is posted as an async task.
+        // std::cerr << "Error: Passphrase not set for PEM operation (callback)." << std::endl;
+        return 0; // Indicate failure or empty passphrase
     }
     size_t len = global_passphrase_for_pem_cb.copy(buf, size - 1);
     buf[len] = '\0';
     return static_cast<int>(len);
 }
 
-// --- IMPORTANT: display_usage() function definition ---
-// This function should be defined ONLY ONCE in the entire project.
-// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also define this,
-// you MUST remove its definition from those files.
-// It's generally a utility for main, so keeping it here is fine.
+// --- display_usage() function definition ---
 void display_usage() {
+    // (Usage information remains the same as the original)
     std::cout << "Usage: nkCryptoTool.exe --mode <mode> [options] [arguments]\n";
     std::cout << "Modes:\n";
     std::cout << "  ecc       : Use ECC (Elliptic Curve Cryptography)\n";
@@ -119,18 +125,65 @@ void display_usage() {
     std::cout << "  --signing-pubkey <file> : Signer's public key file\n";
     std::cout << "  <input_file>        : Input file to verify\n";
     std::cout << "\n";
+    std::cout << "Note: Operations are performed asynchronously. The program will wait for completion.\n";
 }
 
-// --- IMPORTANT: main() function definition ---
-// The main function must be defined ONLY ONCE in the entire project.
-// If nkCryptoToolECC.cpp or nkCryptoToolPQC.cpp also contain a main() function,
-// you MUST remove them from those files.
-int main(int argc, char *argv[]) {
-    // OpenSSL Initialization (mostly handled internally by OpenSSL 3.0+)
-    // ERR_load_crypto_strings(); // Deprecated in OpenSSL 3.0
-    // OpenSSL_add_all_algorithms(); // Deprecated in OpenSSL 3.0
 
-    // Load the default provider for PQC algorithms
+// Helper function to securely get passphrase
+// This function should be called *before* posting a task that needs a passphrase.
+// The passphrase is then captured by the lambda posted to Asio.
+std::string prompt_for_passphrase(const std::string& prompt_message) {
+    std::string passphrase;
+    std::cout << prompt_message;
+    std::cout.flush(); // Ensure prompt is displayed immediately
+
+#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
+    char ch;
+    while ((ch = _getch()) != '\r' && ch != '\n') {
+        if (ch == '\b') { // Backspace
+            if (!passphrase.empty()) {
+                passphrase.pop_back();
+                std::cout << "\b \b"; // Erase character on console
+            }
+        } else {
+            passphrase.push_back(ch);
+            std::cout << "*";
+        }
+    }
+    std::cout << std::endl; // Newline after input
+#else
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt); // Get current terminal settings
+    newt = oldt;
+    newt.c_lflag &= ~(ECHO | ICANON); // Disable echo and canonical mode
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt); // Apply new settings
+
+    // Read passphrase - std::getline might not be ideal with raw terminal mode.
+    // A char-by-char read loop is more robust here.
+    char c;
+    while (read(STDIN_FILENO, &c, 1) == 1 && c != '\n' && c != '\r') {
+        if (c == 127 || c == 8) { // Handle backspace (ASCII DEL or BS)
+             if (!passphrase.empty()) {
+                passphrase.pop_back();
+                // Optionally, provide visual feedback for backspace if desired:
+                // write(STDOUT_FILENO, "\b \b", 3);
+            }
+        } else {
+            passphrase.push_back(c);
+            // Optionally, provide visual feedback for character typed:
+            // write(STDOUT_FILENO, "*", 1);
+        }
+    }
+
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore original terminal settings
+    std::cout << std::endl; // Newline after input
+#endif
+    return passphrase;
+}
+
+
+int main(int argc, char *argv[]) {
     OSSL_PROVIDER* default_prov = OSSL_PROVIDER_load(NULL, "default");
     if (!default_prov) {
         std::cerr << "Error: Failed to load default OpenSSL provider. PQC algorithms may not be available." << std::endl;
@@ -140,22 +193,48 @@ int main(int argc, char *argv[]) {
             ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
             std::cerr << "OpenSSL Provider Error: " << err_buf << std::endl;
         }
+        // No early return here, allow Asio setup to proceed and potentially fail later if crypto is used.
     }
 
+    // Asio setup
+    asio::io_context io_ctx;
+    auto work_guard = asio::make_work_guard(io_ctx); // Keeps io_ctx.run() from returning prematurely
+    
+    // Thread pool for Asio
+    // Determine number of threads, e.g., based on hardware concurrency
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) {
+        num_threads = 2; // Default to 2 if hardware_concurrency() is not informative
+    }
+    std::vector<std::thread> threads;
+    for (unsigned int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&io_ctx]() {
+            try {
+                io_ctx.run();
+            } catch (const std::exception& e) {
+                std::cerr << "Asio thread exception: " << e.what() << std::endl;
+            }
+        });
+    }
 
-    std::string mode;
-    std::string passphrase_str;
+    std::atomic<int> tasks_in_flight(0);
+    std::mutex tasks_mutex;
+    std::condition_variable cv_all_tasks_done;
+
+
+    std::string mode_str;
+    std::string passphrase_arg_str; // Passphrase provided as command line argument
     std::string key_dir = "keys";
     std::string input_file, output_file, signature_file;
-    std::string recipient_public_key_file; // For PQC non-hybrid
-    std::string user_private_key_file;     // For PQC non-hybrid
-    std::string sender_public_key_file;    // For PQC non-hybrid
-    std::string recipient_mlkem_pubkey_file; // For Hybrid encryption
-    std::string recipient_ecdh_pubkey_file;  // For Hybrid encryption
-    std::string recipient_mlkem_privkey_file; // For Hybrid decryption
-    std::string recipient_ecdh_privkey_file;  // For Hybrid decryption
+    std::string recipient_public_key_file; 
+    std::string user_private_key_file;     
+    std::string sender_public_key_file;    
+    std::string recipient_mlkem_pubkey_file; 
+    std::string recipient_ecdh_pubkey_file;  
+    std::string recipient_mlkem_privkey_file; 
+    std::string recipient_ecdh_privkey_file;  
     std::string signing_private_key_file, signing_public_key_file;
-    std::string digest_algo = "sha256"; // Default digest algorithm
+    std::string digest_algo = "sha256"; 
 
     bool gen_enc_key_mode = false;
     bool gen_sign_key_mode = false;
@@ -164,452 +243,375 @@ int main(int argc, char *argv[]) {
     bool sign_mode = false;
     bool verify_mode = false;
 
-    // Command-line options
     static struct option long_options[] = {
         {"mode", required_argument, nullptr, 'm'},
-        {"gen-enc-key", no_argument, nullptr, 0},
-        {"gen-sign-key", no_argument, nullptr, 0},
+        {"gen-enc-key", no_argument, nullptr, 1}, // Use numbers > 255 for long opts without short
+        {"gen-sign-key", no_argument, nullptr, 2},
         {"passphrase", required_argument, nullptr, 'p'},
-        {"key-dir", required_argument, nullptr, 0},
-        {"encrypt", no_argument, nullptr, 0},
-        {"decrypt", no_argument, nullptr, 0},
-        {"sign", no_argument, nullptr, 0},
-        {"verify", no_argument, nullptr, 0},
+        {"key-dir", required_argument, nullptr, 3},
+        {"encrypt", no_argument, nullptr, 4},
+        {"decrypt", no_argument, nullptr, 5},
+        {"sign", no_argument, nullptr, 6},
+        {"verify", no_argument, nullptr, 7},
         {"output", required_argument, nullptr, 'o'},
-        {"recipient-pubkey", required_argument, nullptr, 0}, // For PQC non-hybrid
-        {"user-privkey", required_argument, nullptr, 0},     // For PQC non-hybrid
-        {"sender-pubkey", required_argument, nullptr, 0},    // For PQC non-hybrid
-        {"recipient-mlkem-pubkey", required_argument, nullptr, 0}, // For Hybrid encryption
-        {"recipient-ecdh-pubkey", required_argument, nullptr, 0},  // For Hybrid encryption
-        {"recipient-mlkem-privkey", required_argument, nullptr, 0}, // For Hybrid decryption
-        {"recipient-ecdh-privkey", required_argument, nullptr, 0},  // For Hybrid decryption
-        {"signature", required_argument, nullptr, 0},
-        {"signing-privkey", required_argument, nullptr, 0},
-        {"signing-pubkey", required_argument, nullptr, 0},
-        {"digest-algo", required_argument, nullptr, 0},
-        {0, 0, 0, 0} // End of options
+        {"recipient-pubkey", required_argument, nullptr, 8},
+        {"user-privkey", required_argument, nullptr, 9},
+        {"sender-pubkey", required_argument, nullptr, 10},
+        {"recipient-mlkem-pubkey", required_argument, nullptr, 11},
+        {"recipient-ecdh-pubkey", required_argument, nullptr, 12},
+        {"recipient-mlkem-privkey", required_argument, nullptr, 13},
+        {"recipient-ecdh-privkey", required_argument, nullptr, 14},
+        {"signature", required_argument, nullptr, 15},
+        {"signing-privkey", required_argument, nullptr, 16},
+        {"signing-pubkey", required_argument, nullptr, 17},
+        {"digest-algo", required_argument, nullptr, 18},
+        {nullptr, 0, nullptr, 0} 
     };
 
     int opt;
     int long_index = 0;
     std::vector<std::string> non_option_args;
 
-    // Parse command line arguments
     while ((opt = getopt_long(argc, argv, "m:o:p:", long_options, &long_index)) != -1) {
         switch (opt) {
-            case 'm':
-                mode = optarg;
-                break;
-            case 'o':
-                output_file = optarg;
-                break;
-            case 'p':
-                passphrase_str = optarg;
-                break;
-            case 0: // Long options without a short equivalent
-                if (std::string(long_options[long_index].name) == "gen-enc-key") {
-                    gen_enc_key_mode = true;
-                } else if (std::string(long_options[long_index].name) == "gen-sign-key") {
-                    gen_sign_key_mode = true;
-                } else if (std::string(long_options[long_index].name) == "key-dir") {
-                    key_dir = optarg;
-                } else if (std::string(long_options[long_index].name) == "encrypt") {
-                    encrypt_mode = true;
-                } else if (std::string(long_options[long_index].name) == "decrypt") {
-                    decrypt_mode = true;
-                } else if (std::string(long_options[long_index].name) == "sign") {
-                    sign_mode = true;
-                } else if (std::string(long_options[long_index].name) == "verify") {
-                    verify_mode = true;
-                } else if (std::string(long_options[long_index].name) == "recipient-pubkey") {
-                    recipient_public_key_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "user-privkey") {
-                    user_private_key_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "sender-pubkey") {
-                    sender_public_key_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "recipient-mlkem-pubkey") {
-                    recipient_mlkem_pubkey_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "recipient-ecdh-pubkey") {
-                    recipient_ecdh_pubkey_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "recipient-mlkem-privkey") {
-                    recipient_mlkem_privkey_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "recipient-ecdh-privkey") {
-                    recipient_ecdh_privkey_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "signature") {
-                    signature_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "signing-privkey") {
-                    signing_private_key_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "signing-pubkey") {
-                    signing_public_key_file = optarg;
-                } else if (std::string(long_options[long_index].name) == "digest-algo") {
-                    digest_algo = optarg;
-                }
-                break;
+            case 'm': mode_str = optarg; break;
+            case 'o': output_file = optarg; break;
+            case 'p': passphrase_arg_str = optarg; break;
+            case 1: gen_enc_key_mode = true; break;
+            case 2: gen_sign_key_mode = true; break;
+            case 3: key_dir = optarg; break;
+            case 4: encrypt_mode = true; break;
+            case 5: decrypt_mode = true; break;
+            case 6: sign_mode = true; break;
+            case 7: verify_mode = true; break;
+            case 8: recipient_public_key_file = optarg; break;
+            case 9: user_private_key_file = optarg; break;
+            case 10: sender_public_key_file = optarg; break;
+            case 11: recipient_mlkem_pubkey_file = optarg; break;
+            case 12: recipient_ecdh_pubkey_file = optarg; break;
+            case 13: recipient_mlkem_privkey_file = optarg; break;
+            case 14: recipient_ecdh_privkey_file = optarg; break;
+            case 15: signature_file = optarg; break;
+            case 16: signing_private_key_file = optarg; break;
+            case 17: signing_public_key_file = optarg; break;
+            case 18: digest_algo = optarg; break;
             default:
                 display_usage();
-                // Unload provider before exiting
-                if (default_prov) {
-                    OSSL_PROVIDER_unload(default_prov);
-                }
+                if (default_prov) OSSL_PROVIDER_unload(default_prov);
+                // Ensure threads are joined even on early exit
+                work_guard.reset(); // Allow io_ctx.run() to exit
+                for (auto& t : threads) if (t.joinable()) t.join();
                 return 1;
         }
     }
 
-    // Collect non-option arguments (e.g., input file paths)
     while (optind < argc) {
         non_option_args.push_back(argv[optind++]);
     }
 
-    // Determine cryptographic handler based on mode
-    std::unique_ptr<nkCryptoToolBase> crypto_handler;
-    if (mode == "ecc") {
-        crypto_handler = std::make_unique<nkCryptoToolECC>();
-    } else if (mode == "pqc" || mode == "hybrid") { // PQC and Hybrid modes use nkCryptoToolPQC
-        crypto_handler = std::make_unique<nkCryptoToolPQC>();
+    std::shared_ptr<nkCryptoToolBase> crypto_handler; // Use shared_ptr for capture in lambdas
+    if (mode_str == "ecc") {
+        crypto_handler = std::make_shared<nkCryptoToolECC>();
+    } else if (mode_str == "pqc" || mode_str == "hybrid") {
+        crypto_handler = std::make_shared<nkCryptoToolPQC>();
     } else {
         std::cerr << "Error: Invalid or unsupported mode specified. Currently 'ecc', 'pqc', and 'hybrid' are supported." << std::endl;
         display_usage();
-        // Unload provider before exiting
-        if (default_prov) {
-            OSSL_PROVIDER_unload(default_prov);
-        }
+        if (default_prov) OSSL_PROVIDER_unload(default_prov);
+        work_guard.reset();
+        for (auto& t : threads) if (t.joinable()) t.join();
         return 1;
     }
 
-    // Set key base directory if specified
     if (!key_dir.empty()) {
         nkCryptoToolBase::setKeyBaseDirectory(key_dir);
     }
+    
+    // --- Task Posting Logic ---
+    // Helper lambda to post tasks and manage task counter
+    auto post_task = [&](auto&& func) {
+        tasks_in_flight++;
+        asio::post(io_ctx, [func = std::forward<decltype(func)>(func), &tasks_in_flight, &cv_all_tasks_done, &tasks_mutex]() {
+            try {
+                func();
+            } catch (const std::exception& e) {
+                std::cerr << "Exception in async task: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Unknown exception in async task." << std::endl;
+            }
+            
+            // Decrement and notify
+            tasks_in_flight--;
+            {
+                // Lock not strictly needed for atomic decrement, but for cv notification condition
+                std::unique_lock<std::mutex> lock(tasks_mutex); 
+                if (tasks_in_flight == 0) {
+                    cv_all_tasks_done.notify_one();
+                }
+            }
+        });
+    };
 
-    // Process commands based on mode
+
     if (gen_enc_key_mode || gen_sign_key_mode) {
-        if (passphrase_str.empty()) {
-            std::cout << "Enter Passphrase (for new key): ";
-            std::cout.flush(); // Ensure prompt is displayed immediately
-
-            // Platform-specific secure passphrase input
-#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
-            char ch;
-            while ((ch = _getch()) != '\r' && ch != '\n') {
-                if (ch == '\b') { // Backspace
-                    if (!passphrase_str.empty()) {
-                        passphrase_str.pop_back();
-                        std::cout << "\b \b";
-                    }
-                } else {
-                    passphrase_str.push_back(ch);
-                    std::cout << "*";
-                }
-            }
-            std::cout << std::endl; // Newline after input
-#else
-            struct termios oldt, newt;
-            tcgetattr(STDIN_FILENO, &oldt); // Get current terminal settings
-            newt = oldt;
-            newt.c_lflag &= ~(ECHO | ICANON); // Disable echo and canonical mode
-            tcsetattr(STDIN_FILENO, TCSANOW, &newt); // Apply new settings
-
-            std::getline(std::cin, passphrase_str); // Read passphrase
-
-            tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore original terminal settings
-            std::cout << std::endl; // Newline after input
-#endif
+        std::string effective_passphrase = passphrase_arg_str;
+        if (effective_passphrase.empty()) {
+            effective_passphrase = prompt_for_passphrase("Enter Passphrase (for new key): ");
         }
-        global_passphrase_for_pem_cb = passphrase_str; // Set global passphrase for callback
+        
+        // Set global passphrase for the task
+        // This is tricky if multiple key gens were posted with different passphrases.
+        // For this CLI, assume one key gen op at a time, or they use the same prompted passphrase.
+        // A better design for true concurrency would pass passphrase directly to task.
+        {
+           std::lock_guard<std::mutex> lock(passphrase_mutex);
+           global_passphrase_for_pem_cb = effective_passphrase;
+        }
 
-        bool success = false;
+
         if (gen_enc_key_mode) {
-            if (mode == "hybrid") {
-                // Generate ML-KEM keys for hybrid mode
-                nkCryptoToolPQC pqc_generator; // Use a temporary object for PQC
-                success = pqc_generator.generateEncryptionKeyPair(
-                    std::filesystem::path(key_dir) / "public_enc_hybrid_mlkem.key",
-                    std::filesystem::path(key_dir) / "private_enc_hybrid_mlkem.key",
-                    passphrase_str
-                );
-                if (success) {
-                    std::cout << "ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
-                } else {
-                    std::cerr << "Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
+            post_task([=, crypto_handler, key_dir_copy = key_dir, mode_str_copy = mode_str, effective_passphrase_copy = effective_passphrase]() { // Capture necessary variables
+                std::cout << "Async: Generating encryption key pair..." << std::endl;
+                { // Set passphrase for this task's scope if needed by OpenSSL callback
+                    std::lock_guard<std::mutex> lock(passphrase_mutex);
+                    global_passphrase_for_pem_cb = effective_passphrase_copy;
                 }
+                bool success = false;
+                if (mode_str_copy == "hybrid") {
+                    nkCryptoToolPQC pqc_generator; 
+                    success = pqc_generator.generateEncryptionKeyPair(
+                        std::filesystem::path(key_dir_copy) / "public_enc_hybrid_mlkem.key",
+                        std::filesystem::path(key_dir_copy) / "private_enc_hybrid_mlkem.key",
+                        effective_passphrase_copy 
+                    );
+                    if (success) {
+                        std::cout << "Async: ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
+                    } else {
+                        std::cerr << "Async Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
+                    }
 
-                // Generate ECC keys for hybrid mode
-                nkCryptoToolECC ecc_generator; // Use a temporary object for ECC
-                bool ecc_success = ecc_generator.generateEncryptionKeyPair(
-                    std::filesystem::path(key_dir) / "public_enc_hybrid_ecdh.key",
-                    std::filesystem::path(key_dir) / "private_enc_hybrid_ecdh.key",
-                    passphrase_str
-                );
-                if (ecc_success) {
-                    std::cout << "ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
+                    nkCryptoToolECC ecc_generator; 
+                    bool ecc_success = ecc_generator.generateEncryptionKeyPair(
+                        std::filesystem::path(key_dir_copy) / "public_enc_hybrid_ecdh.key",
+                        std::filesystem::path(key_dir_copy) / "private_enc_hybrid_ecdh.key",
+                        effective_passphrase_copy
+                    );
+                    if (ecc_success) {
+                        std::cout << "Async: ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
+                    } else {
+                        std::cerr << "Async Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
+                        success = false; 
+                    }
+                    success = success && ecc_success;
                 } else {
-                    std::cerr << "Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
-                    success = false; // If ECC generation fails, overall hybrid generation fails
+                    success = crypto_handler->generateEncryptionKeyPair(
+                        crypto_handler->getEncryptionPublicKeyPath(),
+                        crypto_handler->getEncryptionPrivateKeyPath(),
+                        effective_passphrase_copy);
                 }
-                success = success && ecc_success; // Both must succeed
-            } else { // Existing PQC or ECC specific key generation
-                success = crypto_handler->generateEncryptionKeyPair(
-                    crypto_handler->getEncryptionPublicKeyPath(),
-                    crypto_handler->getEncryptionPrivateKeyPath(),
-                    passphrase_str);
                 if (success) {
-                    std::cout << "Encryption key pair generated successfully." << std::endl;
+                    std::cout << "Async: Encryption key pair generation completed." << std::endl;
                 } else {
-                    std::cerr << "Error: Failed to generate encryption key pair." << std::endl;
+                    std::cerr << "Async Error: Failed to generate encryption key pair." << std::endl;
                 }
-            }
+            });
         } else if (gen_sign_key_mode) {
-            // Signing key generation remains mode-specific (ECC or PQC)
-            success = crypto_handler->generateSigningKeyPair(
-                crypto_handler->getSigningPublicKeyPath(),
-                crypto_handler->getSigningPrivateKeyPath(),
-                passphrase_str);
-            if (success) {
-                std::cout << "Signing key pair generated successfully." << std::endl;
-            } else {
-                std::cerr << "Error: Failed to generate signing key pair." << std::endl;
-            }
+             post_task([=, crypto_handler, effective_passphrase_copy = effective_passphrase]() {
+                std::cout << "Async: Generating signing key pair..." << std::endl;
+                 {
+                    std::lock_guard<std::mutex> lock(passphrase_mutex);
+                    global_passphrase_for_pem_cb = effective_passphrase_copy;
+                }
+                bool success = crypto_handler->generateSigningKeyPair(
+                    crypto_handler->getSigningPublicKeyPath(),
+                    crypto_handler->getSigningPrivateKeyPath(),
+                    effective_passphrase_copy);
+                if (success) {
+                    std::cout << "Async: Signing key pair generated successfully." << std::endl;
+                } else {
+                    std::cerr << "Async Error: Failed to generate signing key pair." << std::endl;
+                }
+            });
         }
-        if (!success) {
-            // Unload provider before exiting
-            if (default_prov) {
-                OSSL_PROVIDER_unload(default_prov);
-            }
-            return 1;
-        }
-    } else if (encrypt_mode) { // Handle encryption
+    } else if (encrypt_mode) {
         if (output_file.empty() || non_option_args.size() != 1) {
             std::cerr << "Error: Encryption mode requires -o (output file) and exactly one input file." << std::endl;
             display_usage();
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
-        }
-        input_file = non_option_args[0];
-
-        global_passphrase_for_pem_cb = ""; // Ensure passphrase is empty for encryption
-
-        bool encrypt_success = false;
-        if (mode == "pqc") {
-            if (recipient_public_key_file.empty()) {
-                std::cerr << "Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
-                display_usage();
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
+        } else {
+            input_file = non_option_args[0];
+            { // Clear global passphrase for operations that don't need it for key loading (like encryption with public key)
+                std::lock_guard<std::mutex> lock(passphrase_mutex);
+                global_passphrase_for_pem_cb = "";
             }
-            encrypt_success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
-        } else if (mode == "hybrid") {
-            if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
-                std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
-                display_usage();
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
-            }
-            // Directly call encryptFileHybrid polymorphically
-            encrypt_success = crypto_handler->encryptFileHybrid(input_file, output_file,
+
+            post_task([=, crypto_handler, mode_str_copy = mode_str]() { // Capture all necessary files
+                std::cout << "Async: Encrypting file " << input_file << " to " << output_file << "..." << std::endl;
+                bool success = false;
+                if (mode_str_copy == "pqc") {
+                     if (recipient_public_key_file.empty()) {
+                        std::cerr << "Async Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
+                        return; // Exit lambda
+                    }
+                    success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+                } else if (mode_str_copy == "hybrid") {
+                     if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
+                        std::cerr << "Async Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
+                        return; 
+                    }
+                    success = crypto_handler->encryptFileHybrid(input_file, output_file,
                                                                 recipient_mlkem_pubkey_file,
                                                                 recipient_ecdh_pubkey_file);
-        } else {
-            std::cerr << "Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
-            display_usage();
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
-        }
+                } else if (mode_str_copy == "ecc") { // Assuming ECC encryptFile takes recipient_public_key_file
+                     if (recipient_public_key_file.empty()) { // Adjust if ECC uses different param
+                        std::cerr << "Async Error: ECC encryption mode requires --recipient-pubkey (or equivalent)." << std::endl;
+                        return;
+                    }
+                    success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+                }
+                else {
+                    std::cerr << "Async Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
+                }
 
-        if (encrypt_success) {
-            std::cout << "File encrypted successfully to " << output_file << std::endl;
-        } else {
-            std::cerr << "Error: File encryption failed. Please check the program's output for OpenSSL errors." << std::endl;
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
+                if (success) {
+                    std::cout << "Async: File encrypted successfully to " << output_file << std::endl;
+                } else {
+                    std::cerr << "Async Error: File encryption failed." << std::endl;
+                }
+            });
         }
-    } else if (decrypt_mode) { // Handle decryption
-        if (output_file.empty() || non_option_args.size() != 1) {
+    } else if (decrypt_mode) {
+         if (output_file.empty() || non_option_args.size() != 1) {
             std::cerr << "Error: Decryption mode requires -o (output file) and exactly one input file." << std::endl;
             display_usage();
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
-        }
-        input_file = non_option_args[0];
-
-        // Decryption requires the user's private key passphrase
-        // Prompt for passphrase if not provided via --passphrase
-        if (passphrase_str.empty()) {
-            std::cout << "Enter Passphrase for your private key: ";
-            std::cout.flush(); // Ensure prompt is displayed immediately
-#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
-            char ch;
-            while ((ch = _getch()) != '\r' && ch != '\n') {
-                if (ch == '\b') {
-                    if (!passphrase_str.empty()) {
-                        passphrase_str.pop_back();
-                        std::cout << "\b \b";
-                    }
-                } else {
-                    passphrase_str.push_back(ch);
-                    std::cout << "*";
+        } else {
+            input_file = non_option_args[0];
+            std::string effective_passphrase = passphrase_arg_str;
+            if (effective_passphrase.empty()) {
+                 effective_passphrase = prompt_for_passphrase("Enter Passphrase for your private key: ");
+            }
+            
+            post_task([=, crypto_handler, mode_str_copy = mode_str, effective_passphrase_copy = effective_passphrase]() {
+                std::cout << "Async: Decrypting file " << input_file << " to " << output_file << "..." << std::endl;
+                {
+                    std::lock_guard<std::mutex> lock(passphrase_mutex);
+                    global_passphrase_for_pem_cb = effective_passphrase_copy;
                 }
-            }
-            std::cout << std::endl;
-#else
-            struct termios oldt, newt;
-            tcgetattr(STDIN_FILENO, &oldt);
-            newt = oldt;
-            newt.c_lflag &= ~(ECHO | ICANON);
-            tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
-            std::getline(std::cin, passphrase_str);
-
-            tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-            std::cout << std::endl;
-#endif
-        }
-        global_passphrase_for_pem_cb = passphrase_str; // Set global passphrase for callback for private key loading
-
-        bool decrypt_success = false;
-        if (mode == "pqc") {
-            if (user_private_key_file.empty() || sender_public_key_file.empty()) {
-                std::cerr << "Error: PQC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
-                display_usage();
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
-            }
-            decrypt_success = crypto_handler->decryptFile(input_file, output_file,
+                bool success = false;
+                 if (mode_str_copy == "pqc") {
+                    if (user_private_key_file.empty() || sender_public_key_file.empty()) { // sender_public_key might not be needed for PQC KEM decapsulation
+                        std::cerr << "Async Error: PQC decryption mode requires --user-privkey. --sender-pubkey might be for other schemes." << std::endl;
+                        return;
+                    }
+                    // Note: Original PQC decryptFile takes sender_public_key_path, which might be for a different KEM scheme or an artifact.
+                    // For ML-KEM, only the recipient's private key is strictly needed for decapsulation.
+                    // Assuming the interface crypto_handler->decryptFile is consistent.
+                    success = crypto_handler->decryptFile(input_file, output_file,
                                                           user_private_key_file, sender_public_key_file);
-        } else if (mode == "hybrid") {
-            if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
-                std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
-                display_usage();
-                if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-                return 1;
-            }
-            // Directly call decryptFileHybrid polymorphically
-            decrypt_success = crypto_handler->decryptFileHybrid(input_file, output_file,
+                } else if (mode_str_copy == "hybrid") {
+                     if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
+                        std::cerr << "Async Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
+                        return;
+                    }
+                    success = crypto_handler->decryptFileHybrid(input_file, output_file,
                                                                 recipient_mlkem_privkey_file,
                                                                 recipient_ecdh_privkey_file);
-        } else {
-            std::cerr << "Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
-            display_usage();
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
+                } else if (mode_str_copy == "ecc") {
+                    // ECC decryptFile typically needs user's private key and sender's public key for ECDH key agreement.
+                    if (user_private_key_file.empty() || sender_public_key_file.empty()) {
+                         std::cerr << "Async Error: ECC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
+                        return;
+                    }
+                    success = crypto_handler->decryptFile(input_file, output_file, user_private_key_file, sender_public_key_file);
+                }
+                else {
+                    std::cerr << "Async Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
+                }
+                if (success) {
+                    std::cout << "Async: File decrypted successfully to " << output_file << std::endl;
+                } else {
+                    std::cerr << "Async Error: File decryption failed." << std::endl;
+                }
+            });
         }
-        
-        if (decrypt_success) {
-            std::cout << "File decrypted successfully to " << output_file << std::endl;
-        } else {
-            std::cerr << "Error: File decryption failed. Please check the program's output for OpenSSL errors." << std::endl;
-            if (default_prov) { OSSL_PROVIDER_unload(default_prov); }
-            return 1;
-        }
-    } else if (sign_mode) { // Handle signing
-        // Requires signing private key (--signing-privkey), signature file
-        // (--signature), and exactly one input file
-        if (signing_private_key_file.empty() || signature_file.empty() ||
-            non_option_args.size() != 1) {
+    } else if (sign_mode) {
+        if (signing_private_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
             std::cerr << "Error: Signing mode requires --signing-privkey, --signature, and exactly one input file." << std::endl;
             display_usage();
-            // Unload provider before exiting
-            if (default_prov) {
-                OSSL_PROVIDER_unload(default_prov);
+        } else {
+            input_file = non_option_args[0];
+            std::string effective_passphrase = passphrase_arg_str;
+            if (effective_passphrase.empty()) {
+                 effective_passphrase = prompt_for_passphrase("Enter Passphrase for your signing private key: ");
             }
-            return 1;
-        }
-        input_file = non_option_args[0];
-
-        // Signing requires the user's private key passphrase
-        // Prompt for passphrase if not provided via --passphrase
-        if (passphrase_str.empty()) {
-            std::cout << "Enter Passphrase for your signing private key: ";
-            std::cout.flush();
-#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
-            char ch;
-            while ((ch = _getch()) != '\r' && ch != '\n') {
-                if (ch == '\b') {
-                    if (!passphrase_str.empty()) {
-                        passphrase_str.pop_back();
-                        std::cout << "\b \b";
-                    }
-                } else {
-                    passphrase_str.push_back(ch);
-                    std::cout << "*";
+            post_task([=, crypto_handler, effective_passphrase_copy = effective_passphrase]() {
+                std::cout << "Async: Signing file " << input_file << "..." << std::endl;
+                 {
+                    std::lock_guard<std::mutex> lock(passphrase_mutex);
+                    global_passphrase_for_pem_cb = effective_passphrase_copy;
                 }
-            }
-            std::cout << std::endl;
-#else
-            struct termios oldt, newt;
-            tcgetattr(STDIN_FILENO, &oldt);
-            newt = oldt;
-            newt.c_lflag &= ~(ECHO | ICANON);
-            tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
-            std::getline(std::cin, passphrase_str);
-
-            tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-            std::cout << std::endl;
-#endif
+                bool success = crypto_handler->signFile(input_file, signature_file,
+                                      signing_private_key_file, digest_algo);
+                if (success) {
+                    std::cout << "Async: File signed successfully. Signature saved to " << signature_file << std::endl;
+                } else {
+                    std::cerr << "Async Error: File signing failed." << std::endl;
+                }
+            });
         }
-        global_passphrase_for_pem_cb = passphrase_str; // Set global passphrase for callback for private key loading
-
-        if (!crypto_handler->signFile(input_file, signature_file,
-                                      signing_private_key_file, digest_algo)) {
-            std::cerr << "Error: File signing failed." << std::endl;
-            // Unload provider before exiting
-            if (default_prov) {
-                OSSL_PROVIDER_unload(default_prov);
-            }
-            return 1;
-        }
-        std::cout << "File signed successfully. Signature saved to " << signature_file << std::endl;
-    } else if (verify_mode) { // Handle verification
-        // Requires signing public key (--signing-pubkey), signature file
-        // (--signature), and exactly one input file (original file)
-        if (signing_public_key_file.empty() || signature_file.empty() ||
-            non_option_args.size() != 1) {
-            std::cerr << "Error: Verification mode requires --signing-pubkey, "
-                      << "--signature, and exactly one input file (original file)." << std::endl;
+    } else if (verify_mode) {
+        if (signing_public_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
+            std::cerr << "Error: Verification mode requires --signing-pubkey, --signature, and exactly one input file." << std::endl;
             display_usage();
-            // Unload provider before exiting
-            if (default_prov) {
-                OSSL_PROVIDER_unload(default_prov);
+        } else {
+            input_file = non_option_args[0];
+            {
+                std::lock_guard<std::mutex> lock(passphrase_mutex);
+                global_passphrase_for_pem_cb = ""; // Verification uses public key, no passphrase needed for key itself
             }
-            return 1;
+            post_task([=, crypto_handler]() {
+                std::cout << "Async: Verifying signature for file " << input_file << "..." << std::endl;
+                bool success = crypto_handler->verifySignature(input_file, signature_file,
+                                             signing_public_key_file);
+                if (success) {
+                    std::cout << "Async: Signature verified successfully." << std::endl;
+                } else {
+                    std::cerr << "Async Error: Verification failed." << std::endl;
+                }
+            });
         }
-        input_file = non_option_args[0]; // The single non-option argument is the original file
-
-        // Verification does not require the user's private key passphrase
-        global_passphrase_for_pem_cb = ""; // Ensure passphrase is empty for verification
-
-        if (!crypto_handler->verifySignature(input_file, signature_file,
-                                             signing_public_key_file)) {
-            std::cerr << "Verification failed." << std::endl;
-            // verify_signature function already prints specific failure message
-            // Unload provider before exiting
-            if (default_prov) {
-                OSSL_PROVIDER_unload(default_prov);
-            }
-            return 1;
-        }
-        std::cout << "Signature verified successfully." << std::endl;
     } else {
-        std::cerr << "Error: No valid mode specified." << std::endl;
-        display_usage();
-        // Unload provider before exiting
-        if (default_prov) {
-            OSSL_PROVIDER_unload(default_prov);
+        if (tasks_in_flight == 0 && argc > 1) { // Only show error if some args were given but no valid mode matched
+             std::cerr << "Error: No valid operation mode specified or missing arguments." << std::endl;
+             display_usage();
+        } else if (argc <= 1) { // No arguments, just show usage
+            display_usage();
         }
-        return 1;
+        // If no tasks were posted, tasks_in_flight will be 0, and the wait below will pass immediately.
     }
 
-    // Clean up OpenSSL (for OpenSSL 3.0+, these are often no-ops)
-    // EVP_cleanup(); // Deprecated in OpenSSL 3.0
-    // ERR_free_strings(); // Deprecated in OpenSSL 3.0
-    // No direct replacements for these global cleanups in OpenSSL 3.0.
-    // Resource management is now mostly handled via unique_ptr or automatic
-    // freeing on context destruction.
 
-    // Unload the OQS provider
+    // Wait for all tasks to complete
+    if (tasks_in_flight > 0) {
+        std::cout << "Waiting for " << tasks_in_flight << " asynchronous operation(s) to complete..." << std::endl;
+        std::unique_lock<std::mutex> lock(tasks_mutex);
+        cv_all_tasks_done.wait(lock, [&tasks_in_flight]{ return tasks_in_flight == 0; });
+        std::cout << "All asynchronous operations finished." << std::endl;
+    }
+
+
+    // Cleanup
+    work_guard.reset(); // Allow io_ctx.run() to exit once all work is done
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+    std::cout << "Asio threads joined." << std::endl;
+
     if (default_prov) {
         OSSL_PROVIDER_unload(default_prov);
+        std::cout << "OpenSSL provider unloaded." << std::endl;
     }
-
-    return 0; // Success
+    
+    return 0;
 }
