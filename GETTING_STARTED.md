@@ -17,8 +17,15 @@ apt update && apt install -y git cmake build-essential libssl-dev
 
 ## nkCryptoToolをダウンロード
 
-git clone https://github.com/your-repo/nkCryptoTool.git # ここは実際のGitHubリポジトリのURLに置き換えてください
+git clone https://github.com/nkoriyama/nkCryptToool
 cd nkCryptoTool
+
+## Asioのダウンロード
+asioをnkCryptToolをクローンした所と同じ場所でクローンします。
+git clone https://github.com/chriskohlhoff/asio/
+nkCryptToolから見ると、一つ上のディレクトリにある感じのディレクトリ構成にしないと、ビルド出来ない。
+ls ..
+asio nkCrtptTool
 
 ## ビルドディレクトリを作成し、ビルド
 
