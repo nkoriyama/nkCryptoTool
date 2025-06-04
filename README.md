@@ -279,7 +279,7 @@ sequenceDiagram
     participant OpenSSL as OpenSSLライブラリ
     participant FileSystem as ファイルシステム
 
-    User->>nkcryptotool: 鍵ペア生成コマンド実行<br>(モード: ECC/PQC/HYBRID, タイプ: 暗号化/署名, パスフレーズ(任意))
+    User->>nkcryptotool: 鍵ペア生成コマンド実行<br>(モード: ECC/PQC/HYBRID, パスフレーズ(任意))
     alt パスフレーズ入力あり
         nkcryptotool->>User: パスフレーズ入力要求
         User->>nkcryptotool: パスフレーズ入力
