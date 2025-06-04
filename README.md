@@ -180,13 +180,21 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### PQC暗号化鍵ペアの生成 (公開鍵は public_enc_pqc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --gen-enc-key public_enc_pqc.key
+./build/bin/nkCryptoTool --mode pqc --gen-enc-key
 ```
 
 ### PQC署名鍵ペアの生成 (公開鍵は public_sign_pqc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --gen-signing-key public_sign_pqc.key
+./build/bin/nkCryptoTool --mode pqc --gen-signing-key 
+```
+
+## Hybrid鍵ペア生成
+
+### Hybrid暗号化鍵ペアの生成 (公開鍵は public_enc_hybrid_mlkem.keyとpublic_enc_hybrid_ecdh.key に出力)
+
+```bash
+./build/bin/nkCryptoTool --mode hybrid --gen-enc-key
 ```
 
 ## ECCファイルの暗号化と復号
@@ -215,6 +223,21 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 
 ```bash
 ./build/bin/nkCryptoTool --mode pqc --decrypt --input test_pqc.enc --output test_pqc_decrypted.txt --sender-public-key public_enc_pqc.key
+```
+
+## Hybridファイルの暗号化と復号
+
+### 暗号化(Hybrid)
+
+``` bash
+./build/bin/nkCryptoTool --mode hybrid --encrypt --recipient-mlkem-pubkey public_enc_hybrid_mlkem.key --recipient-ecdh-pubkey public_enc_hybrid_ecdh.key -o encrypted_hybrid.bin plain.txt
+
+```
+
+### 復号(Hybrid)
+
+```bash
+./build/bin/nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybrid_mlkem.key --recipient-ecdh-privkey private_enc_hybrid_ecdh.key -o decrypted_hybrid.txt encrypted_hybrid.bin
 ```
 
 ## ECCファイルの署名と検証
