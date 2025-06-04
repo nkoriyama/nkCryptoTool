@@ -279,7 +279,7 @@ sequenceDiagram
     participant OpenSSL as OpenSSLライブラリ
     participant FileSystem as ファイルシステム
 
-    User->>nkcryptotool: 鍵ペア生成コマンド実行<br>(モード: ECC/PQC, タイプ: 暗号化/署名, パスフレーズ(任意))
+    User->>nkcryptotool: 鍵ペア生成コマンド実行<br>(モード: ECC/PQC/HYBRID, タイプ: 暗号化/署名, パスフレーズ(任意))
     alt パスフレーズ入力あり
         nkcryptotool->>User: パスフレーズ入力要求
         User->>nkcryptotool: パスフレーズ入力
@@ -366,8 +366,8 @@ sequenceDiagram
     FileSystem-->>Sender_nkcryptotool: 受信者公開鍵データ
     Sender_nkcryptotool->>FileSystem: 平文入力ファイル読み込み
     FileSystem-->>Sender_nkcryptotool: 平文データ
-    Sender_nkcryptotool->>OpenSSL: 共通秘密確立要求<br>(ECC: ECDH, PQC: KEM)
-    OpenSSL-->>Sender_nkcryptotool: カプセル化された共通鍵 (KEM Ciphertext, PQCモードのみ), 共通秘密
+    Sender_nkcryptotool->>OpenSSL: 共通秘密確立要求<br>(ECC: ECDH, PQC: KEM, HYBRID: ECDH+KEM)
+    OpenSSL-->>Sender_nkcryptotool: カプセル化された共通鍵 (KEM Ciphertext, PQC/HYBRIDモード), 共通秘密
     Sender_nkcryptotool->>OpenSSL: HKDF鍵導出要求<br>(共通秘密 -> AES鍵/IV)
     OpenSSL-->>Sender_nkcryptotool: AES鍵, IV
     Sender_nkcryptotool->>OpenSSL: AES-256-GCM暗号化要求<br>(AES鍵, IV, 平文データ)
