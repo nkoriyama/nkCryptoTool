@@ -286,7 +286,7 @@ sequenceDiagram
     end
     nkcryptotool->>FileSystem: 鍵ディレクトリ存在確認/作成
     FileSystem-->>nkcryptotool: 確認/作成結果
-    nkcryptotool->>OpenSSL: 鍵ペア生成要求<br>(ECC: NIST P-256 / PQC: ML-KEM-1024 または ML-DSA-87)
+    nkcryptotool->>OpenSSL: 鍵ペア生成要求<br>(ECC: NIST P-256 / PQC: ML-KEM-1024 または ML-DSA-87/HYBRID: NIST P-256 + ML-KEM-1024)
     OpenSSL-->>nkcryptotool: 秘密鍵データと公開鍵データ
     nkcryptotool->>FileSystem: 公開鍵ファイル書き込み<br>(公開鍵データ)
     FileSystem-->>nkcryptotool: 書き込み完了
