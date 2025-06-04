@@ -5,10 +5,10 @@ cmake_minimum_required(VERSION 3.10)
 # プロジェクト名を定義します。
 project(nkCryptoTool CXX)
 
-# C++20標準を使用するように設定します。
+# C++23標準を使用するように設定します。
 # std::filesystem を使用するには C++17 が必要です。
 # coroutines を使用するには C++20 が必要です。
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # OpenSSLライブラリを見つけます。
@@ -36,7 +36,12 @@ target_include_directories(nkCryptoTool PRIVATE
     "${CMAKE_SOURCE_DIR}/../asio/asio/include")
 
 # 実行可能ファイルにOpenSSLライブラリをリンクします。
-target_link_libraries(nkCryptoTool PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+set(LIBS OpenSSL::SSL OpenSSL::Crypto)
 
+if(WIN32)
+    list(APPEND LIBS ws2_32)
+endif()
+
+target_link_libraries(nkCryptoTool PRIVATE ${LIBS})
 # インストールルールを設定します（オプション）。
 install(TARGETS nkCryptoTool DESTINATION bin)
