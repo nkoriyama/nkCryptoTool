@@ -395,9 +395,9 @@ sequenceDiagram
     alt 秘密鍵読み込み成功
         Recipient_nkcryptotool->>FileSystem: 自身の秘密鍵読み込み
         FileSystem-->>Recipient_nkcryptotool: 自身の秘密鍵データ<br>(復号済み)
-        Recipient_nkcryptotool->>FileSystem: 暗号化ファイル読み込み<br>(カプセル化された共通鍵(PQCのみ), IV, 暗号文, GCMタグ)
+        Recipient_nkcryptotool->>FileSystem: 暗号化ファイル読み込み<br>(カプセル化された共通鍵(PQC/HYBRID), IV, 暗号文, GCMタグ)
         FileSystem-->>Recipient_nkcryptotool: 暗号化データ
-        Recipient_nkcryptotool->>OpenSSL: 共通秘密復元要求<br>(ECC: ECDH, PQC: KEM)
+        Recipient_nkcryptotool->>OpenSSL: 共通秘密復元要求<br>(ECC: ECDH, PQC: KEM HYBRID: ECDH+KEM)
         OpenSSL-->>Recipient_nkcryptotool: 共通秘密
         Recipient_nkcryptotool->>OpenSSL: HKDF鍵導出要求<br>(共通秘密 -> AES鍵/IV)
         OpenSSL-->>Recipient_nkcryptotool: AES鍵, IV
