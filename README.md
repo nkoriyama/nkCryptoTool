@@ -76,7 +76,7 @@ nkcryptotool --mode ecc --gen-enc-key
 
 ECC 署名公開鍵を生成し、対応する秘密鍵をデフォルトの場所に保存します。パスフレーズで秘密鍵を保護することも可能です。
 
-nkcryptotool --mode ecc --gen-signing-key
+nkcryptotool --mode ecc --gen-sign-key
 
 ### 暗号化 (ECC + AES-256-GCM)
 
@@ -112,7 +112,7 @@ nkcryptotool --mode pqc --gen-enc-key
 
 PQC 署名公開鍵を生成し、対応する秘密鍵をデフォルトの場所に保存します。パスフレーズで秘密鍵を保護することも可能です。
 
-nkcryptotool --mode pqc --gen-signing-key
+nkcryptotool --mode pqc --gen-sign-key
 
 ### 暗号化 (PQC + AES-256-GCM)
 
@@ -172,7 +172,7 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 署名鍵ペアの生成 (公開鍵は key-dir/public_sign_ecc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool  --mode ecc --gen-signing-key
+./build/bin/nkCryptoTool  --mode ecc --gen-sign-key
 ```
 
 ## PQC鍵ペア生成
@@ -186,7 +186,7 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### PQC署名鍵ペアの生成 (公開鍵は public_sign_pqc.key に出力)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --gen-signing-key 
+./build/bin/nkCryptoTool --mode pqc --gen-sign-key 
 ```
 
 ## Hybrid鍵ペア生成
@@ -202,13 +202,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 暗号化(ECC)
 
 ``` bash
-./build/bin/nkCryptoTool --mode ecc --encrypt --input test_ecc.txt --output test_ecc.enc --recipient-public-key public_enc_ecc.key
+./build/bin/nkCryptoTool --mode ecc --encrypt --recipient-pubkey public_enc_ecc.key -o encrypted_ecc.bin input.txt
 ```
 
 ### 復号(ECC)
 
 ``` bash
-./build/bin/nkCryptoTool --mode ecc --decrypt --input test_ecc.enc --output test_ecc_decrypted.txt --sender-public-key public_enc_ecc.key
+./build/bin/nkCryptoTool --mode ecc --decrypt --user-privkey .private_enc_ecc.key  --sender-pubkey public_enc_ecc.key -o decrypted_ecc.txt encrypted_ecc.bin
 ```
 
 ## PQCファイルの暗号化と復号
@@ -216,13 +216,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 暗号化(PQC)
 
 ``` bash
-./build/bin/nkCryptoTool --mode pqc --encrypt --input test_pqc.txt --output test_pqc.enc --recipient-public-key public_enc_pqc.key
+./build/bin/nkCryptoTool --mode pqc --encrypt --recipient-pubkey public_enc_pqc.key -o encrypted_pqc.bin input.txt
 ```
 
 ### 復号(PQC)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --decrypt --input test_pqc.enc --output test_pqc_decrypted.txt --sender-public-key public_enc_pqc.key
+./build/bin/nkCryptoTool --mode pqc --decrypt --user-privkey private_enc_pqc.key  --sender-pubkey public_enc_pqc.key -o decrypted_pqc.txt encrypted_pqc.bin
 ```
 
 ## Hybridファイルの暗号化と復号
@@ -245,13 +245,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 署名(ECC)
 
 ``` bash
-./build/bin/nkCryptoTool --mode ecc --sign --input test_ecc.txt --output test_ecc.sig 
+./build/bin/nkCryptoTool --mode ecc --sign input.txt  --signature test_ecc.sig --signing-privkey private_sign_ecc.key
 ```
 
 ### 検証(ECC)
 
 ``` bash
-./build/bin/nkCryptoTool --mode ecc --verify --input test_ecc.txt --signature test_ecc.sig --signing-public-key public_sign_ecc.key
+./build/bin/nkCryptoTool --mode ecc --verify  input.txt  --signature test_ecc.sig --signing-pubkey public_sign_ecc.key
 ```
 
 ## PQCファイルの署名と検証
@@ -259,13 +259,13 @@ nkCryptoTool --mode hybrid --decrypt --recipient-mlkem-privkey private_enc_hybri
 ### 署名(PQC)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --sign --input test_pqc.txt --output test_pqc.sig 
+ ./build/bin/nkCryptoTool --mode pqc --sign input.txt  --signature test_pqc.sig --signing-privkey private_sign_pqc.key
 ```
 
 ### 検証(PQC)
 
 ```bash
-./build/bin/nkCryptoTool --mode pqc --verify --input test_pqc.txt --signature test_pqc.sig --signing-public-key public_sign_pqc.key
+./build/bin/nkCryptoTool --mode pqc --verify  input.txt --signature test_pqc.sig --signing-pubkey public_sign_pqc.key
 ```
 
 ## 処理フロー
