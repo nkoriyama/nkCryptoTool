@@ -50,6 +50,7 @@ private:
         std::function<void(std::error_code)> completion_handler;
         std::vector<unsigned char> kem_ciphertext;
         std::vector<unsigned char> ecdh_sender_pub_key;
+        std::vector<std::shared_ptr<uint32_t>> len_storage; // For keeping length values alive
 
         EncryptionState(asio::io_context& io_context)
             : input_file(io_context),
@@ -66,6 +67,7 @@ private:
                                  const std::filesystem::path& output_filepath,
                                  EVP_PKEY* recipient_kem_public_key,
                                  EVP_PKEY* recipient_ecdh_public_key = nullptr);
+    void write_salt_and_iv(std::shared_ptr<EncryptionState> state, std::function<void(const asio::error_code&)> on_complete);
     void handleFileReadForPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
     void handleFileWriteAfterPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
     void finishPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec);
