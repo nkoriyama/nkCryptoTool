@@ -27,21 +27,6 @@ git clone https://github.com/nkoriyama/nkCryptToool
 cd nkCryptoTool
 ```
 
-## Asioのダウンロード
-
-asioをnkCryptToolをクローンした所と同じ場所でクローンします。
-
-```bash
-git clone https://github.com/chriskohlhoff/asio/
-```
-
-nkCryptToolから見ると、一つ上のディレクトリにある感じのディレクトリ構成にしないと、ビルド出来ない。
-
-```bash
-ls ..
-asio/ nkCrtptTool/
-```
-
 ## ビルドディレクトリを作成し、ビルド
 
 ```bash
