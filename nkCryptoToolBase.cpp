@@ -4,17 +4,23 @@
 #include <fstream>
 #include <iostream>
 
-// Initialize static member variables
-std::filesystem::path nkCryptoToolBase::key_base_directory = "keys"; // Default directory
-
-nkCryptoToolBase::nkCryptoToolBase() {
-    // Constructor
+// Initialize non-static member variables in constructor
+nkCryptoToolBase::nkCryptoToolBase() : key_base_directory("keys") { // Default directory
+    // Attempt to create the directory if it doesn't exist
+    try {
+      if (!std::filesystem::exists(key_base_directory)) {
+        std::filesystem::create_directories(key_base_directory);
+      }
+    } catch (const std::filesystem::filesystem_error& e) {
+      std::cerr << "Error creating directory '" << key_base_directory << "': " << e.what() << std::endl;
+    }
 }
 
 nkCryptoToolBase::~nkCryptoToolBase() {
     // Destructor
 }
 
+// Non-static method
 void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
     key_base_directory = dir;
     // Attempt to create the directory if it doesn't exist
@@ -23,19 +29,12 @@ void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
         std::filesystem::create_directories(key_base_directory);
       }
     } catch (const std::filesystem::filesystem_error& e) {
-      // Handle potential errors during directory creation
-      // For example, log the error, throw an exception, or exit
-      // std::cerr << "Error creating directory " << key_base_directory << ": " << e.what() << std::endl;
-      // Or rethrow:
-      // throw;
-      // For this example, we'll just acknowledge it.
-      // In a real application, you'd want robust error handling.
-      // For now, we'll simply print to stderr for demonstration.
       std::cerr << "Error creating directory '" << key_base_directory << "': " << e.what() << std::endl;
     }
 }
 
-std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() {
+// Non-static method
+std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const {
     return key_base_directory;
 }
 
@@ -61,8 +60,15 @@ bool nkCryptoToolBase::writeFile(const std::filesystem::path& filepath, const st
     std::ofstream file(filepath, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Error: Could not open file for writing: " << filepath << std::endl;
+        // Do not throw, just return false, as some calls might expect non-throwing behavior.
+        // Or, if throwing is preferred, it should be consistent. For now, matching original logic.
         return false;
     }
-    file.write(reinterpret_cast<const char*>(data.data()), data.size());
-    return file.good();
+
+    if (!file.write(reinterpret_cast<const char*>(data.data()), data.size())) {
+        std::cerr << "Error: Could not write file content: " << filepath << std::endl;
+        return false;
+    }
+    return true;
 }
+

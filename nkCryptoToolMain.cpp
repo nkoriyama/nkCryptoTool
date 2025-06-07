@@ -1,512 +1,364 @@
-// nkCryptoToolMain.cpp (同期版)
+// nkCryptoToolMain.cpp (同期版から非同期対応版へ)
 
 // --- Required Environment ---
-// - C++11 compiler (for std::stoi, nullptr, std::vector, etc.)
-// - OpenSSL library and headers (e.g., libssl-dev on Debian/Ubuntu, or
-// pre-built for Windows) - Requires OpenSSL 1.1.0 or later for
-// EVP_PKEY_derive_init/EVP_KDF, AES-GCM, and ECDSA Note: OSSL_PARAM_construct_*
-// functions are used for broader compatibility
+// - C++17 compiler (for std::filesystem, std::shared_ptr, std::function, std::bind)
+// - OpenSSL library and headers (e.g., libssl-dev on Debian/Ubuntu, or pre-built for Windows)
+//   - Requires OpenSSL 3.0+ for PQC features.
+// - Asio library (header-only or compiled, e.g., from https://think-async.com/Asio/)
+//   - For async file I/O, needs a recent Asio version with `asio::stream_file`.
 // - On Windows: MinGW or Cygwin environment recommended for getopt_long.
-// MSVC users will need a getopt implementation or replacement.
+//   MSVC users will need a getopt implementation or replacement.
 
 // --- Compilation Note ---
-// This code is written in C++ and requires a C++ compiler (like g++) to compile
-// correctly. Save the file with a .cpp, .cc, or .cxx extension (e.g.,
-// nkCryptoTool.cpp) and compile using a C++ compiler command (e.g., g++
-// nkCryptoTool.cpp -o nkCryptoTool -lssl -lcrypto).
-// Ensure your OpenSSL installation is correct and include/library paths are specified in
-// the compile command.
+// Compile with C++17 or later and link against OpenSSL and potentially Asio if not header-only.
+// Example for g++ (Linux):
+// g++ nkCryptoToolMain.cpp nkCryptoToolBase.cpp nkCryptoToolECC.cpp nkCryptoToolPQC.cpp -o nkCryptoTool -lssl -lcrypto -std=c++17 -I/path/to/asio/include
+// Make sure to include Asio headers path (-I).
 
 #include <iostream>
 #include <string>
 #include <vector>
-#include <memory> // For std::unique_ptr
+#include <memory> // For std::unique_ptr, std::shared_ptr
 #include <filesystem> // For std::filesystem::path
-#include <mutex> // For std::mutex - still needed for global_passphrase_for_pem_cb access
+#include <mutex> // For std::mutex
+#include <map> // For std::map to store options
+#include <functional> // For std::function
+
+// Asio headers
+#include <asio.hpp>
 
 // For getopt_long
 #ifdef _WIN32
 #include "getopt_long.h" // Assuming you have getopt_long.h for Windows if not using MinGW/Cygwin
-#include <conio.h>       // For _getch on Windows
 #else
-#include <getopt.h> // Standard for Linux/macOS
-#include <termios.h> // For tcsetattr, tcgetattr (Linux/macOS)
-#include <unistd.  h>  // For STDIN_FILENO (Linux/macOS)
+#include <getopt.h>
 #endif
 
-// Include necessary headers for cryptographic operations
-#include "nkCryptoToolBase.hpp"
-#include "nkCryptoToolECC.hpp" // For ECC specific operations
-#include "nkCryptoToolPQC.hpp" // For PQC specific operations
-#include <openssl/provider.h> // Required for OSSL_PROVIDER_load
-#include <openssl/err.h> // Required for ERR_get_error, ERR_error_string_n
+// OpenSSL provider for OpenSSL 3.0+
+#include <openssl/provider.h>
 
-// --- IMPORTANT: Global variable and callback definition ---
-// Global variable for PEM passphrase callback
+// Custom tool classes
+#include "nkCryptoToolBase.hpp"
+#include "nkCryptoToolECC.hpp"
+#include "nkCryptoToolPQC.hpp"
+
+// Global passphrase variable for OpenSSL PEM callbacks
 std::string global_passphrase_for_pem_cb;
-// Mutex to protect global_passphrase_for_pem_cb
 std::mutex passphrase_mutex;
 
-
-// Callback function for PEM passphrase
+// OpenSSL PEM passphrase callback function
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
-    std::lock_guard<std::mutex> lock(passphrase_mutex); // Protect access to global_passphrase_for_pem_cb
-    if (global_passphrase_for_pem_cb.empty()) {
-        std::cerr << "Error: Passphrase not set for PEM operation (callback)." << std::endl;
-        return 0; // Indicate failure or empty passphrase
+    (void)rwflag; // Unused parameter
+    std::string *passphrase_ptr = static_cast<std::string*>(userdata);
+    std::string input_passphrase;
+
+    if (passphrase_ptr && !passphrase_ptr->empty()) {
+        input_passphrase = *passphrase_ptr;
+    } else {
+        std::cout << "Enter passphrase: ";
+        // For security, disable echo in a real application.
+        std::getline(std::cin, input_passphrase);
     }
-    size_t len = global_passphrase_for_pem_cb.copy(buf, size - 1);
-    buf[len] = '\0';
-    return static_cast<int>(len);
+
+    if (input_passphrase.length() > size) {
+        std::cerr << "Error: Passphrase too long." << std::endl;
+        return 0;
+    }
+    memcpy(buf, input_passphrase.c_str(), input_passphrase.length());
+    return static_cast<int>(input_passphrase.length());
 }
 
-// --- display_usage() function definition ---
+// Function to display usage information
 void display_usage() {
-    // (Usage information remains the same as the original)
-    std::cout << "Usage: nkCryptoTool.exe --mode <mode> [options] [arguments]\n";
-    std::cout << "Modes:\n";
-    std::cout << "  ecc       : Use ECC (Elliptic Curve Cryptography)\n";
-    std::cout << "  pqc       : Use PQC (ML_KEM/ML_DSA Cryptography)\n";
-    std::cout << "  hybrid    : Use Hybrid (ML_KEM + ECDH Cryptography)\n";
-    std::cout << "\n";
-    std::cout << "Options for Key Generation:\n";
-    std::cout << "  --gen-enc-key       : Generate ECC/KEM encryption key pair\n";
-    std::cout << "  --gen-sign-key      : Generate ECC/DSA signing key pair\n";
-    std::cout << "  -p, --passphrase <pass> : Passphrase for private key encryption (optional, will prompt if not provided)\n";
-    std::cout << "  --key-dir <dir>     : Specify base directory for keys (default: 'keys')\n";
-    std::cout << "\n";
-    std::cout << "Options for Encryption (PQC/Hybrid Mode):\n";
-    std::cout << "  --encrypt           : Encrypt a file\n";
-    std::cout << "  -o, --output <file> : Output file path (for encryption/decryption)\n";
-    std::cout << "  --recipient-mlkem-pubkey <file> : Recipient's ML-KEM public key file (for hybrid encryption)\n";
-    std::cout << "  --recipient-ecdh-pubkey <file>  : Recipient's ECDH public key file (for hybrid encryption)\n";
-    std::cout << "  --recipient-pubkey <file>       : Recipient's public key file (for PQC encryption)\n";
-    std::cout << "  <input_file>        : Input file to encrypt\n";
-    std::cout << "\n";
-    std::cout << "Options for Decryption (PQC/Hybrid Mode):\n";
-    std::cout << "  --decrypt           : Decrypt a file\n";
-    std::cout << "  -o, --output <file> : Output file path (for encryption/decryption)\n";
-    std::cout << "  --recipient-mlkem-privkey <file> : Recipient's ML-KEM private key file (for hybrid decryption)\n";
-    std::cout << "  --recipient-ecdh-privkey <file>  : Recipient's ECDH private key file (for hybrid decryption)\n";
-    std::cout << "  --user-privkey <file>            : Your private key file (for PQC decryption)\n";
-    std::cout << "  --sender-pubkey <file>           : Sender's public key file (for PQC decryption - for key derivation, not signature)\n";
-    std::cout << "  <input_file>        : Input file to decrypt\n";
-    std::cout << "\n";
-    std::cout << "Options for Signing:\n";
-    std::cout << "  --sign              : Sign a file\n";
-    std::cout << "  --signature <file>  : Output signature file path\n";
-    std::cout << "  --signing-privkey <file> : Your signing private key file\n";
-    std::cout << "  --digest-algo <algo> : Digest algorithm (e.g., sha256, default: sha256)\n";
-    std::cout << "  <input_file>        : Input file to sign\n";
-    std::cout << "\n";
-    std::cout << "Options for Verification:\n";
-    std::cout << "  --verify            : Verify a file's signature\n";
-    std::cout << "  --signature <file>  : Input signature file path\n";
-    std::cout << "  --signing-pubkey <file> : Signer's public key file\n";
-    std::cout << "  <input_file>        : Input file to verify\n";
-    std::cout << "\n";
-    std::cout << "Note: Operations are performed synchronously.\n"; // Updated note
+    std::cout << "Usage: nkCryptoTool [OPTIONS] [FILE]\n"
+              << "Encrypt, decrypt, sign, or verify files using ECC, PQC, or Hybrid mode.\n\n"
+              << "Modes of operation (choose one):\n"
+              << "  --mode ecc          Use Elliptic Curve Cryptography (default if not specified)\n"
+              << "  --mode pqc          Use Post-Quantum Cryptography (ML-KEM and ML-DSA)\n"
+              << "  --mode hybrid       Use Hybrid PQC (ML-KEM) + ECC (ECDH)\n\n"
+              << "Key Generation Options:\n"
+              << "  --gen-enc-key       Generate encryption key pair(s).\n"
+              << "                      - For 'ecc' and 'pqc' modes, generates one key pair.\n"
+              << "                      - For 'hybrid' mode, generates both PQC and ECC key pairs.\n"
+              << "  --gen-sign-key      Generate signing key pair (for 'ecc' or 'pqc' mode).\n"
+              << "  --passphrase <pwd>  Passphrase for private key encryption (optional, prompted if omitted).\n\n"
+              << "Encryption Options:\n"
+              << "  --encrypt           Encrypt input file.\n"
+              << "  -o <path>           Output file for encrypted data.\n"
+              << "  For ECC/PQC modes:\n"
+              << "    --recipient-pubkey <path>  Public key of the recipient.\n"
+              << "  For Hybrid mode:\n"
+              << "    --recipient-mlkem-pubkey <path> Recipient's ML-KEM public key.\n"
+              << "    --recipient-ecdh-pubkey <path>  Recipient's ECDH public key.\n\n"
+              << "Decryption Options:\n"
+              << "  --decrypt           Decrypt input file.\n"
+              << "  -o <path>           Output file for decrypted data.\n"
+              << "  For ECC/PQC modes:\n"
+              << "    --user-privkey <path>      Your private key for decryption.\n"
+              << "  For Hybrid mode:\n"
+              << "    --recipient-mlkem-privkey <path> Your ML-KEM private key.\n"
+              << "    --recipient-ecdh-privkey <path>  Your ECDH private key.\n\n"
+              << "Signing/Verification Options (ECC or PQC mode only):\n"
+              << "  --sign              Sign input file.\n"
+              << "  --signing-privkey <path> Your private signing key.\n"
+              << "  --signature <path>  Output file for the signature.\n"
+              << "  --digest-algo <algo> Hashing algorithm (e.g., SHA256, SHA3-256).\n"
+              << "  --verify            Verify signature of input file.\n"
+              << "  --signing-pubkey <path> Signer's public key.\n\n"
+              << "Other Options:\n"
+              << "  --key-dir <path>    Specify base directory for keys (default: 'keys').\n"
+              << "  -h, --help          Display this help message.\n";
 }
 
-
-// Helper function to securely get passphrase
-std::string prompt_for_passphrase(const std::string& prompt_message) {
-    std::string passphrase;
-    std::cout << prompt_message;
-    std::cout.flush(); // Ensure prompt is displayed immediately
-
-#if defined(_WIN32) || defined(__WIN32__) || defined(__MINGW32__)
-    char ch;
-    while ((ch = _getch()) != '\r' && ch != '\n') {
-        if (ch == '\b') { // Backspace
-            if (!passphrase.empty()) {
-                passphrase.pop_back();
-                std::cout << "\b \b"; // Erase character on console
-            }
-        } else {
-            passphrase.push_back(ch);
-            std::cout << "*";
-        }
-    }
-    std::cout << std::endl; // Newline after input
-#else
-    struct termios oldt, newt;
-    tcgetattr(STDIN_FILENO, &oldt); // Get current terminal settings
-    newt = oldt;
-    newt.c_lflag &= ~(ECHO | ICANON); // Disable echo and canonical mode
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt); // Apply new settings
-
-    // Read passphrase - std::getline might not be ideal with raw terminal mode.
-    // A char-by-char read loop is more robust here.
-    char c;
-    while (read(STDIN_FILENO, &c, 1) == 1 && c != '\n' && c != '\r') {
-        if (c == 127 || c == 8) { // Handle backspace (ASCII DEL or BS)
-             if (!passphrase.empty()) {
-                passphrase.pop_back();
-                // Optionally, provide visual feedback for backspace if desired:
-                // write(STDOUT_FILENO, "\b \b", 3);
-            }
-        } else {
-            passphrase.push_back(c);
-            // Optionally, provide visual feedback for character typed:
-            // write(STDOUT_FILENO, "*", 1);
-        }
-    }
-
-
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore original terminal settings
-    std::cout << std::endl; // Newline after input
-#endif
-    return passphrase;
-}
-
-
-int main(int argc, char *argv[]) {
-    OSSL_PROVIDER* default_prov = OSSL_PROVIDER_load(NULL, "default");
+int main(int argc, char* argv[]) {
+    OSSL_PROVIDER* default_prov = OSSL_PROVIDER_load(nullptr, "default");
     if (!default_prov) {
-        std::cerr << "Error: Failed to load default OpenSSL provider. PQC algorithms may not be available." << std::endl;
-        unsigned long err_code;
-        while ((err_code = ERR_get_error()) != 0) {
-            char err_buf[256];
-            ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
-            std::cerr << "OpenSSL Provider Error: " << err_buf << std::endl;
-        }
-        return 1; // Early exit if provider fails, as crypto ops won't work
+        std::cerr << "Warning: Could not load OpenSSL default provider. Some algorithms might not be available." << std::endl;
+    } else {
+        std::cout << "OpenSSL default provider loaded." << std::endl;
     }
 
-    // Asio 関連のセットアップをすべて削除
-    // asio::io_context io_ctx;
-    // auto work_guard = asio::make_work_guard(io_ctx);
-    // unsigned int num_threads = std::thread::hardware_concurrency();
-    // if (num_threads == 0) { num_threads = 2; }
-    // std::vector<std::thread> threads;
-    // for (unsigned int i = 0; i < num_threads; ++i) { threads.emplace_back([&io_ctx]() { io_ctx.run(); }); }
-    // std::atomic<int> tasks_in_flight(0);
-    // std::mutex tasks_mutex;
-    // std::condition_variable cv_all_tasks_done;
+    std::map<std::string, bool> flags;
+    std::map<std::string, std::string> options;
+    std::vector<std::string> non_option_args;
 
-    std::string mode_str;
-    std::string passphrase_arg_str; // Passphrase provided as command line argument
-    std::string key_dir = "keys";
-    std::string input_file, output_file, signature_file;
-    std::string recipient_public_key_file; 
-    std::string user_private_key_file;     
-    std::string sender_public_key_file;    
-    std::string recipient_mlkem_pubkey_file; 
-    std::string recipient_ecdh_pubkey_file;  
-    std::string recipient_mlkem_privkey_file; 
-    std::string recipient_ecdh_privkey_file;  
-    std::string signing_private_key_file, signing_public_key_file;
-    std::string digest_algo = "sha256"; 
+    options["mode"] = "ecc";
+    options["digest-algo"] = "SHA256";
 
-    bool gen_enc_key_mode = false;
-    bool gen_sign_key_mode = false;
-    bool encrypt_mode = false;
-    bool decrypt_mode = false;
-    bool sign_mode = false;
-    bool verify_mode = false;
+    // Define integer constants for new long options without short equivalents
+    constexpr int RECIPIENT_MLKEM_PUBKEY_OPT = 256;
+    constexpr int RECIPIENT_ECDH_PUBKEY_OPT = 257;
+    constexpr int RECIPIENT_MLKEM_PRIVKEY_OPT = 258;
+    constexpr int RECIPIENT_ECDH_PRIVKEY_OPT = 259;
 
-    static struct option long_options[] = {
+    struct option long_options[] = {
         {"mode", required_argument, nullptr, 'm'},
-        {"gen-enc-key", no_argument, nullptr, 1}, // Use numbers > 255 for long opts without short
-        {"gen-sign-key", no_argument, nullptr, 2},
+        {"gen-enc-key", no_argument, nullptr, 'e'},
+        {"gen-sign-key", no_argument, nullptr, 'g'},
         {"passphrase", required_argument, nullptr, 'p'},
-        {"key-dir", required_argument, nullptr, 3},
-        {"encrypt", no_argument, nullptr, 4},
-        {"decrypt", no_argument, nullptr, 5},
-        {"sign", no_argument, nullptr, 6},
-        {"verify", no_argument, nullptr, 7},
-        {"output", required_argument, nullptr, 'o'},
-        {"recipient-pubkey", required_argument, nullptr, 8},
-        {"user-privkey", required_argument, nullptr, 9},
-        {"sender-pubkey", required_argument, nullptr, 10},
-        {"recipient-mlkem-pubkey", required_argument, nullptr, 11},
-        {"recipient-ecdh-pubkey", required_argument, nullptr, 12},
-        {"recipient-mlkem-privkey", required_argument, nullptr, 13},
-        {"recipient-ecdh-privkey", required_argument, nullptr, 14},
-        {"signature", required_argument, nullptr, 15},
-        {"signing-privkey", required_argument, nullptr, 16},
-        {"signing-pubkey", required_argument, nullptr, 17},
-        {"digest-algo", required_argument, nullptr, 18},
-        {nullptr, 0, nullptr, 0} 
+        {"encrypt", no_argument, nullptr, 'c'},
+        {"recipient-pubkey", required_argument, nullptr, 'r'},
+        {"decrypt", no_argument, nullptr, 'd'},
+        {"user-privkey", required_argument, nullptr, 'u'},
+        {"output-file", required_argument, nullptr, 'o'},
+        {"sign", no_argument, nullptr, 'n'},
+        {"signing-privkey", required_argument, nullptr, 'i'},
+        {"signature", required_argument, nullptr, 't'},
+        {"digest-algo", required_argument, nullptr, 'a'},
+        {"verify", no_argument, nullptr, 'v'},
+        {"signing-pubkey", required_argument, nullptr, 'b'},
+        {"key-dir", required_argument, nullptr, 'k'},
+        {"help", no_argument, nullptr, 'h'},
+        // New options for hybrid mode
+        {"recipient-mlkem-pubkey", required_argument, nullptr, RECIPIENT_MLKEM_PUBKEY_OPT},
+        {"recipient-ecdh-pubkey", required_argument, nullptr, RECIPIENT_ECDH_PUBKEY_OPT},
+        {"recipient-mlkem-privkey", required_argument, nullptr, RECIPIENT_MLKEM_PRIVKEY_OPT},
+        {"recipient-ecdh-privkey", required_argument, nullptr, RECIPIENT_ECDH_PRIVKEY_OPT},
+        {nullptr, 0, nullptr, 0}
     };
 
     int opt;
-    int long_index = 0;
-    std::vector<std::string> non_option_args;
-
-    while ((opt = getopt_long(argc, argv, "m:o:p:", long_options, &long_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "o:h", long_options, nullptr)) != -1) {
         switch (opt) {
-            case 'm': mode_str = optarg; break;
-            case 'o': output_file = optarg; break;
-            case 'p': passphrase_arg_str = optarg; break;
-            case 1: gen_enc_key_mode = true; break;
-            case 2: gen_sign_key_mode = true; break;
-            case 3: key_dir = optarg; break;
-            case 4: encrypt_mode = true; break;
-            case 5: decrypt_mode = true; break;
-            case 6: sign_mode = true; break;
-            case 7: verify_mode = true; break;
-            case 8: recipient_public_key_file = optarg; break;
-            case 9: user_private_key_file = optarg; break;
-            case 10: sender_public_key_file = optarg; break;
-            case 11: recipient_mlkem_pubkey_file = optarg; break;
-            case 12: recipient_ecdh_pubkey_file = optarg; break;
-            case 13: recipient_mlkem_privkey_file = optarg; break;
-            case 14: recipient_ecdh_privkey_file = optarg; break;
-            case 15: signature_file = optarg; break;
-            case 16: signing_private_key_file = optarg; break;
-            case 17: signing_public_key_file = optarg; break;
-            case 18: digest_algo = optarg; break;
-            default:
-                display_usage();
-                if (default_prov) OSSL_PROVIDER_unload(default_prov);
-                return 1;
+            case 'm': options["mode"] = optarg; break;
+            case 'e': flags["gen_enc_key"] = true; break;
+            case 'g': flags["gen_sign_key"] = true; break;
+            case 'p': {
+                std::lock_guard<std::mutex> lock(passphrase_mutex);
+                global_passphrase_for_pem_cb = optarg;
+            } break;
+            case 'c': flags["encrypt"] = true; break;
+            case 'r': options["recipient-pubkey"] = optarg; break;
+            case 'd': flags["decrypt"] = true; break;
+            case 'u': options["user-privkey"] = optarg; break;
+            case 'o': options["output-file"] = optarg; break;
+            case 'n': flags["sign"] = true; break;
+            case 'i': options["signing-privkey"] = optarg; break;
+            case 't': options["signature-file"] = optarg; break;
+            case 'a': options["digest-algo"] = optarg; break;
+            case 'v': flags["verify"] = true; break;
+            case 'b': options["signing-pubkey"] = optarg; break;
+            case 'k': options["key-dir"] = optarg; break;
+            case 'h': display_usage(); return 0;
+            // Handle new hybrid options
+            case RECIPIENT_MLKEM_PUBKEY_OPT: options["recipient-mlkem-pubkey"] = optarg; break;
+            case RECIPIENT_ECDH_PUBKEY_OPT: options["recipient-ecdh-pubkey"] = optarg; break;
+            case RECIPIENT_MLKEM_PRIVKEY_OPT: options["recipient-mlkem-privkey"] = optarg; break;
+            case RECIPIENT_ECDH_PRIVKEY_OPT: options["recipient-ecdh-privkey"] = optarg; break;
+            default: display_usage(); return 1;
         }
     }
 
-    while (optind < argc) {
-        non_option_args.push_back(argv[optind++]);
+    for (int i = optind; i < argc; ++i) {
+        non_option_args.push_back(argv[i]);
     }
 
-    std::unique_ptr<nkCryptoToolBase> crypto_handler; // unique_ptr for local ownership
-    if (mode_str == "ecc") {
+    std::unique_ptr<nkCryptoToolBase> crypto_handler;
+    if (options["mode"] == "ecc") {
         crypto_handler = std::make_unique<nkCryptoToolECC>();
-    } else if (mode_str == "pqc" || mode_str == "hybrid") {
+    } else if (options["mode"] == "pqc" || options["mode"] == "hybrid") {
+        // PQC handler implements both PQC and Hybrid methods
         crypto_handler = std::make_unique<nkCryptoToolPQC>();
+        if (options["mode"] == "pqc") {
+            options["digest-algo"] = "SHA3-256";
+        }
     } else {
-        std::cerr << "Error: Invalid or unsupported mode specified. Currently 'ecc', 'pqc', and 'hybrid' are supported." << std::endl;
+        std::cerr << "Error: Invalid mode specified. Choose 'ecc', 'pqc', or 'hybrid'." << std::endl;
         display_usage();
-        if (default_prov) OSSL_PROVIDER_unload(default_prov);
         return 1;
     }
 
-    if (!key_dir.empty()) {
-        nkCryptoToolBase::setKeyBaseDirectory(key_dir);
+    if (options.count("key-dir")) {
+        crypto_handler->setKeyBaseDirectory(options["key-dir"]);
     }
-    
-    // --- 同期的なタスク実行ロジック ---
-    // 非同期関連の post_task ラムダを削除し、直接同期呼び出しを行う
 
-    if (gen_enc_key_mode || gen_sign_key_mode) {
-        std::string effective_passphrase = passphrase_arg_str;
-        if (effective_passphrase.empty()) {
-            effective_passphrase = prompt_for_passphrase("Enter Passphrase (for new key): ");
-        }
-        
-        // Set global passphrase for the task
-        {
-           std::lock_guard<std::mutex> lock(passphrase_mutex);
-           global_passphrase_for_pem_cb = effective_passphrase;
-        }
+    asio::io_context io_context;
 
-
-        if (gen_enc_key_mode) {
-            std::cout << "Generating encryption key pair..." << std::endl;
-            bool success = false;
-            if (mode_str == "hybrid") {
-                // ハイブリッドモードの場合、ML-KEMとECDH両方の鍵を生成
-                nkCryptoToolPQC pqc_generator; 
-                success = pqc_generator.generateEncryptionKeyPair(
-                    std::filesystem::path(key_dir) / "public_enc_hybrid_mlkem.key",
-                    std::filesystem::path(key_dir) / "private_enc_hybrid_mlkem.key",
-                    effective_passphrase 
-                );
-                if (success) {
-                    std::cout << "ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
-                } else {
-                    std::cerr << "Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
-                }
-
-                nkCryptoToolECC ecc_generator; 
-                bool ecc_success = ecc_generator.generateEncryptionKeyPair(
-                    std::filesystem::path(key_dir) / "public_enc_hybrid_ecdh.key",
-                    std::filesystem::path(key_dir) / "private_enc_hybrid_ecdh.key",
-                    effective_passphrase
-                );
-                if (ecc_success) {
-                    std::cout << "ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
-                } else {
-                    std::cerr << "Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
-                    success = false; // ML-KEMが成功してもECDHが失敗したら全体を失敗とみなす
-                }
-                success = success && ecc_success; // 両方成功した場合のみ全体成功
-            } else {
-                success = crypto_handler->generateEncryptionKeyPair(
-                    crypto_handler->getEncryptionPublicKeyPath(),
-                    crypto_handler->getEncryptionPrivateKeyPath(),
-                    effective_passphrase);
-            }
-            if (success) {
-                std::cout << "Encryption key pair generation completed." << std::endl;
-            } else {
-                std::cerr << "Error: Failed to generate encryption key pair." << std::endl;
-            }
-        } else if (gen_sign_key_mode) {
-            std::cout << "Generating signing key pair..." << std::endl;
-            bool success = crypto_handler->generateSigningKeyPair(
-                crypto_handler->getSigningPublicKeyPath(),
-                crypto_handler->getSigningPrivateKeyPath(),
-                effective_passphrase);
-            if (success) {
-                std::cout << "Signing key pair generated successfully." << std::endl;
-            } else {
-                std::cerr << "Error: Failed to generate signing key pair." << std::endl;
-            }
-        }
-    } else if (encrypt_mode) {
-        if (output_file.empty() || non_option_args.size() != 1) {
-            std::cerr << "Error: Encryption mode requires -o (output file) and exactly one input file." << std::endl;
-            display_usage();
-        } else {
-            input_file = non_option_args[0];
-            { // Clear global passphrase for operations that don't need it for key loading (like encryption with public key)
-                std::lock_guard<std::mutex> lock(passphrase_mutex);
-                global_passphrase_for_pem_cb = "";
-            }
-
-            std::cout << "Encrypting file " << input_file << " to " << output_file << "..." << std::endl;
-            bool success = false;
-            if (mode_str == "pqc") {
-                 if (recipient_public_key_file.empty()) {
-                    std::cerr << "Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
-                    return 1; // Exit program on error
-                }
-                success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
-            } else if (mode_str == "hybrid") {
-                 if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
-                    std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
-                    return 1; 
-                }
-                success = crypto_handler->encryptFileHybrid(input_file, output_file,
-                                                            recipient_mlkem_pubkey_file,
-                                                            recipient_ecdh_pubkey_file);
-            } else if (mode_str == "ecc") { // Assuming ECC encryptFile takes recipient_public_key_file
-                 if (recipient_public_key_file.empty()) { // Adjust if ECC uses different param
-                    std::cerr << "Error: ECC encryption mode requires --recipient-pubkey (or equivalent)." << std::endl;
-                    return 1;
-                }
-                success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
-            }
-            else {
-                std::cerr << "Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
-            }
-
-            if (success) {
-                std::cout << "File encrypted successfully to " << output_file << std::endl;
-            } else {
-                std::cerr << "Error: File encryption failed." << std::endl;
-                return 1; // Exit program on error
-            }
-        }
-    } else if (decrypt_mode) {
-         if (output_file.empty() || non_option_args.size() != 1) {
-            std::cerr << "Error: Decryption mode requires -o (output file) and exactly one input file." << std::endl;
-            display_usage();
-        } else {
-            input_file = non_option_args[0];
-            std::string effective_passphrase = passphrase_arg_str;
-            if (effective_passphrase.empty()) {
-                 effective_passphrase = prompt_for_passphrase("Enter Passphrase for your private key: ");
-            }
+    if (flags["gen_enc_key"]) {
+        if (options["mode"] == "hybrid") {
+            std::cout << "Generating hybrid encryption key pairs (PQC and ECC)..." << std::endl;
+            auto pqc_gen_handler = std::make_unique<nkCryptoToolPQC>();
+            auto ecc_gen_handler = std::make_unique<nkCryptoToolECC>();
             
-            std::cout << "Decrypting file " << input_file << " to " << output_file << "..." << std::endl;
-            {
-                std::lock_guard<std::mutex> lock(passphrase_mutex);
-                global_passphrase_for_pem_cb = effective_passphrase;
+            std::filesystem::path key_dir = "keys";
+            if (options.count("key-dir")) {
+                key_dir = options["key-dir"];
             }
-            bool success = false;
-             if (mode_str == "pqc") {
-                if (user_private_key_file.empty() || sender_public_key_file.empty()) { 
-                    std::cerr << "Error: PQC decryption mode requires --user-privkey. --sender-pubkey might be for other schemes." << std::endl;
-                    return 1;
-                }
-                success = crypto_handler->decryptFile(input_file, output_file,
-                                                      user_private_key_file, sender_public_key_file);
-            } else if (mode_str == "hybrid") {
-                 if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
-                    std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
-                    return 1;
-                }
-                success = crypto_handler->decryptFileHybrid(input_file, output_file,
-                                                            recipient_mlkem_privkey_file,
-                                                            recipient_ecdh_privkey_file);
-            } else if (mode_str == "ecc") {
-                if (user_private_key_file.empty() || sender_public_key_file.empty()) {
-                     std::cerr << "Error: ECC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
-                    return 1;
-                }
-                success = crypto_handler->decryptFile(input_file, output_file, user_private_key_file, sender_public_key_file);
-            }
-            else {
-                std::cerr << "Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
-            }
-            if (success) {
-                std::cout << "File decrypted successfully to " << output_file << std::endl;
+            // Set the base directory for both handlers
+            pqc_gen_handler->setKeyBaseDirectory(key_dir);
+            ecc_gen_handler->setKeyBaseDirectory(key_dir);
+
+            // Define explicit paths for hybrid keys
+            auto mlkem_pub_path = key_dir / "public_enc_hybrid_mlkem.key";
+            auto mlkem_priv_path = key_dir / "private_enc_hybrid_mlkem.key";
+            auto ecdh_pub_path = key_dir / "public_enc_hybrid_ecdh.key";
+            auto ecdh_priv_path = key_dir / "private_enc_hybrid_ecdh.key";
+            
+            bool pqc_success = pqc_gen_handler->generateEncryptionKeyPair(
+                mlkem_pub_path,
+                mlkem_priv_path,
+                global_passphrase_for_pem_cb
+            );
+            if (pqc_success) {
+                std::cout << "PQC keys generated successfully: " << mlkem_pub_path << " and " << mlkem_priv_path << std::endl;
             } else {
-                std::cerr << "Error: File decryption failed." << std::endl;
-                return 1;
+                std::cerr << "Error: PQC encryption key generation failed." << std::endl; return 1;
+            }
+
+            bool ecc_success = ecc_gen_handler->generateEncryptionKeyPair(
+                ecdh_pub_path,
+                ecdh_priv_path,
+                global_passphrase_for_pem_cb
+            );
+            if (ecc_success) {
+                std::cout << "ECC keys generated successfully: " << ecdh_pub_path << " and " << ecdh_priv_path << std::endl;
+            } else {
+                std::cerr << "Error: ECC encryption key generation failed." << std::endl; return 1;
+            }
+        } else {
+            std::cout << "Generating encryption key pair for mode '" << options["mode"] << "'..." << std::endl;
+            bool success = crypto_handler->generateEncryptionKeyPair(
+                crypto_handler->getEncryptionPublicKeyPath(),
+                crypto_handler->getEncryptionPrivateKeyPath(),
+                global_passphrase_for_pem_cb
+            );
+            if (success) {
+                std::cout << "Encryption keys generated successfully: " 
+                          << crypto_handler->getEncryptionPublicKeyPath() << " and "
+                          << crypto_handler->getEncryptionPrivateKeyPath() << std::endl;
+            } else {
+                std::cerr << "Error: Encryption key generation failed." << std::endl; return 1;
             }
         }
-    } else if (sign_mode) {
-        if (signing_private_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
+    } else if (flags["gen_sign_key"]) {
+        // Signing is not hybrid
+         if (options["mode"] == "hybrid") {
+            std::cerr << "Error: Key generation for signing is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl;
+            return 1;
+        }
+        std::cout << "Generating signing key pair for mode '" << options["mode"] << "'..." << std::endl;
+        bool success = crypto_handler->generateSigningKeyPair(
+            crypto_handler->getSigningPublicKeyPath(),
+            crypto_handler->getSigningPrivateKeyPath(),
+            global_passphrase_for_pem_cb
+        );
+        if (success) {
+            std::cout << "Signing keys generated successfully." << std::endl;
+        } else {
+            std::cerr << "Error: Signing key generation failed." << std::endl; return 1;
+        }
+    } else if (flags["encrypt"]) {
+        if (options["mode"] == "hybrid") {
+            if (!options.count("recipient-mlkem-pubkey") || !options.count("recipient-ecdh-pubkey") || !options.count("output-file") || non_option_args.size() != 1) {
+                 std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey, --recipient-ecdh-pubkey, -o, and an input file." << std::endl;
+                 display_usage(); return 1;
+            }
+            crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"],
+                 [](std::error_code ec) { if (ec) std::cerr << "Error: Hybrid encryption failed: " << ec.message() << std::endl; });
+            io_context.run();
+        } else {
+            if (!options.count("recipient-pubkey") || !options.count("output-file") || non_option_args.size() != 1) {
+                std::cerr << "Error: Encryption mode requires --recipient-pubkey, -o, and exactly one input file." << std::endl;
+                display_usage(); return 1;
+            }
+            crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"],
+                [](std::error_code ec) { if (ec) std::cerr << "Error: Encryption failed: " << ec.message() << std::endl; });
+            io_context.run();
+        }
+    } else if (flags["decrypt"]) {
+        if (options["mode"] == "hybrid") {
+            if (!options.count("recipient-mlkem-privkey") || !options.count("recipient-ecdh-privkey") || !options.count("output-file") || non_option_args.size() != 1) {
+                std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey, --recipient-ecdh-privkey, -o, and an input file." << std::endl;
+                display_usage(); return 1;
+            }
+            crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"],
+                [](std::error_code ec) { if (ec) std::cerr << "Error: Hybrid decryption failed: " << ec.message() << std::endl; });
+            io_context.run();
+        } else {
+            if (!options.count("user-privkey") || !options.count("output-file") || non_option_args.size() != 1) {
+                std::cerr << "Error: Decryption mode requires --user-privkey, -o, and exactly one input file." << std::endl;
+                display_usage(); return 1;
+            }
+            crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "",
+                [](std::error_code ec) { if (ec) std::cerr << "Error: Decryption failed: " << ec.message() << std::endl; });
+            io_context.run();
+        }
+    } else if (flags["sign"]) {
+        if (options["mode"] == "hybrid") {
+            std::cerr << "Error: Signing is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return 1;
+        }
+        if (!options.count("signing-privkey") || !options.count("signature-file") || non_option_args.size() != 1) {
             std::cerr << "Error: Signing mode requires --signing-privkey, --signature, and exactly one input file." << std::endl;
-            display_usage();
-        } else {
-            input_file = non_option_args[0];
-            std::string effective_passphrase = passphrase_arg_str;
-            if (effective_passphrase.empty()) {
-                 effective_passphrase = prompt_for_passphrase("Enter Passphrase for your signing private key: ");
-            }
-            std::cout << "Signing file " << input_file << "..." << std::endl;
-             {
-                std::lock_guard<std::mutex> lock(passphrase_mutex);
-                global_passphrase_for_pem_cb = effective_passphrase;
-            }
-            bool success = crypto_handler->signFile(input_file, signature_file,
-                                  signing_private_key_file, digest_algo);
-            if (success) {
-                std::cout << "File signed successfully. Signature saved to " << signature_file << std::endl;
-            } else {
-                std::cerr << "Error: File signing failed." << std::endl;
-                return 1;
-            }
+            display_usage(); return 1;
         }
-    } else if (verify_mode) {
-        if (signing_public_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
-            std::cerr << "Error: Verification mode requires --signing-pubkey, --signature, and exactly one input file." << std::endl;
-            display_usage();
-        } else {
-            input_file = non_option_args[0];
-            {
-                std::lock_guard<std::mutex> lock(passphrase_mutex);
-                global_passphrase_for_pem_cb = ""; // Verification uses public key, no passphrase needed for key itself
-            }
-            std::cout << "Verifying signature for file " << input_file << "..." << std::endl;
-            bool success = crypto_handler->verifySignature(input_file, signature_file,
-                                         signing_public_key_file);
-            if (success) {
-                std::cout << "Signature verified successfully." << std::endl;
-            } else {
-                std::cerr << "Error: Verification failed." << std::endl;
-                return 1;
-            }
+        bool success = crypto_handler->signFile(non_option_args[0], options["signature-file"], options["signing-privkey"], options["digest-algo"]);
+        if (success) { std::cout << "File signed successfully." << std::endl; } 
+        else { std::cerr << "Error: Signing failed." << std::endl; return 1; }
+    } else if (flags["verify"]) {
+        if (options["mode"] == "hybrid") {
+            std::cerr << "Error: Verification is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return 1;
         }
+        if (!options.count("signing-pubkey") || !options.count("signature-file") || non_option_args.size() != 1) {
+            std::cerr << "Error: Verification requires --signing-pubkey, --signature, and one input file." << std::endl;
+            display_usage(); return 1;
+        }
+        bool success = crypto_handler->verifySignature(non_option_args[0], options["signature-file"], options["signing-pubkey"]);
+        if (success) { std::cout << "Signature verified successfully." << std::endl; } 
+        else { std::cerr << "Error: Verification failed." << std::endl; return 1; }
     } else {
-        if (argc > 1) { // Only show error if some args were given but no valid mode matched
+        if (argc > 1) {
              std::cerr << "Error: No valid operation mode specified or missing arguments." << std::endl;
              display_usage();
              return 1;
-        } else { // No arguments, just show usage
+        } else {
             display_usage();
         }
     }
 
-    // クリーンアップ
     if (default_prov) {
         OSSL_PROVIDER_unload(default_prov);
         std::cout << "OpenSSL provider unloaded." << std::endl;
     }
-    
+
     return 0;
 }

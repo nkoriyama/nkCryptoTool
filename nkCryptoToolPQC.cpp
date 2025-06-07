@@ -6,15 +6,18 @@
 #include <vector>
 #include <memory>
 #include <openssl/pem.h>
-#include <openssl/evp.h> // This header now includes declarations for EVP_KEYMGMT_fetch
+#include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/kdf.h> // For EVP_KDF (HKDF)
 #include <string>
 #include <algorithm>
-#include <openssl/obj_mac.h> // For NID_X9_62_prime256v1
-// #include <openssl/keymgmt.h> // This line should be REMOVED as it's now in evp.h
+#include <openssl/obj_mac.h> // For NID_X9_62_prime256v1 (used in ECDH parts of hybrid)
+#include <stdexcept> // For std::runtime_error
+#include <asio.hpp>
+#include <asio/buffer.hpp>
+#include <asio/stream_file.hpp>
 
 // External callback for PEM passphrase
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
@@ -49,12 +52,6 @@ struct BIO_Deleter {
     void operator()(BIO *b) const { BIO_free_all(b); }
 };
 
-struct OpenSSLFreeDeleter {
-    void operator()(void* p) const {
-        OPENSSL_free(p);
-    }
-};
-
 // OpenSSLエラーを出力するヘルパー関数
 void nkCryptoToolPQC::printOpenSSLErrors() {
     unsigned long err_code;
@@ -77,7 +74,6 @@ EVP_PKEY* nkCryptoToolPQC::loadPublicKey(const std::filesystem::path& public_key
     if (!pub_key) {
         std::cerr << "Error: Could not read public key from file: " << public_key_path << std::endl;
         printOpenSSLErrors();
-        return nullptr;
     }
     return pub_key;
 }
@@ -90,11 +86,10 @@ EVP_PKEY* nkCryptoToolPQC::loadPrivateKey(const std::filesystem::path& private_k
         printOpenSSLErrors();
         return nullptr;
     }
-    EVP_PKEY* priv_key = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, nullptr);
+    EVP_PKEY* priv_key = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, &global_passphrase_for_pem_cb);
     if (!priv_key) {
         std::cerr << "Error: Could not read private key from file: " << private_key_path << std::endl;
         printOpenSSLErrors();
-        return nullptr;
     }
     return priv_key;
 }
@@ -143,1098 +138,432 @@ std::vector<unsigned char> nkCryptoToolPQC::hkdfDerive(const std::vector<unsigne
     return derived_key;
 }
 
-// AES-GCM暗号化のヘルパー関数
-bool nkCryptoToolPQC::aesGcmEncrypt(const std::vector<unsigned char>& plaintext,
-                                const std::vector<unsigned char>& key,
-                                const std::vector<unsigned char>& iv,
-                                std::vector<unsigned char>& ciphertext,
-                                std::vector<unsigned char>& tag) {
-    if (key.size() != 32) { // AES-256鍵サイズ
-        std::cerr << "Error: Invalid key size for AES-GCM encryption." << std::endl;
-        return false;
-    }
-    if (iv.size() != 12) { // GCM推奨IVサイズ
-        std::cerr << "Error: Invalid IV size for AES-GCM encryption." << std::endl;
-        return false;
-    }
-
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx) {
-        std::cerr << "Error: EVP_CIPHER_CTX_new failed (AES-GCM encrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (1 != EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr)) {
-        std::cerr << "Error: EVP_EncryptInit_ex failed (AES-GCM encrypt init)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (iv.size() != 12) {
-        if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr)) {
-            std::cerr << "Error: EVP_CIPHER_CTX_ctrl (set IV len) failed (AES-GCM encrypt)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-    }
-
-    if (1 != EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), iv.data())) {
-        std::cerr << "Error: EVP_EncryptInit_ex (set key/IV) failed (AES-GCM encrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    ciphertext.resize(plaintext.size() + EVP_CIPHER_CTX_block_size(ctx.get()));
-    int len;
-    if (1 != EVP_EncryptUpdate(ctx.get(), ciphertext.data(), &len, plaintext.data(), static_cast<int>(plaintext.size()))) {
-        std::cerr << "Error: EVP_EncryptUpdate failed (AES-GCM encrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    size_t ciphertext_len = len;
-
-    if (1 != EVP_EncryptFinal_ex(ctx.get(), ciphertext.data() + len, &len)) {
-        std::cerr << "Error: EVP_EncryptFinal_ex failed (AES-GCM encrypt final)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    ciphertext_len += len;
-    ciphertext.resize(ciphertext_len);
-
-    tag.resize(EVP_GCM_TLS_TAG_LEN); // GCM推奨タグサイズ (通常16バイト)
-    if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, (int)tag.size(), tag.data())) {
-        std::cerr << "Error: EVP_CIPHER_CTX_ctrl (get tag) failed (AES-GCM encrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    return true;
-}
-
-// AES-GCM復号化のヘルパー関数
-bool nkCryptoToolPQC::aesGcmDecrypt(const std::vector<unsigned char>& ciphertext,
-                                const std::vector<unsigned char>& key,
-                                const std::vector<unsigned char>& iv,
-                                const std::vector<unsigned char>& tag,
-                                std::vector<unsigned char>& plaintext) {
-    if (key.size() != 32) { // AES-256鍵サイズ
-        std::cerr << "Error: Invalid key size for AES-GCM decryption." << std::endl;
-        return false;
-    }
-    if (iv.size() != 12) { // GCM推奨IVサイズ
-        std::cerr << "Error: Invalid IV size for AES-GCM decryption." << std::endl;
-        return false;
-    }
-    if (tag.size() != EVP_GCM_TLS_TAG_LEN) { // GCM推奨タグサイズ
-        std::cerr << "Error: Invalid tag size for AES-GCM decryption." << std::endl;
-        return false;
-    }
-
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx) {
-        std::cerr << "Error: EVP_CIPHER_CTX_new failed (AES-GCM decrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (1 != EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr)) {
-        std::cerr << "Error: EVP_DecryptInit_ex failed (AES-GCM decrypt init)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (iv.size() != 12) {
-        if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr)) {
-            std::cerr << "Error: EVP_CIPHER_CTX_ctrl (set IV len) failed (AES-GCM decrypt)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-    }
-
-    if (1 != EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), iv.data())) {
-        std::cerr << "Error: EVP_DecryptInit_ex (set key/IV) failed (AES-GCM decrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    plaintext.resize(ciphertext.size());
-    int len;
-    if (1 != EVP_DecryptUpdate(ctx.get(), plaintext.data(), &len, ciphertext.data(), static_cast<int>(ciphertext.size()))) {
-        std::cerr << "Error: EVP_DecryptUpdate failed (AES-GCM decrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    int plaintext_len = len;
-
-    if (1 != EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, (int)tag.size(), (void*)tag.data())) {
-        std::cerr << "Error: EVP_CIPHER_CTX_ctrl (set tag) failed (AES-GCM decrypt)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (1 != EVP_DecryptFinal_ex(ctx.get(), plaintext.data() + len, &len)) {
-        std::cerr << "Error: EVP_DecryptFinal_ex failed or tag mismatch." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    plaintext_len += len;
-    plaintext.resize(plaintext_len);
-
-    return true;
-}
-
-// 暗号化鍵ペアを生成
-bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
-    // 暗号化鍵生成にはML-KEM-1024を使用します。
-    // OpenSSL 3.5はML-KEM-1024をサポートしています。
-    // 'ML-KEM.retain_seed' や 'ML-KEM.prefer_seed' のようなパラメータは、
-    // 鍵のインポート/エクスポート時や、明示的なフォーマット制御を伴う 'openssl genpkey' を使用する際に、
-    // 特定の鍵フォーマット（例：FIPS 203 'dk' フォーマット vs. シードフォーマット）を扱う場合に使用されます。
-    // 直接 EVP_PKEY_keygen を使用する場合、OpenSSL は通常、完全な鍵を生成します。
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
-    if (!pctx) {
-        std::cerr << "Error: EVP_PKEY_CTX_new_from_name failed for ML-KEM-1024." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (EVP_PKEY_keygen_init(pctx.get()) <= 0) {
-        std::cerr << "Error: EVP_PKEY_keygen_init failed for ML-KEM-1024." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    EVP_PKEY* raw_pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) <= 0) {
-        std::cerr << "Error: EVP_PKEY_keygen failed for ML-KEM-1024." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
-
-    // 秘密鍵をファイルに書き込む
-    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) {
-        std::cerr << "Error: Could not open private key file for writing: " << private_key_path << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    if (PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), pkey.get(), EVP_aes_256_cbc(),
-                                      (char*)passphrase.c_str(), (int)passphrase.length(),
-                                      pem_passwd_cb, nullptr) <= 0) {
-        std::cerr << "Error: PEM_write_bio_PKCS8PrivateKey failed (ML-KEM-1024 private key)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    // 公開鍵をファイルに書き込む
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio) {
-        std::cerr << "Error: Could not open public key file for writing: " << public_key_path << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    if (PEM_write_bio_PUBKEY(pub_bio.get(), pkey.get()) <= 0) {
-        std::cerr << "Error: PEM_write_bio_PUBKEY failed (ML-KEM-1024 public key)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    return true;
-}
-
-// 署名鍵ペアを生成
-bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
-    // OpenSSL 3.5でサポートされているML-DSA (Dilithium) のバリアント:
-    // ML-DSA-44 (セキュリティカテゴリ2、128ビット強度)
-    // ML-DSA-65 (セキュリティカテゴリ3、192ビット強度) - ML-DSA-87に対応
-    // ML-DSA-87 (セキュリティカテゴリ5、256ビット強度)
-    // この実装では、デフォルトでML-DSA-87 (ML-DSA-65) を使用します。
-    // 'ml-dsa.retain_seed' や 'ml-dsa.prefer_seed' のようなパラメータは、
-    // 鍵のインポート/エクスポート時や、明示的なフォーマット制御を伴う 'openssl genpkey' を使用する際に、
-    // 特定の鍵フォーマット（例：FIPS 203 'dk' フォーマット vs. シードフォーマット）を扱う場合に使用されます。
-    // 直接 EVP_PKEY_keygen を使用する場合、OpenSSL は通常、完全な鍵を生成します。
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-DSA-87", nullptr));
-    if (!pctx) {
-        std::cerr << "Error: EVP_PKEY_CTX_new_from_name failed for ML-DSA-87." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    if (EVP_PKEY_keygen_init(pctx.get()) <= 0) {
-        std::cerr << "Error: EVP_PKEY_keygen_init failed for ML-DSA-87." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    EVP_PKEY* raw_pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) <= 0) {
-        std::cerr << "Error: EVP_PKEY_keygen failed for ML-DSA-87." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
-
-    // 秘密鍵をファイルに書き込む
-    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) {
-        std::cerr << "Error: Could not open private key file for writing: " << private_key_path << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    if (PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), pkey.get(), EVP_aes_256_cbc(),
-                                      (char*)passphrase.c_str(), (int)passphrase.length(),
-                                      pem_passwd_cb, nullptr) <= 0) {
-        std::cerr << "Error: PEM_write_bio_PKCS8PrivateKey failed (ML-DSA-87 private key)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    // 公開鍵をファイルに書き込む
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio) {
-        std::cerr << "Error: Could not open public key file for writing: " << public_key_path << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-    if (PEM_write_bio_PUBKEY(pub_bio.get(), pkey.get()) <= 0) {
-        std::cerr << "Error: PEM_write_bio_PUBKEY failed (ML-DSA-87 public key)." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-
-    return true;
-}
-
-// ファイルを暗号化
-bool nkCryptoToolPQC::encryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path) {
-    try {
-        std::vector<unsigned char> plaintext = readFile(input_filepath);
-
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_pub_key(loadPublicKey(recipient_public_key_path));
-        if (!recipient_pub_key) {
-            std::cerr << "Error: Failed to load recipient public key." << std::endl;
-            return false;
-        }
-
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new(recipient_pub_key.get(), nullptr));
-        if (!pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // カプセル化のために初期化
-        // 修正: params引数にnullptrを渡す
-        if (1 != EVP_PKEY_encapsulate_init(pctx.get(), nullptr)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate_init failed (KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        size_t enc_key_len; // カプセル化された鍵の長さ (KEMの暗号文)
-        size_t shared_secret_len; // 共有シークレットの長さ (導出された対称鍵)
-
-        // カプセル化された鍵と共有シークレットのバッファ長を決定
-        // EVP_PKEY_encapsulate(EVP_PKEY_CTX *ctx, unsigned char *wrappedkey, size_t *wrappedkeylen, unsigned char *ss, size_t *sslen)
-        // 最初にnullバッファで呼び出して長さを取得
-        if (1 != EVP_PKEY_encapsulate(pctx.get(), nullptr, &enc_key_len, nullptr, &shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate failed to get lengths (KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> enc_key(enc_key_len); // カプセル化された鍵 (KEM暗号文)
-        std::vector<unsigned char> shared_secret(shared_secret_len); // 共有シークレット (対称鍵)
-
-        // カプセル化を実行
-        if (1 != EVP_PKEY_encapsulate(pctx.get(), enc_key.data(), &enc_key_len, shared_secret.data(), &shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate failed (KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // HKDFを使用して共有シークレットからAES鍵とIVを導出
-        std::vector<unsigned char> salt(16); // HKDF用の16バイトのソルト
-        if (RAND_bytes(salt.data(), (int)salt.size()) <= 0) {
-            std::cerr << "Error: RAND_bytes failed to generate salt." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> hkdf_output = hkdfDerive(shared_secret, 32 + 12, // 鍵に32バイト、IVに12バイト
-                                                            std::string(salt.begin(), salt.end()),
-                                                            "aes-gcm-encryption-key-iv", "SHA256");
-        if (hkdf_output.empty()) {
-            std::cerr << "Error: HKDF derivation failed for encryption." << std::endl;
-            return false;
-        }
-
-        std::vector<unsigned char> aes_key(hkdf_output.begin(), hkdf_output.begin() + 32);
-        std::vector<unsigned char> aes_iv(hkdf_output.begin() + 32, hkdf_output.begin() + 32 + 12);
-
-        std::vector<unsigned char> ciphertext;
-        std::vector<unsigned char> tag;
-
-        if (!aesGcmEncrypt(plaintext, aes_key, aes_iv, ciphertext, tag)) {
-            std::cerr << "Error: AES-GCM encryption failed." << std::endl;
-            return false;
-        }
-
-        // 出力データを準備: enc_key_len | enc_key | salt_len | salt | iv_len | iv | tag_len | tag | ciphertext
-        std::vector<unsigned char> encrypted_output_data;
-
-        auto add_len_to_buffer = [](std::vector<unsigned char>& buffer, size_t len) {
-            for (int i = 0; i < 4; ++i) {
-                buffer.push_back(static_cast<unsigned char>((len >> (i * 8)) & 0xFF));
-            }
-        };
-
-        add_len_to_buffer(encrypted_output_data, enc_key.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), enc_key.begin(), enc_key.end());
-
-        add_len_to_buffer(encrypted_output_data, salt.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), salt.begin(), salt.end());
-
-        add_len_to_buffer(encrypted_output_data, aes_iv.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), aes_iv.begin(), aes_iv.end());
-
-        add_len_to_buffer(encrypted_output_data, tag.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), tag.begin(), tag.end());
-
-        encrypted_output_data.insert(encrypted_output_data.end(), ciphertext.begin(), ciphertext.end());
-
-        if (!writeFile(output_filepath, encrypted_output_data)) {
-            std::cerr << "Error: Writing encrypted output file failed." << std::endl;
-            return false;
-        }
-
-        return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error during PQC encryption: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-}
-
-// ファイルをハイブリッド暗号化
-bool nkCryptoToolPQC::encryptFileHybrid(
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_mlkem_public_key_path,
-    const std::filesystem::path& recipient_ecdh_public_key_path) {
-    try {
-        std::vector<unsigned char> plaintext = readFile(input_filepath);
-
-        // 1. ML-KEM鍵カプセル化
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> mlkem_pub_key(loadPublicKey(recipient_mlkem_public_key_path));
-        if (!mlkem_pub_key) {
-            std::cerr << "Error: Failed to load recipient ML-KEM public key." << std::endl;
-            return false;
-        }
-
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> mlkem_pctx(EVP_PKEY_CTX_new(mlkem_pub_key.get(), nullptr));
-        if (!mlkem_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (ML-KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        if (1 != EVP_PKEY_encapsulate_init(mlkem_pctx.get(), nullptr)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate_init failed (ML-KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        size_t mlkem_enc_key_len;
-        size_t mlkem_shared_secret_len;
-        if (1 != EVP_PKEY_encapsulate(mlkem_pctx.get(), nullptr, &mlkem_enc_key_len, nullptr, &mlkem_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate failed to get lengths (ML-KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> mlkem_enc_key(mlkem_enc_key_len);
-        std::vector<unsigned char> mlkem_shared_secret(mlkem_shared_secret_len);
-        if (1 != EVP_PKEY_encapsulate(mlkem_pctx.get(), mlkem_enc_key.data(), &mlkem_enc_key_len, mlkem_shared_secret.data(), &mlkem_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_encapsulate failed (ML-KEM encapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // 2. ECDH鍵共有
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ecdh_pub_key(loadPublicKey(recipient_ecdh_public_key_path));
-        if (!ecdh_pub_key) {
-            std::cerr << "Error: Failed to load recipient ECDH public key." << std::endl;
-            return false;
-        }
-
-        // 送信者側で一時的なECDH鍵ペアを生成
-        // EVP_KEYMGMT_fetch を使用してEC鍵管理アルゴリズムを明示的にフェッチ (これは不要、EVP_PKEY_CTX_new_idで十分)
-        // std::unique_ptr<EVP_KEYMGMT, decltype(&EVP_KEYMGMT_free)> ec_keymgmt(EVP_KEYMGMT_fetch(NULL, "EC", NULL), &EVP_KEYMGMT_free);
-        // if (!ec_keymgmt) {
-        //     std::cerr << "Error: EVP_KEYMGMT_fetch failed for EC (ECDH key gen). Check OpenSSL providers." << std::endl;
-        //     printOpenSSLErrors();
-        //     return false;
-        // }
-
-        // フェッチした鍵管理アルゴリズムを使って EVP_PKEY_CTX を作成
-        // std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_from_pkey_mgmt(ec_keymgmt.get(), NULL));
-        // 修正: EVP_PKEY_CTX_new_id を使用し、NIDを設定する方式に戻す
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr));
-        if (!ecdh_gen_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new_id failed for EVP_PKEY_EC (ECDH key gen)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        if (EVP_PKEY_keygen_init(ecdh_gen_pctx.get()) <= 0) {
-            std::cerr << "Error: EVP_PKEY_keygen_init failed (ECDH key gen)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        // ここで曲線を明示的に設定
-        if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ecdh_gen_pctx.get(), NID_X9_62_prime256v1) <= 0) {
-            std::cerr << "Error: EVP_PKEY_CTX_set_ec_paramgen_curve_nid failed for prime256v1 (ECDH key gen)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        EVP_PKEY* raw_sender_ecdh_priv_key = nullptr;
-        if (EVP_PKEY_keygen(ecdh_gen_pctx.get(), &raw_sender_ecdh_priv_key) <= 0) {
-            std::cerr << "Error: EVP_PKEY_keygen failed (ECDH key gen)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sender_ecdh_priv_key(raw_sender_ecdh_priv_key);
-
-        // 送信者の公開鍵を抽出
-        std::unique_ptr<BIO, BIO_Deleter> sender_ecdh_pub_bio(BIO_new(BIO_s_mem()));
-        if (!sender_ecdh_pub_bio || PEM_write_bio_PUBKEY(sender_ecdh_pub_bio.get(), sender_ecdh_priv_key.get()) <= 0) {
-            std::cerr << "Error: Failed to write sender ECDH public key to BIO." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        BUF_MEM *bptr;
-        BIO_get_mem_ptr(sender_ecdh_pub_bio.get(), &bptr);
-        std::vector<unsigned char> sender_ecdh_pub_key_bytes(bptr->data, bptr->data + bptr->length);
-
-        // ECDH共有シークレットを導出
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_derive_pctx(EVP_PKEY_CTX_new(sender_ecdh_priv_key.get(), nullptr));
-        if (!ecdh_derive_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        if (1 != EVP_PKEY_derive_init(ecdh_derive_pctx.get())) {
-            std::cerr << "Error: EVP_PKEY_derive_init failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        if (1 != EVP_PKEY_derive_set_peer(ecdh_derive_pctx.get(), ecdh_pub_key.get())) {
-            std::cerr << "Error: EVP_PKEY_derive_set_peer failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        size_t ecdh_shared_secret_len;
-        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), nullptr, &ecdh_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_derive failed to get length (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        std::vector<unsigned char> ecdh_shared_secret(ecdh_shared_secret_len);
-        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), ecdh_shared_secret.data(), &ecdh_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_derive failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // 3. 共通鍵の導出 (ML-KEMとECDHの共有シークレットを連結)
-        std::vector<unsigned char> combined_secret;
-        combined_secret.insert(combined_secret.end(), mlkem_shared_secret.begin(), mlkem_shared_secret.end());
-        combined_secret.insert(combined_secret.end(), ecdh_shared_secret.begin(), ecdh_shared_secret.end());
-
-        std::vector<unsigned char> salt(16); // HKDF用の16バイトのソルト
-        if (RAND_bytes(salt.data(), (int)salt.size()) <= 0) {
-            std::cerr << "Error: RAND_bytes failed to generate salt." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> hkdf_output = hkdfDerive(combined_secret, 32 + 12, // 鍵に32バイト、IVに12バイト
-                                                            std::string(salt.begin(), salt.end()),
-                                                            "hybrid-encryption-key-iv", "SHA256");
-        if (hkdf_output.empty()) {
-            std::cerr << "Error: HKDF derivation failed for hybrid encryption." << std::endl;
-            return false;
-        }
-
-        std::vector<unsigned char> aes_key(hkdf_output.begin(), hkdf_output.begin() + 32);
-        std::vector<unsigned char> aes_iv(hkdf_output.begin() + 32, hkdf_output.begin() + 32 + 12);
-
-        std::vector<unsigned char> ciphertext;
-        std::vector<unsigned char> tag;
-
-        if (!aesGcmEncrypt(plaintext, aes_key, aes_iv, ciphertext, tag)) {
-            std::cerr << "Error: AES-GCM encryption failed for hybrid encryption." << std::endl;
-            return false;
-        }
-
-        // 出力データを準備: mlkem_enc_key_len | mlkem_enc_key | sender_ecdh_pub_key_len | sender_ecdh_pub_key | salt_len | salt | iv_len | iv | tag_len | tag | ciphertext
-        std::vector<unsigned char> encrypted_output_data;
-
-        auto add_len_to_buffer = [](std::vector<unsigned char>& buffer, size_t len) {
-            for (int i = 0; i < 4; ++i) {
-                buffer.push_back(static_cast<unsigned char>((len >> (i * 8)) & 0xFF));
-            }
-        };
-
-        add_len_to_buffer(encrypted_output_data, mlkem_enc_key.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), mlkem_enc_key.begin(), mlkem_enc_key.end());
-
-        add_len_to_buffer(encrypted_output_data, sender_ecdh_pub_key_bytes.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), sender_ecdh_pub_key_bytes.begin(), sender_ecdh_pub_key_bytes.end());
-
-        add_len_to_buffer(encrypted_output_data, salt.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), salt.begin(), salt.end());
-
-        add_len_to_buffer(encrypted_output_data, aes_iv.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), aes_iv.begin(), aes_iv.end());
-
-        add_len_to_buffer(encrypted_output_data, tag.size());
-        encrypted_output_data.insert(encrypted_output_data.end(), tag.begin(), tag.end());
-
-        encrypted_output_data.insert(encrypted_output_data.end(), ciphertext.begin(), ciphertext.end());
-
-        if (!writeFile(output_filepath, encrypted_output_data)) {
-            std::cerr << "Error: Writing encrypted output file failed for hybrid encryption." << std::endl;
-            return false;
-        }
-
-        return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error during PQC hybrid encryption: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-}
-
-// ファイルを復号化 (PQC単独の復号化)
-bool nkCryptoToolPQC::decryptFile(const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path& sender_public_key_path) {
-    try {
-        std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
-
-        size_t offset = 0;
-        auto get_len_from_buffer = [](const std::vector<unsigned char>& buffer, size_t& current_offset) {
-            size_t len = 0;
-            if (current_offset + 4 > buffer.size()) {
-                throw std::runtime_error("Buffer too short to read length.");
-            }
-            for (int i = 0; i < 4; ++i) {
-                len |= (static_cast<size_t>(buffer[current_offset++]) << (i * 8));
-            }
-            return len;
-        };
-
-        size_t enc_key_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + enc_key_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Encapsulated key data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> enc_key(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + enc_key_len);
-        offset += enc_key_len;
-
-        size_t salt_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + salt_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Salt data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> salt(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + salt_len);
-        offset += salt_len;
-
-        size_t iv_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + iv_len > encrypted_input_data.size()) {
-            std::cerr << "Error: IV data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> aes_iv(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + iv_len);
-        offset += iv_len;
-
-        size_t tag_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + tag_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Tag data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> tag(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + tag_len);
-        offset += tag_len;
-
-        std::vector<unsigned char> ciphertext(encrypted_input_data.begin() + offset, encrypted_input_data.end());
-
-        // ML-KEM鍵デカプセル化
-        // 修正: user_private_key_path を使用する
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> priv_key(loadPrivateKey(user_private_key_path));
-        if (!priv_key) {
-            std::cerr << "Error: Failed to load user private key for PQC decryption." << std::endl;
-            return false;
-        }
-
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new(priv_key.get(), nullptr));
-        if (!pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        if (1 != EVP_PKEY_decapsulate_init(pctx.get(), nullptr)) {
-            std::cerr << "Error: EVP_PKEY_decapsulate_init failed (KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        size_t shared_secret_len;
-        // 修正: enc_key を使用する
-        if (1 != EVP_PKEY_decapsulate(pctx.get(), nullptr, &shared_secret_len, enc_key.data(), enc_key.size())) {
-            std::cerr << "Error: EVP_PKEY_decapsulate failed to get length (KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> shared_secret(shared_secret_len);
-        // 修正: enc_key を使用する
-        if (1 != EVP_PKEY_decapsulate(pctx.get(), shared_secret.data(), &shared_secret_len, enc_key.data(), enc_key.size())) {
-            std::cerr << "Error: EVP_PKEY_decapsulate failed (KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // HKDFを使用してAES鍵とIVを導出
-        std::string salt_str(salt.begin(), salt.end());
-        std::vector<unsigned char> hkdf_output = hkdfDerive(shared_secret, 32 + 12,
-                                                            salt_str,
-                                                            "aes-gcm-encryption-key-iv", "SHA256");
-        if (hkdf_output.empty()) {
-            std::cerr << "Error: HKDF derivation failed for decryption." << std::endl;
-            return false;
-        }
-
-        std::vector<unsigned char> aes_key(hkdf_output.begin(), hkdf_output.begin() + 32);
-        std::vector<unsigned char> aes_iv_derived(hkdf_output.begin() + 32, hkdf_output.begin() + 32 + 12);
-
-        if (aes_iv_derived != aes_iv) {
-            std::cerr << "Warning: Derived IV does not match stored IV. Decryption might fail." << std::endl;
-        }
-
-        std::vector<unsigned char> plaintext;
-        if (!aesGcmDecrypt(ciphertext, aes_key, aes_iv, tag, plaintext)) {
-            std::cerr << "Error: AES-GCM decryption failed." << std::endl;
-            return false;
-        }
-
-        if (!writeFile(output_filepath, plaintext)) {
-            std::cerr << "Error: Writing decrypted output file failed at writeFile step." << std::endl;
-            return false;
-        }
-
-        return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error during PQC decryption: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-}
-
-// ファイルをハイブリッド復号化
-bool nkCryptoToolPQC::decryptFileHybrid(
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_mlkem_private_key_path,
-    const std::filesystem::path& recipient_ecdh_private_key_path) {
-    try {
-        std::vector<unsigned char> encrypted_input_data = readFile(input_filepath);
-
-        size_t offset = 0;
-        auto get_len_from_buffer = [](const std::vector<unsigned char>& buffer, size_t& current_offset) {
-            size_t len = 0;
-            if (current_offset + 4 > buffer.size()) {
-                throw std::runtime_error("Buffer too short to read length.");
-            }
-            for (int i = 0; i < 4; ++i) {
-                len |= (static_cast<size_t>(buffer[current_offset++]) << (i * 8));
-            }
-            return len;
-        };
-
-        // mlkem_enc_key_len | mlkem_enc_key
-        size_t mlkem_enc_key_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + mlkem_enc_key_len > encrypted_input_data.size()) {
-            std::cerr << "Error: ML-KEM encapsulated key data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> mlkem_enc_key(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + mlkem_enc_key_len);
-        offset += mlkem_enc_key_len;
-
-        // sender_ecdh_pub_key_len | sender_ecdh_pub_key
-        size_t sender_ecdh_pub_key_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + sender_ecdh_pub_key_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Sender ECDH public key data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> sender_ecdh_pub_key_bytes(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + sender_ecdh_pub_key_len);
-        offset += sender_ecdh_pub_key_len;
-
-        // salt_len | salt
-        size_t salt_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + salt_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Salt data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> salt(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + salt_len);
-        offset += salt_len;
-
-        // iv_len | iv
-        size_t iv_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + iv_len > encrypted_input_data.size()) {
-            std::cerr << "Error: IV data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> aes_iv(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + iv_len);
-        offset += iv_len;
-
-        // tag_len | tag
-        size_t tag_len = get_len_from_buffer(encrypted_input_data, offset);
-        if (offset + tag_len > encrypted_input_data.size()) {
-            std::cerr << "Error: Tag data out of bounds." << std::endl;
-            return false;
-        }
-        std::vector<unsigned char> tag(encrypted_input_data.begin() + offset, encrypted_input_data.begin() + offset + tag_len);
-        offset += tag_len;
-
-        // ciphertext
-        std::vector<unsigned char> ciphertext(encrypted_input_data.begin() + offset, encrypted_input_data.end());
-
-        // 1. ML-KEM鍵デカプセル化
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> mlkem_priv_key(loadPrivateKey(recipient_mlkem_private_key_path));
-        if (!mlkem_priv_key) {
-            std::cerr << "Error: Failed to load recipient ML-KEM private key." << std::endl;
-            return false;
-        }
-
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> mlkem_pctx(EVP_PKEY_CTX_new(mlkem_priv_key.get(), nullptr));
-        if (!mlkem_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (ML-KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        if (1 != EVP_PKEY_decapsulate_init(mlkem_pctx.get(), nullptr)) {
-            std::cerr << "Error: EVP_PKEY_decapsulate_init failed (ML-KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        size_t mlkem_shared_secret_len;
-        if (1 != EVP_PKEY_decapsulate(mlkem_pctx.get(), nullptr, &mlkem_shared_secret_len, mlkem_enc_key.data(), mlkem_enc_key.size())) {
-            std::cerr << "Error: EVP_PKEY_decapsulate failed to get length (ML-KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::vector<unsigned char> mlkem_shared_secret(mlkem_shared_secret_len);
-        if (1 != EVP_PKEY_decapsulate(mlkem_pctx.get(), mlkem_shared_secret.data(), &mlkem_shared_secret_len, mlkem_enc_key.data(), mlkem_enc_key.size())) {
-            std::cerr << "Error: EVP_PKEY_decapsulate failed (ML-KEM decapsulate)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // 2. ECDH鍵共有
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ecdh_priv_key(loadPrivateKey(recipient_ecdh_private_key_path));
-        if (!ecdh_priv_key) {
-            std::cerr << "Error: Failed to load recipient ECDH private key." << std::endl;
-            return false;
-        }
-
-        std::unique_ptr<BIO, BIO_Deleter> sender_ecdh_pub_bio(BIO_new_mem_buf(sender_ecdh_pub_key_bytes.data(), (int)sender_ecdh_pub_key_bytes.size()));
-        if (!sender_ecdh_pub_bio) {
-            std::cerr << "Error: Failed to create BIO from sender ECDH public key bytes." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sender_ecdh_pub_key(PEM_read_bio_PUBKEY(sender_ecdh_pub_bio.get(), nullptr, nullptr, nullptr));
-        if (!sender_ecdh_pub_key) {
-            std::cerr << "Error: Failed to read sender ECDH public key from bytes." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_derive_pctx(EVP_PKEY_CTX_new(ecdh_priv_key.get(), nullptr));
-        if (!ecdh_derive_pctx) {
-            std::cerr << "Error: EVP_PKEY_CTX_new failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        if (1 != EVP_PKEY_derive_init(ecdh_derive_pctx.get())) {
-            std::cerr << "Error: EVP_PKEY_derive_init failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        if (1 != EVP_PKEY_derive_set_peer(ecdh_derive_pctx.get(), sender_ecdh_pub_key.get())) {
-            std::cerr << "Error: EVP_PKEY_derive_set_peer failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        size_t ecdh_shared_secret_len;
-        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), nullptr, &ecdh_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_derive failed to get length (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-        std::vector<unsigned char> ecdh_shared_secret(ecdh_shared_secret_len);
-        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), ecdh_shared_secret.data(), &ecdh_shared_secret_len)) {
-            std::cerr << "Error: EVP_PKEY_derive failed (ECDH derive)." << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // 3. 共通鍵の導出 (ML-KEMとECDHの共有シークレットを連結)
-        std::vector<unsigned char> combined_secret;
-        combined_secret.insert(combined_secret.end(), mlkem_shared_secret.begin(), mlkem_shared_secret.end());
-        combined_secret.insert(combined_secret.end(), ecdh_shared_secret.begin(), ecdh_shared_secret.end());
-
-        std::string salt_str(salt.begin(), salt.end());
-        std::vector<unsigned char> hkdf_output = hkdfDerive(combined_secret, 32 + 12,
-                                                            salt_str,
-                                                            "hybrid-encryption-key-iv", "SHA256");
-        if (hkdf_output.empty()) {
-            std::cerr << "Error: HKDF derivation failed for hybrid decryption." << std::endl;
-            return false;
-        }
-
-        std::vector<unsigned char> aes_key(hkdf_output.begin(), hkdf_output.begin() + 32);
-        std::vector<unsigned char> aes_iv_derived(hkdf_output.begin() + 32, hkdf_output.begin() + 32 + 12);
-
-        if (aes_iv_derived != aes_iv) {
-            std::cerr << "Warning: Derived IV does not match stored IV. Decryption might fail." << std::endl;
-        }
-
-        std::vector<unsigned char> plaintext;
-        if (!aesGcmDecrypt(ciphertext, aes_key, aes_iv, tag, plaintext)) {
-            std::cerr << "Error: AES-GCM decryption failed for hybrid decryption." << std::endl;
-            return false;
-        }
-
-        if (!writeFile(output_filepath, plaintext)) {
-            std::cerr << "Error: Writing decrypted output file failed at writeFile step." << std::endl;
-            return false;
-        }
-
-        return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error during PQC hybrid decryption: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
-}
-
-// ファイルに署名
-bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, 
-                           const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
-    EVP_PKEY_CTX* sctx = nullptr;
-    EVP_SIGNATURE* sig_alg = nullptr;
-
-    try {
-        // ファイル内容を読み込み
-        std::vector<unsigned char> file_content = readFile(input_filepath);
-
-        // 秘密鍵をロード
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> priv_key(loadPrivateKey(signing_private_key_path));
-        if (!priv_key) {
-            std::cerr << "エラー: 秘密鍵の読み込みに失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // EVP_PKEY_CTX を作成
-        sctx = EVP_PKEY_CTX_new_from_pkey(nullptr, priv_key.get(), nullptr);
-        if (!sctx) {
-            std::cerr << "エラー: EVP_PKEY_CTX_new_from_pkey に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // ML-DSA-87 の署名アルゴリズムをフェッチ
-        sig_alg = EVP_SIGNATURE_fetch(nullptr, "ML-DSA-87", nullptr);
-        if (!sig_alg) {
-            std::cerr << "エラー: EVP_SIGNATURE_fetch（ML-DSA-87）に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_PKEY_CTX_free(sctx);
-            return false;
-        }
-
-        // コンテキスト文字列（オプション）
-        const OSSL_PARAM params[] = {
-            OSSL_PARAM_octet_string("context-string", (unsigned char*)"A context string", 16),
-            OSSL_PARAM_END
-        };
-
-        // 署名プロセスを初期化
-        if (1 != EVP_PKEY_sign_message_init(sctx, sig_alg, params)) {
-            std::cerr << "エラー: EVP_PKEY_sign_message_init に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(sctx);
-            return false;
-        }
-
-        // 署名のサイズを計算
-        size_t sig_len;
-        if (1 != EVP_PKEY_sign(sctx, nullptr, &sig_len, file_content.data(), file_content.size())) {
-            std::cerr << "エラー: 署名の長さ取得に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(sctx);
-            return false;
-        }
-
-        // 署名バッファを確保
-        std::vector<unsigned char> signature(sig_len);
-        if (1 != EVP_PKEY_sign(sctx, signature.data(), &sig_len, file_content.data(), file_content.size())) {
-            std::cerr << "エラー: 署名生成に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(sctx);
-            return false;
-        }
-        signature.resize(sig_len);
-
-        // 署名をファイルに書き込み
-        if (!writeFile(signature_filepath, signature)) {
-            std::cerr << "エラー: 署名ファイルの書き込みに失敗しました。" << std::endl;
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(sctx);
-            return false;
-        }
-
-        // クリーンアップ
-        EVP_SIGNATURE_free(sig_alg);
-        EVP_PKEY_CTX_free(sctx);
-        return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "PQC署名中のエラー: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        if (sig_alg) EVP_SIGNATURE_free(sig_alg);
-        if (sctx) EVP_PKEY_CTX_free(sctx);
-        return false;
-    }
-}
-
-// 署名を検証
-bool nkCryptoToolPQC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
-    EVP_PKEY_CTX* vctx = nullptr;
-    EVP_SIGNATURE* sig_alg = nullptr;
-
-    try {
-        // ファイル内容と署名を読み込み
-        std::vector<unsigned char> file_content = readFile(input_filepath);
-        std::vector<unsigned char> signature = readFile(signature_filepath);
-
-        // 公開鍵をロード
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pub_key(loadPublicKey(signing_public_key_path));
-        if (!pub_key) {
-            std::cerr << "エラー: 公開鍵の読み込みに失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // EVP_PKEY_CTX を作成
-        vctx = EVP_PKEY_CTX_new_from_pkey(nullptr, pub_key.get(), nullptr);
-        if (!vctx) {
-            std::cerr << "エラー: EVP_PKEY_CTX_new_from_pkey に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            return false;
-        }
-
-        // ML-DSA-87 の署名アルゴリズムをフェッチ
-        sig_alg = EVP_SIGNATURE_fetch(nullptr, "ML-DSA-87", nullptr);
-        if (!sig_alg) {
-            std::cerr << "エラー: EVP_SIGNATURE_fetch（ML-DSA-87）に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_PKEY_CTX_free(vctx);
-            return false;
-        }
-
-        // コンテキスト文字列（署名時と同じものを指定）
-        const OSSL_PARAM params[] = {
-            OSSL_PARAM_octet_string("context-string", (unsigned char*)"A context string", 16),
-            OSSL_PARAM_END
-        };
-
-        // 検証プロセスを初期化
-        if (1 != EVP_PKEY_verify_message_init(vctx, sig_alg, params)) {
-            std::cerr << "エラー: EVP_PKEY_verify_message_init に失敗しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(vctx);
-            return false;
-        }
-
-        // 署名の検証
-        int result = EVP_PKEY_verify(vctx, signature.data(), signature.size(), file_content.data(), file_content.size());
-        if (result == 1) {
-            // 署名が有効
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(vctx);
-            return true;
-        } else if (result == 0) {
-            std::cerr << "エラー: 署名検証に失敗しました。署名がファイルまたは公開鍵と一致しません。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(vctx);
-            return false;
-        } else {
-            std::cerr << "エラー: 署名検証中にエラーが発生しました。" << std::endl;
-            printOpenSSLErrors();
-            EVP_SIGNATURE_free(sig_alg);
-            EVP_PKEY_CTX_free(vctx);
-            return false;
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << "PQC署名検証中のエラー: " << e.what() << std::endl;
-        printOpenSSLErrors();
-        if (sig_alg) EVP_SIGNATURE_free(sig_alg);
-        if (vctx) EVP_PKEY_CTX_free(vctx);
-        return false;
-    }
-}
-
-// デフォルトの鍵パスの仮想メソッドを実装
+// Constructor and Destructor
+nkCryptoToolPQC::nkCryptoToolPQC() {}
+nkCryptoToolPQC::~nkCryptoToolPQC() {}
+
+// Implement virtual methods for default key paths
 std::filesystem::path nkCryptoToolPQC::getEncryptionPrivateKeyPath() const {
     return getKeyBaseDirectory() / "private_enc_pqc.key";
 }
-
 std::filesystem::path nkCryptoToolPQC::getSigningPrivateKeyPath() const {
     return getKeyBaseDirectory() / "private_sign_pqc.key";
 }
-
 std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const {
     return getKeyBaseDirectory() / "public_enc_pqc.key";
 }
-
 std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const {
     return getKeyBaseDirectory() / "public_sign_pqc.key";
 }
 
-// コンストラクタとデストラクタ
-nkCryptoToolPQC::nkCryptoToolPQC() {
-    //
+// Key generation methods
+bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) {
+        std::cerr << "Error: Failed to initialize ML-KEM-1024 key generation." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    EVP_PKEY* raw_pkey = nullptr;
+    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) <= 0) {
+        std::cerr << "Error: ML-KEM-1024 key generation failed." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
+    
+    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
+    if (!priv_bio || PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), pkey.get(), EVP_aes_256_cbc(), passphrase.empty() ? nullptr : const_cast<char*>(passphrase.data()), static_cast<int>(passphrase.length()), pem_passwd_cb, nullptr) <= 0) {
+        std::cerr << "Error: Failed to write ML-KEM-1024 private key." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), pkey.get()) <= 0) {
+        std::cerr << "Error: Failed to write ML-KEM-1024 public key." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    return true;
 }
 
-nkCryptoToolPQC::~nkCryptoToolPQC() {
-    //
+bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-DSA-87", nullptr));
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) {
+        std::cerr << "Error: Failed to initialize ML-DSA-87 key generation." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    EVP_PKEY* raw_pkey = nullptr;
+    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) <= 0) {
+        std::cerr << "Error: ML-DSA-87 key generation failed." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(raw_pkey);
+
+    std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
+    if (!priv_bio || PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), pkey.get(), EVP_aes_256_cbc(), passphrase.empty() ? nullptr : const_cast<char*>(passphrase.data()), static_cast<int>(passphrase.length()), pem_passwd_cb, nullptr) <= 0) {
+        std::cerr << "Error: Failed to write ML-DSA-87 private key." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), pkey.get()) <= 0) {
+        std::cerr << "Error: Failed to write ML-DSA-87 public key." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+    return true;
+}
+
+// Asynchronous Encryption Wrappers
+void nkCryptoToolPQC::encryptFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_public_key_path, std::function<void(std::error_code)> completion_handler) {
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_kem_public_key(loadPublicKey(recipient_public_key_path));
+    if (!recipient_kem_public_key) {
+        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
+    }
+    startPQCEncryptionAsync(std::make_shared<EncryptionState>(io_context), input_filepath, output_filepath, recipient_kem_public_key.release(), nullptr);
+}
+
+void nkCryptoToolPQC::encryptFileHybrid(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_mlkem_public_key_path, const std::filesystem::path& recipient_ecdh_public_key_path, std::function<void(std::error_code)> completion_handler) {
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_mlkem_public_key(loadPublicKey(recipient_mlkem_public_key_path));
+    if (!recipient_mlkem_public_key) {
+        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
+    }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_ecdh_public_key(loadPublicKey(recipient_ecdh_public_key_path));
+    if (!recipient_ecdh_public_key) {
+        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
+    }
+    startPQCEncryptionAsync(std::make_shared<EncryptionState>(io_context), input_filepath, output_filepath, recipient_mlkem_public_key.release(), recipient_ecdh_public_key.release());
+}
+
+// Core Encryption Logic
+void nkCryptoToolPQC::startPQCEncryptionAsync(std::shared_ptr<EncryptionState> state, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, EVP_PKEY* recipient_kem_public_key_raw, EVP_PKEY* recipient_ecdh_public_key_raw) {
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_kem_public_key(recipient_kem_public_key_raw);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_ecdh_public_key(recipient_ecdh_public_key_raw);
+    state->completion_handler = [output_filepath](std::error_code ec) {
+        if (!ec) {
+            std::cout << "PQC Encryption to '" << output_filepath.string() << "' completed successfully." << std::endl;
+        } else {
+            std::cerr << "Error: PQC Encryption failed: " << ec.message() << std::endl;
+        }
+    };
+    
+    std::vector<unsigned char> current_shared_secret;
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_pctx(EVP_PKEY_CTX_new(recipient_kem_public_key.get(), nullptr));
+    if (!kem_pctx || 1 != EVP_PKEY_encapsulate_init(kem_pctx.get(), nullptr)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    size_t enc_key_len_kem, shared_secret_len_kem;
+    if (1 != EVP_PKEY_encapsulate(kem_pctx.get(), nullptr, &enc_key_len_kem, nullptr, &shared_secret_len_kem)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    state->kem_ciphertext.resize(enc_key_len_kem);
+    current_shared_secret.resize(shared_secret_len_kem);
+    if (1 != EVP_PKEY_encapsulate(kem_pctx.get(), state->kem_ciphertext.data(), &enc_key_len_kem, current_shared_secret.data(), &shared_secret_len_kem)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    if (recipient_ecdh_public_key) {
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_gen_pctx(EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr));
+        if (!ecdh_gen_pctx || EVP_PKEY_keygen_init(ecdh_gen_pctx.get()) <= 0 || EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ecdh_gen_pctx.get(), NID_X9_62_prime256v1) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        EVP_PKEY* sender_ecdh_priv_key_raw = nullptr;
+        if (EVP_PKEY_keygen(ecdh_gen_pctx.get(), &sender_ecdh_priv_key_raw) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sender_ecdh_priv_key(sender_ecdh_priv_key_raw);
+        std::unique_ptr<BIO, BIO_Deleter> sender_ecdh_pub_bio(BIO_new(BIO_s_mem()));
+        if (!sender_ecdh_pub_bio || PEM_write_bio_PUBKEY(sender_ecdh_pub_bio.get(), sender_ecdh_priv_key.get()) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        BUF_MEM *bptr; BIO_get_mem_ptr(sender_ecdh_pub_bio.get(), &bptr); state->ecdh_sender_pub_key.assign(bptr->data, bptr->data + bptr->length);
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_derive_pctx(EVP_PKEY_CTX_new(sender_ecdh_priv_key.get(), nullptr));
+        if (!ecdh_derive_pctx || 1 != EVP_PKEY_derive_init(ecdh_derive_pctx.get()) || 1 != EVP_PKEY_derive_set_peer(ecdh_derive_pctx.get(), recipient_ecdh_public_key.get())) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        size_t shared_secret_len_ecdh;
+        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), nullptr, &shared_secret_len_ecdh)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        std::vector<unsigned char> shared_secret_ecdh(shared_secret_len_ecdh);
+        if (1 != EVP_PKEY_derive(ecdh_derive_pctx.get(), shared_secret_ecdh.data(), &shared_secret_len_ecdh)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        current_shared_secret.insert(current_shared_secret.end(), shared_secret_ecdh.begin(), shared_secret_ecdh.end());
+    }
+    state->salt.resize(16);
+    state->iv.resize(GCM_IV_LEN);
+    if (RAND_bytes(state->salt.data(), 16) <= 0 || RAND_bytes(state->iv.data(), GCM_IV_LEN) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    std::string info_str = recipient_ecdh_public_key ? "hybrid-encryption-key-iv" : "aes-gcm-encryption-key-iv";
+    state->encryption_key = hkdfDerive(current_shared_secret, 32, std::string(state->salt.begin(), state->salt.end()), info_str, "SHA256");
+    if (state->encryption_key.empty()) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    state->cipher_ctx.reset(EVP_CIPHER_CTX_new());
+    if (!state->cipher_ctx || EVP_EncryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0 || EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, nullptr) <= 0 || EVP_EncryptInit_ex(state->cipher_ctx.get(), nullptr, nullptr, state->encryption_key.data(), state->iv.data()) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    
+    asio::error_code ec;
+    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { state->completion_handler(ec); return; }
+    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if (ec) { state->completion_handler(ec); return; }
+    
+    auto add_len_and_data = [](std::vector<asio::const_buffer>& bufs, const std::vector<unsigned char>& data, std::shared_ptr<uint32_t> len_ptr) { *len_ptr = static_cast<uint32_t>(data.size()); bufs.push_back(asio::buffer(len_ptr.get(), sizeof(uint32_t))); bufs.push_back(asio::buffer(data)); };
+    std::vector<asio::const_buffer> header_bufs;
+    auto k_len = std::make_shared<uint32_t>(); add_len_and_data(header_bufs, state->kem_ciphertext, k_len);
+    auto e_len = std::make_shared<uint32_t>(); if(recipient_ecdh_public_key) add_len_and_data(header_bufs, state->ecdh_sender_pub_key, e_len);
+    auto s_len = std::make_shared<uint32_t>(); add_len_and_data(header_bufs, state->salt, s_len);
+    auto i_len = std::make_shared<uint32_t>(); add_len_and_data(header_bufs, state->iv, i_len);
+    
+    asio::async_write(state->output_file, header_bufs, [this, state](const asio::error_code& ec, size_t) { 
+        if(ec) {
+            state->completion_handler(ec); 
+        } else {
+            state->input_file.async_read_some(asio::buffer(state->input_buffer), asio::bind_executor(state->input_file.get_executor(), std::bind(&nkCryptoToolPQC::handleFileReadForPQCEncryption, this, state, std::placeholders::_1, std::placeholders::_2)));
+        }
+    });
+}
+
+void nkCryptoToolPQC::handleFileReadForPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
+    if (!ec) {
+        int outlen = 0;
+        if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), bytes_transferred) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        asio::async_write(state->output_file, asio::buffer(state->output_buffer, outlen), [this, state](const asio::error_code& ec, size_t){ 
+            if(ec) {
+                state->completion_handler(ec);
+            } else {
+                state->input_file.async_read_some(asio::buffer(state->input_buffer), asio::bind_executor(state->input_file.get_executor(), std::bind(&nkCryptoToolPQC::handleFileReadForPQCEncryption, this, state, std::placeholders::_1, std::placeholders::_2)));
+            }
+        });
+    } else if (ec == asio::error::eof) {
+        finishPQCEncryption(state, {});
+    } else {
+        state->completion_handler(ec);
+    }
+}
+
+void nkCryptoToolPQC::finishPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code&) {
+    int outlen = 0;
+    if (EVP_EncryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    if (outlen > 0) {
+        asio::error_code ec;
+        asio::write(state->output_file, asio::buffer(state->output_buffer, outlen), ec);
+        if(ec) { state->completion_handler(ec); return; }
+    }
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    asio::error_code ec;
+    asio::write(state->output_file, asio::buffer(state->tag), ec);
+    state->completion_handler(ec);
+}
+
+// Asynchronous Decryption Wrappers
+void nkCryptoToolPQC::decryptFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& user_private_key_path, const std::filesystem::path&, std::function<void(std::error_code)> completion_handler) {
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_kem_private_key(loadPrivateKey(user_private_key_path));
+    if (!user_kem_private_key) { completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    auto state = std::make_shared<DecryptionState>(io_context, input_filepath);
+    state->completion_handler = completion_handler;
+    startPQCDecryptionAsync(state, input_filepath, output_filepath, user_kem_private_key.release(), nullptr);
+}
+
+void nkCryptoToolPQC::decryptFileHybrid(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_mlkem_private_key_path, const std::filesystem::path& recipient_ecdh_private_key_path, std::function<void(std::error_code)> completion_handler) {
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_mlkem_private_key(loadPrivateKey(recipient_mlkem_private_key_path));
+    if (!user_mlkem_private_key) { completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_ecdh_private_key(loadPrivateKey(recipient_ecdh_private_key_path));
+    if (!user_ecdh_private_key) { completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+    auto state = std::make_shared<DecryptionState>(io_context, input_filepath);
+    state->completion_handler = completion_handler;
+    startPQCDecryptionAsync(state, input_filepath, output_filepath, user_mlkem_private_key.release(), user_ecdh_private_key.release());
+}
+
+// Core Decryption Logic
+void nkCryptoToolPQC::startPQCDecryptionAsync(std::shared_ptr<DecryptionState> state, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, EVP_PKEY* user_kem_private_key_raw, EVP_PKEY* user_ecdh_private_key_raw) {
+    std::shared_ptr<EVP_PKEY> user_kem_private_key(user_kem_private_key_raw, EVP_PKEY_Deleter());
+    std::shared_ptr<EVP_PKEY> user_ecdh_private_key(user_ecdh_private_key_raw, EVP_PKEY_Deleter());
+
+    asio::error_code ec;
+    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { state->completion_handler(ec); return; }
+    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if (ec) { state->completion_handler(ec); return; }
+
+    auto on_header_read_complete = [this, state, user_kem_private_key, user_ecdh_private_key]() {
+        std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> kem_pctx_decap(EVP_PKEY_CTX_new(user_kem_private_key.get(), nullptr), EVP_PKEY_CTX_free);
+        if (!kem_pctx_decap || 1 != EVP_PKEY_decapsulate_init(kem_pctx_decap.get(), nullptr)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        size_t shared_secret_len_kem;
+        if (1 != EVP_PKEY_decapsulate(kem_pctx_decap.get(), nullptr, &shared_secret_len_kem, state->kem_ciphertext_read.data(), state->kem_ciphertext_read.size())) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        std::vector<unsigned char> current_shared_secret(shared_secret_len_kem);
+        if (1 != EVP_PKEY_decapsulate(kem_pctx_decap.get(), current_shared_secret.data(), &shared_secret_len_kem, state->kem_ciphertext_read.data(), state->kem_ciphertext_read.size())) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        if (user_ecdh_private_key && !state->ecdh_sender_pub_key_read.empty()) {
+            std::unique_ptr<BIO, decltype(&BIO_free_all)> bio(BIO_new_mem_buf(state->ecdh_sender_pub_key_read.data(), state->ecdh_sender_pub_key_read.size()), BIO_free_all);
+            std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> sender_pub_key(PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+            if (!sender_pub_key) { state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument)); return; }
+            std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ecdh_ctx(EVP_PKEY_CTX_new(user_ecdh_private_key.get(), nullptr), EVP_PKEY_CTX_free);
+            if (!ecdh_ctx || 1 != EVP_PKEY_derive_init(ecdh_ctx.get()) || 1 != EVP_PKEY_derive_set_peer(ecdh_ctx.get(), sender_pub_key.get())) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+            size_t ecdh_secret_len;
+            if (1 != EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &ecdh_secret_len)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+            std::vector<unsigned char> ecdh_secret(ecdh_secret_len);
+            if (1 != EVP_PKEY_derive(ecdh_ctx.get(), ecdh_secret.data(), &ecdh_secret_len)) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+            current_shared_secret.insert(current_shared_secret.end(), ecdh_secret.begin(), ecdh_secret.end());
+        }
+        std::string info_str = (user_ecdh_private_key && !state->ecdh_sender_pub_key_read.empty()) ? "hybrid-encryption-key-iv" : "aes-gcm-encryption-key-iv";
+        state->decryption_key = hkdfDerive(current_shared_secret, 32, std::string(state->salt.begin(), state->salt.end()), info_str, "SHA256");
+        if (state->decryption_key.empty()) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        state->cipher_ctx.reset(EVP_CIPHER_CTX_new());
+        if (!state->cipher_ctx || EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0 || EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, nullptr) <= 0 || EVP_DecryptInit_ex(state->cipher_ctx.get(), nullptr, nullptr, state->decryption_key.data(), state->iv.data()) <= 0) { state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return; }
+        
+        std::error_code fs_ec;
+        uintmax_t total_file_size = std::filesystem::file_size(state->input_filepath_orig, fs_ec);
+        if (fs_ec) { state->completion_handler(fs_ec); return; }
+        size_t header_size = 4 + state->kem_ciphertext_read.size() + 4 + state->salt.size() + 4 + state->iv.size();
+        if(user_ecdh_private_key) header_size += 4 + state->ecdh_sender_pub_key_read.size();
+        if (total_file_size < header_size + GCM_TAG_LEN) { state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument)); return; }
+        state->ciphertext_size_to_read = total_file_size - header_size - GCM_TAG_LEN;
+        state->total_bytes_read = 0;
+
+        handleFileReadForPQCDecryption(state, {}, 0);
+    };
+
+    auto read_len_and_data = [this, state](std::vector<unsigned char>& target, std::function<void(const asio::error_code&, size_t)> next) {
+        auto len_buf = std::make_shared<std::vector<unsigned char>>(4);
+        asio::async_read(state->input_file, asio::buffer(*len_buf), [this, state, len_buf, &target, next](const asio::error_code& ec, size_t) { if (ec) { next(ec, 0); return; } uint32_t data_len; memcpy(&data_len, len_buf->data(), sizeof(data_len)); target.resize(data_len); asio::async_read(state->input_file, asio::buffer(target), next); });
+    };
+    
+    read_len_and_data(state->kem_ciphertext_read, [this, state, user_ecdh_private_key, read_len_and_data, on_header_read_complete](const asio::error_code& ec, size_t){ 
+        if (ec) { state->completion_handler(ec); return; } 
+        if (user_ecdh_private_key) { 
+            read_len_and_data(state->ecdh_sender_pub_key_read, [this, state, read_len_and_data, on_header_read_complete](const asio::error_code& ec, size_t) { 
+                if (ec) { state->completion_handler(ec); return; } 
+                read_len_and_data(state->salt, [this, state, read_len_and_data, on_header_read_complete](const asio::error_code& ec, size_t) { 
+                    if (ec) { state->completion_handler(ec); return; } 
+                    read_len_and_data(state->iv, [state, on_header_read_complete](const asio::error_code& ec, size_t) {
+                        if (ec) { state->completion_handler(ec); } else { on_header_read_complete(); }
+                    }); 
+                }); 
+            }); 
+        } else { 
+            read_len_and_data(state->salt, [this, state, read_len_and_data, on_header_read_complete](const asio::error_code& ec, size_t) { 
+                if (ec) { state->completion_handler(ec); return; } 
+                read_len_and_data(state->iv, [state, on_header_read_complete](const asio::error_code& ec, size_t) {
+                     if (ec) { state->completion_handler(ec); } else { on_header_read_complete(); }
+                }); 
+            }); 
+        } 
+    });
+}
+
+void nkCryptoToolPQC::handleFileReadForPQCDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
+    // This function now acts as a single control point for the read-decrypt-write loop.
+    if (!ec) {
+        // This is a successful read.
+        if (bytes_transferred > 0) {
+            int outlen = 0;
+            state->output_buffer.resize(bytes_transferred + EVP_MAX_BLOCK_LENGTH);
+            if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), bytes_transferred) <= 0) {
+                std::cerr << "Error during PQC decryption update." << std::endl;
+                printOpenSSLErrors();
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
+            state->total_bytes_read += bytes_transferred;
+
+            asio::async_write(state->output_file, asio::buffer(state->output_buffer, outlen),
+                [this, state](const asio::error_code& write_ec, size_t) {
+                    if (write_ec) {
+                        state->completion_handler(write_ec);
+                    } else {
+                        // After successful write, continue the loop.
+                        handleFileReadForPQCDecryption(state, {}, 0);
+                    }
+                });
+        } else {
+            // bytes_transferred is 0 but no error. Decide what to do next.
+            if (state->total_bytes_read >= state->ciphertext_size_to_read) {
+                 asio::async_read(state->input_file, asio::buffer(state->tag),
+                    [this, state](const asio::error_code& tag_ec, size_t tag_bytes) {
+                        this->finishPQCDecryption(state, tag_ec, tag_bytes);
+                    });
+            } else {
+                // Keep reading.
+                size_t next_read_size = std::min((size_t)CHUNK_SIZE, state->ciphertext_size_to_read - state->total_bytes_read);
+                state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), next_read_size),
+                    asio::bind_executor(state->input_file.get_executor(),
+                        std::bind(&nkCryptoToolPQC::handleFileReadForPQCDecryption, this, state,
+                                    std::placeholders::_1, std::placeholders::_2)));
+            }
+        }
+    } else if (ec == asio::error::eof) {
+        // We've hit the end of the file. This should only happen after reading all ciphertext.
+        // Proceed to read the tag.
+        asio::async_read(state->input_file, asio::buffer(state->tag),
+            [this, state](const asio::error_code& tag_ec, size_t tag_bytes) {
+                this->finishPQCDecryption(state, tag_ec, tag_bytes);
+            });
+    } else {
+        // Some other error occurred.
+        state->completion_handler(ec);
+    }
+}
+
+
+void nkCryptoToolPQC::handleFileWriteAfterPQCDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t) {
+    if (ec) { state->completion_handler(ec); return; }
+
+    // After a successful write, or on the initial call, check if we're done.
+    if (state->total_bytes_read >= state->ciphertext_size_to_read) {
+        // We've read and processed all the ciphertext, now read the tag.
+        asio::async_read(state->input_file, asio::buffer(state->tag),
+            asio::bind_executor(state->input_file.get_executor(),
+                [this, state](const asio::error_code& tag_ec, size_t tag_bytes) {
+                    this->finishPQCDecryption(state, tag_ec, tag_bytes);
+                }));
+    } else {
+        // Not done yet, read the next chunk of ciphertext.
+        size_t next_read_size = std::min((size_t)CHUNK_SIZE, state->ciphertext_size_to_read - state->total_bytes_read);
+        state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), next_read_size),
+            asio::bind_executor(state->input_file.get_executor(),
+                std::bind(&nkCryptoToolPQC::handleFileReadForPQCDecryption, this, state,
+                            std::placeholders::_1, std::placeholders::_2)));
+    }
+}
+
+void nkCryptoToolPQC::finishPQCDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
+    if (ec && ec != asio::error::eof) { state->completion_handler(ec); return; }
+    if (bytes_transferred != GCM_TAG_LEN) { state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument)); return; }
+
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return;
+    }
+    
+    int outlen = 0;
+    state->output_buffer.resize(GCM_TAG_LEN);
+    if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+        std::cerr << "Error: GCM tag mismatch or finalization error." << std::endl;
+        printOpenSSLErrors();
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); return;
+    }
+    state->output_buffer.resize(outlen);
+
+    if(outlen > 0) {
+        asio::error_code write_ec;
+        asio::write(state->output_file, asio::buffer(state->output_buffer), write_ec);
+        if(write_ec) {
+            state->completion_handler(write_ec);
+            return;
+        }
+    }
+
+    state->completion_handler({});
+}
+
+// Dummy implementations
+bool nkCryptoToolPQC::aesGcmEncrypt(const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, std::vector<unsigned char>&, std::vector<unsigned char>&) { return true; }
+bool nkCryptoToolPQC::aesGcmDecrypt(const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, std::vector<unsigned char>&) { return true; }
+
+bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string&) {
+    std::vector<unsigned char> file_content = readFile(input_filepath);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> priv_key(loadPrivateKey(signing_private_key_path));
+    if(!priv_key) return false;
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> sctx(EVP_PKEY_CTX_new_from_pkey(nullptr, priv_key.get(), nullptr));
+    if (!sctx || EVP_PKEY_sign_init(sctx.get()) <= 0) return false;
+    size_t sig_len;
+    if (EVP_PKEY_sign(sctx.get(), nullptr, &sig_len, file_content.data(), file_content.size()) <= 0) return false;
+    std::vector<unsigned char> signature(sig_len);
+    if (EVP_PKEY_sign(sctx.get(), signature.data(), &sig_len, file_content.data(), file_content.size()) <= 0) return false;
+    signature.resize(sig_len);
+    return writeFile(signature_filepath, signature);
+}
+
+bool nkCryptoToolPQC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
+    std::vector<unsigned char> file_content = readFile(input_filepath);
+    std::vector<unsigned char> signature = readFile(signature_filepath);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pub_key(loadPublicKey(signing_public_key_path));
+    if(!pub_key) return false;
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> vctx(EVP_PKEY_CTX_new_from_pkey(nullptr, pub_key.get(), nullptr));
+    if (!vctx || EVP_PKEY_verify_init(vctx.get()) <= 0) return false;
+    return EVP_PKEY_verify(vctx.get(), signature.data(), signature.size(), file_content.data(), file_content.size()) == 1;
 }
