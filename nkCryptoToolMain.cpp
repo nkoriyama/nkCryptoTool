@@ -1,4 +1,4 @@
-// nkCryptoToolMain.cpp (Asio 非同期対応)
+// nkCryptoToolMain.cpp (同期版)
 
 // --- Required Environment ---
 // - C++11 compiler (for std::stoi, nullptr, std::vector, etc.)
@@ -8,19 +8,12 @@
 // functions are used for broader compatibility
 // - On Windows: MinGW or Cygwin environment recommended for getopt_long.
 // MSVC users will need a getopt implementation or replacement.
-// - Asio library (standalone or Boost.Asio). Ensure it's included in your project.
-//   If using standalone Asio, define ASIO_STANDALONE.
-//   Example: #define ASIO_STANDALONE
-//            #include <asio.hpp>
 
 // --- Compilation Note ---
 // This code is written in C++ and requires a C++ compiler (like g++) to compile
 // correctly. Save the file with a .cpp, .cc, or .cxx extension (e.g.,
-// nkencdec_ECC.cpp) and compile using a C++ compiler command (e.g., g++
-// nkencdec_ECC.cpp -o nkencdec_ECC -lssl -lcrypto -pthread).
-// If using Boost.Asio, you might need to link against Boost.System.
-// Standalone Asio is often header-only but may require linking specific libraries
-// depending on the features used (e.g., SSL).
+// nkCryptoTool.cpp) and compile using a C++ compiler command (e.g., g++
+// nkCryptoTool.cpp -o nkCryptoTool -lssl -lcrypto).
 // Ensure your OpenSSL installation is correct and include/library paths are specified in
 // the compile command.
 
@@ -29,14 +22,7 @@
 #include <vector>
 #include <memory> // For std::unique_ptr
 #include <filesystem> // For std::filesystem::path
-#include <thread> // For std::thread
-#include <atomic> // For std::atomic
-#include <mutex> // For std::mutex
-#include <condition_variable> // For std::condition_variable
-
-// Asio include - Define ASIO_STANDALONE if using standalone Asio
-#define ASIO_STANDALONE
-#include <asio.hpp>
+#include <mutex> // For std::mutex - still needed for global_passphrase_for_pem_cb access
 
 // For getopt_long
 #ifdef _WIN32
@@ -45,7 +31,7 @@
 #else
 #include <getopt.h> // Standard for Linux/macOS
 #include <termios.h> // For tcsetattr, tcgetattr (Linux/macOS)
-#include <unistd.h>  // For STDIN_FILENO (Linux/macOS)
+#include <unistd.  h>  // For STDIN_FILENO (Linux/macOS)
 #endif
 
 // Include necessary headers for cryptographic operations
@@ -58,9 +44,7 @@
 // --- IMPORTANT: Global variable and callback definition ---
 // Global variable for PEM passphrase callback
 std::string global_passphrase_for_pem_cb;
-// Mutex to protect global_passphrase_for_pem_cb if multiple tasks might access it.
-// For this CLI tool, operations are typically serialized by user input,
-// but if true parallelism was introduced for the passphrase itself, this would be critical.
+// Mutex to protect global_passphrase_for_pem_cb
 std::mutex passphrase_mutex;
 
 
@@ -68,11 +52,7 @@ std::mutex passphrase_mutex;
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     std::lock_guard<std::mutex> lock(passphrase_mutex); // Protect access to global_passphrase_for_pem_cb
     if (global_passphrase_for_pem_cb.empty()) {
-        // This case should ideally be handled before calling OpenSSL functions
-        // that might trigger the callback without a passphrase being set.
-        // For interactive scenarios, the passphrase should be prompted and set *before*
-        // the OpenSSL operation is posted as an async task.
-        // std::cerr << "Error: Passphrase not set for PEM operation (callback)." << std::endl;
+        std::cerr << "Error: Passphrase not set for PEM operation (callback)." << std::endl;
         return 0; // Indicate failure or empty passphrase
     }
     size_t len = global_passphrase_for_pem_cb.copy(buf, size - 1);
@@ -125,13 +105,11 @@ void display_usage() {
     std::cout << "  --signing-pubkey <file> : Signer's public key file\n";
     std::cout << "  <input_file>        : Input file to verify\n";
     std::cout << "\n";
-    std::cout << "Note: Operations are performed asynchronously. The program will wait for completion.\n";
+    std::cout << "Note: Operations are performed synchronously.\n"; // Updated note
 }
 
 
 // Helper function to securely get passphrase
-// This function should be called *before* posting a task that needs a passphrase.
-// The passphrase is then captured by the lambda posted to Asio.
 std::string prompt_for_passphrase(const std::string& prompt_message) {
     std::string passphrase;
     std::cout << prompt_message;
@@ -193,34 +171,19 @@ int main(int argc, char *argv[]) {
             ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
             std::cerr << "OpenSSL Provider Error: " << err_buf << std::endl;
         }
-        // No early return here, allow Asio setup to proceed and potentially fail later if crypto is used.
+        return 1; // Early exit if provider fails, as crypto ops won't work
     }
 
-    // Asio setup
-    asio::io_context io_ctx;
-    auto work_guard = asio::make_work_guard(io_ctx); // Keeps io_ctx.run() from returning prematurely
-    
-    // Thread pool for Asio
-    // Determine number of threads, e.g., based on hardware concurrency
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) {
-        num_threads = 2; // Default to 2 if hardware_concurrency() is not informative
-    }
-    std::vector<std::thread> threads;
-    for (unsigned int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&io_ctx]() {
-            try {
-                io_ctx.run();
-            } catch (const std::exception& e) {
-                std::cerr << "Asio thread exception: " << e.what() << std::endl;
-            }
-        });
-    }
-
-    std::atomic<int> tasks_in_flight(0);
-    std::mutex tasks_mutex;
-    std::condition_variable cv_all_tasks_done;
-
+    // Asio 関連のセットアップをすべて削除
+    // asio::io_context io_ctx;
+    // auto work_guard = asio::make_work_guard(io_ctx);
+    // unsigned int num_threads = std::thread::hardware_concurrency();
+    // if (num_threads == 0) { num_threads = 2; }
+    // std::vector<std::thread> threads;
+    // for (unsigned int i = 0; i < num_threads; ++i) { threads.emplace_back([&io_ctx]() { io_ctx.run(); }); }
+    // std::atomic<int> tasks_in_flight(0);
+    // std::mutex tasks_mutex;
+    // std::condition_variable cv_all_tasks_done;
 
     std::string mode_str;
     std::string passphrase_arg_str; // Passphrase provided as command line argument
@@ -298,9 +261,6 @@ int main(int argc, char *argv[]) {
             default:
                 display_usage();
                 if (default_prov) OSSL_PROVIDER_unload(default_prov);
-                // Ensure threads are joined even on early exit
-                work_guard.reset(); // Allow io_ctx.run() to exit
-                for (auto& t : threads) if (t.joinable()) t.join();
                 return 1;
         }
     }
@@ -309,17 +269,15 @@ int main(int argc, char *argv[]) {
         non_option_args.push_back(argv[optind++]);
     }
 
-    std::shared_ptr<nkCryptoToolBase> crypto_handler; // Use shared_ptr for capture in lambdas
+    std::unique_ptr<nkCryptoToolBase> crypto_handler; // unique_ptr for local ownership
     if (mode_str == "ecc") {
-        crypto_handler = std::make_shared<nkCryptoToolECC>();
+        crypto_handler = std::make_unique<nkCryptoToolECC>();
     } else if (mode_str == "pqc" || mode_str == "hybrid") {
-        crypto_handler = std::make_shared<nkCryptoToolPQC>();
+        crypto_handler = std::make_unique<nkCryptoToolPQC>();
     } else {
         std::cerr << "Error: Invalid or unsupported mode specified. Currently 'ecc', 'pqc', and 'hybrid' are supported." << std::endl;
         display_usage();
         if (default_prov) OSSL_PROVIDER_unload(default_prov);
-        work_guard.reset();
-        for (auto& t : threads) if (t.joinable()) t.join();
         return 1;
     }
 
@@ -327,31 +285,8 @@ int main(int argc, char *argv[]) {
         nkCryptoToolBase::setKeyBaseDirectory(key_dir);
     }
     
-    // --- Task Posting Logic ---
-    // Helper lambda to post tasks and manage task counter
-    auto post_task = [&](auto&& func) {
-        tasks_in_flight++;
-        asio::post(io_ctx, [func = std::forward<decltype(func)>(func), &tasks_in_flight, &cv_all_tasks_done, &tasks_mutex]() {
-            try {
-                func();
-            } catch (const std::exception& e) {
-                std::cerr << "Exception in async task: " << e.what() << std::endl;
-            } catch (...) {
-                std::cerr << "Unknown exception in async task." << std::endl;
-            }
-            
-            // Decrement and notify
-            tasks_in_flight--;
-            {
-                // Lock not strictly needed for atomic decrement, but for cv notification condition
-                std::unique_lock<std::mutex> lock(tasks_mutex); 
-                if (tasks_in_flight == 0) {
-                    cv_all_tasks_done.notify_one();
-                }
-            }
-        });
-    };
-
+    // --- 同期的なタスク実行ロジック ---
+    // 非同期関連の post_task ラムダを削除し、直接同期呼び出しを行う
 
     if (gen_enc_key_mode || gen_sign_key_mode) {
         std::string effective_passphrase = passphrase_arg_str;
@@ -360,9 +295,6 @@ int main(int argc, char *argv[]) {
         }
         
         // Set global passphrase for the task
-        // This is tricky if multiple key gens were posted with different passphrases.
-        // For this CLI, assume one key gen op at a time, or they use the same prompted passphrase.
-        // A better design for true concurrency would pass passphrase directly to task.
         {
            std::lock_guard<std::mutex> lock(passphrase_mutex);
            global_passphrase_for_pem_cb = effective_passphrase;
@@ -370,68 +302,57 @@ int main(int argc, char *argv[]) {
 
 
         if (gen_enc_key_mode) {
-            post_task([=, crypto_handler, key_dir_copy = key_dir, mode_str_copy = mode_str, effective_passphrase_copy = effective_passphrase]() { // Capture necessary variables
-                std::cout << "Async: Generating encryption key pair..." << std::endl;
-                { // Set passphrase for this task's scope if needed by OpenSSL callback
-                    std::lock_guard<std::mutex> lock(passphrase_mutex);
-                    global_passphrase_for_pem_cb = effective_passphrase_copy;
+            std::cout << "Generating encryption key pair..." << std::endl;
+            bool success = false;
+            if (mode_str == "hybrid") {
+                // ハイブリッドモードの場合、ML-KEMとECDH両方の鍵を生成
+                nkCryptoToolPQC pqc_generator; 
+                success = pqc_generator.generateEncryptionKeyPair(
+                    std::filesystem::path(key_dir) / "public_enc_hybrid_mlkem.key",
+                    std::filesystem::path(key_dir) / "private_enc_hybrid_mlkem.key",
+                    effective_passphrase 
+                );
+                if (success) {
+                    std::cout << "ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
+                } else {
+                    std::cerr << "Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
                 }
-                bool success = false;
-                if (mode_str_copy == "hybrid") {
-                    nkCryptoToolPQC pqc_generator; 
-                    success = pqc_generator.generateEncryptionKeyPair(
-                        std::filesystem::path(key_dir_copy) / "public_enc_hybrid_mlkem.key",
-                        std::filesystem::path(key_dir_copy) / "private_enc_hybrid_mlkem.key",
-                        effective_passphrase_copy 
-                    );
-                    if (success) {
-                        std::cout << "Async: ML-KEM encryption key pair for hybrid mode generated successfully." << std::endl;
-                    } else {
-                        std::cerr << "Async Error: Failed to generate ML-KEM encryption key pair for hybrid mode." << std::endl;
-                    }
 
-                    nkCryptoToolECC ecc_generator; 
-                    bool ecc_success = ecc_generator.generateEncryptionKeyPair(
-                        std::filesystem::path(key_dir_copy) / "public_enc_hybrid_ecdh.key",
-                        std::filesystem::path(key_dir_copy) / "private_enc_hybrid_ecdh.key",
-                        effective_passphrase_copy
-                    );
-                    if (ecc_success) {
-                        std::cout << "Async: ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
-                    } else {
-                        std::cerr << "Async Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
-                        success = false; 
-                    }
-                    success = success && ecc_success;
+                nkCryptoToolECC ecc_generator; 
+                bool ecc_success = ecc_generator.generateEncryptionKeyPair(
+                    std::filesystem::path(key_dir) / "public_enc_hybrid_ecdh.key",
+                    std::filesystem::path(key_dir) / "private_enc_hybrid_ecdh.key",
+                    effective_passphrase
+                );
+                if (ecc_success) {
+                    std::cout << "ECDH encryption key pair for hybrid mode generated successfully." << std::endl;
                 } else {
-                    success = crypto_handler->generateEncryptionKeyPair(
-                        crypto_handler->getEncryptionPublicKeyPath(),
-                        crypto_handler->getEncryptionPrivateKeyPath(),
-                        effective_passphrase_copy);
+                    std::cerr << "Error: Failed to generate ECDH encryption key pair for hybrid mode." << std::endl;
+                    success = false; // ML-KEMが成功してもECDHが失敗したら全体を失敗とみなす
                 }
-                if (success) {
-                    std::cout << "Async: Encryption key pair generation completed." << std::endl;
-                } else {
-                    std::cerr << "Async Error: Failed to generate encryption key pair." << std::endl;
-                }
-            });
+                success = success && ecc_success; // 両方成功した場合のみ全体成功
+            } else {
+                success = crypto_handler->generateEncryptionKeyPair(
+                    crypto_handler->getEncryptionPublicKeyPath(),
+                    crypto_handler->getEncryptionPrivateKeyPath(),
+                    effective_passphrase);
+            }
+            if (success) {
+                std::cout << "Encryption key pair generation completed." << std::endl;
+            } else {
+                std::cerr << "Error: Failed to generate encryption key pair." << std::endl;
+            }
         } else if (gen_sign_key_mode) {
-             post_task([=, crypto_handler, effective_passphrase_copy = effective_passphrase]() {
-                std::cout << "Async: Generating signing key pair..." << std::endl;
-                 {
-                    std::lock_guard<std::mutex> lock(passphrase_mutex);
-                    global_passphrase_for_pem_cb = effective_passphrase_copy;
-                }
-                bool success = crypto_handler->generateSigningKeyPair(
-                    crypto_handler->getSigningPublicKeyPath(),
-                    crypto_handler->getSigningPrivateKeyPath(),
-                    effective_passphrase_copy);
-                if (success) {
-                    std::cout << "Async: Signing key pair generated successfully." << std::endl;
-                } else {
-                    std::cerr << "Async Error: Failed to generate signing key pair." << std::endl;
-                }
-            });
+            std::cout << "Generating signing key pair..." << std::endl;
+            bool success = crypto_handler->generateSigningKeyPair(
+                crypto_handler->getSigningPublicKeyPath(),
+                crypto_handler->getSigningPrivateKeyPath(),
+                effective_passphrase);
+            if (success) {
+                std::cout << "Signing key pair generated successfully." << std::endl;
+            } else {
+                std::cerr << "Error: Failed to generate signing key pair." << std::endl;
+            }
         }
     } else if (encrypt_mode) {
         if (output_file.empty() || non_option_args.size() != 1) {
@@ -444,40 +365,39 @@ int main(int argc, char *argv[]) {
                 global_passphrase_for_pem_cb = "";
             }
 
-            post_task([=, crypto_handler, mode_str_copy = mode_str]() { // Capture all necessary files
-                std::cout << "Async: Encrypting file " << input_file << " to " << output_file << "..." << std::endl;
-                bool success = false;
-                if (mode_str_copy == "pqc") {
-                     if (recipient_public_key_file.empty()) {
-                        std::cerr << "Async Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
-                        return; // Exit lambda
-                    }
-                    success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
-                } else if (mode_str_copy == "hybrid") {
-                     if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
-                        std::cerr << "Async Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
-                        return; 
-                    }
-                    success = crypto_handler->encryptFileHybrid(input_file, output_file,
-                                                                recipient_mlkem_pubkey_file,
-                                                                recipient_ecdh_pubkey_file);
-                } else if (mode_str_copy == "ecc") { // Assuming ECC encryptFile takes recipient_public_key_file
-                     if (recipient_public_key_file.empty()) { // Adjust if ECC uses different param
-                        std::cerr << "Async Error: ECC encryption mode requires --recipient-pubkey (or equivalent)." << std::endl;
-                        return;
-                    }
-                    success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+            std::cout << "Encrypting file " << input_file << " to " << output_file << "..." << std::endl;
+            bool success = false;
+            if (mode_str == "pqc") {
+                 if (recipient_public_key_file.empty()) {
+                    std::cerr << "Error: PQC encryption mode requires --recipient-pubkey." << std::endl;
+                    return 1; // Exit program on error
                 }
-                else {
-                    std::cerr << "Async Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
+                success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+            } else if (mode_str == "hybrid") {
+                 if (recipient_mlkem_pubkey_file.empty() || recipient_ecdh_pubkey_file.empty()) {
+                    std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey and --recipient-ecdh-pubkey." << std::endl;
+                    return 1; 
                 }
+                success = crypto_handler->encryptFileHybrid(input_file, output_file,
+                                                            recipient_mlkem_pubkey_file,
+                                                            recipient_ecdh_pubkey_file);
+            } else if (mode_str == "ecc") { // Assuming ECC encryptFile takes recipient_public_key_file
+                 if (recipient_public_key_file.empty()) { // Adjust if ECC uses different param
+                    std::cerr << "Error: ECC encryption mode requires --recipient-pubkey (or equivalent)." << std::endl;
+                    return 1;
+                }
+                success = crypto_handler->encryptFile(input_file, output_file, recipient_public_key_file);
+            }
+            else {
+                std::cerr << "Error: Encryption not supported for the selected mode or missing required keys." << std::endl;
+            }
 
-                if (success) {
-                    std::cout << "Async: File encrypted successfully to " << output_file << std::endl;
-                } else {
-                    std::cerr << "Async Error: File encryption failed." << std::endl;
-                }
-            });
+            if (success) {
+                std::cout << "File encrypted successfully to " << output_file << std::endl;
+            } else {
+                std::cerr << "Error: File encryption failed." << std::endl;
+                return 1; // Exit program on error
+            }
         }
     } else if (decrypt_mode) {
          if (output_file.empty() || non_option_args.size() != 1) {
@@ -490,48 +410,43 @@ int main(int argc, char *argv[]) {
                  effective_passphrase = prompt_for_passphrase("Enter Passphrase for your private key: ");
             }
             
-            post_task([=, crypto_handler, mode_str_copy = mode_str, effective_passphrase_copy = effective_passphrase]() {
-                std::cout << "Async: Decrypting file " << input_file << " to " << output_file << "..." << std::endl;
-                {
-                    std::lock_guard<std::mutex> lock(passphrase_mutex);
-                    global_passphrase_for_pem_cb = effective_passphrase_copy;
+            std::cout << "Decrypting file " << input_file << " to " << output_file << "..." << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(passphrase_mutex);
+                global_passphrase_for_pem_cb = effective_passphrase;
+            }
+            bool success = false;
+             if (mode_str == "pqc") {
+                if (user_private_key_file.empty() || sender_public_key_file.empty()) { 
+                    std::cerr << "Error: PQC decryption mode requires --user-privkey. --sender-pubkey might be for other schemes." << std::endl;
+                    return 1;
                 }
-                bool success = false;
-                 if (mode_str_copy == "pqc") {
-                    if (user_private_key_file.empty() || sender_public_key_file.empty()) { // sender_public_key might not be needed for PQC KEM decapsulation
-                        std::cerr << "Async Error: PQC decryption mode requires --user-privkey. --sender-pubkey might be for other schemes." << std::endl;
-                        return;
-                    }
-                    // Note: Original PQC decryptFile takes sender_public_key_path, which might be for a different KEM scheme or an artifact.
-                    // For ML-KEM, only the recipient's private key is strictly needed for decapsulation.
-                    // Assuming the interface crypto_handler->decryptFile is consistent.
-                    success = crypto_handler->decryptFile(input_file, output_file,
-                                                          user_private_key_file, sender_public_key_file);
-                } else if (mode_str_copy == "hybrid") {
-                     if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
-                        std::cerr << "Async Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
-                        return;
-                    }
-                    success = crypto_handler->decryptFileHybrid(input_file, output_file,
-                                                                recipient_mlkem_privkey_file,
-                                                                recipient_ecdh_privkey_file);
-                } else if (mode_str_copy == "ecc") {
-                    // ECC decryptFile typically needs user's private key and sender's public key for ECDH key agreement.
-                    if (user_private_key_file.empty() || sender_public_key_file.empty()) {
-                         std::cerr << "Async Error: ECC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
-                        return;
-                    }
-                    success = crypto_handler->decryptFile(input_file, output_file, user_private_key_file, sender_public_key_file);
+                success = crypto_handler->decryptFile(input_file, output_file,
+                                                      user_private_key_file, sender_public_key_file);
+            } else if (mode_str == "hybrid") {
+                 if (recipient_mlkem_privkey_file.empty() || recipient_ecdh_privkey_file.empty()) {
+                    std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey and --recipient-ecdh-privkey." << std::endl;
+                    return 1;
                 }
-                else {
-                    std::cerr << "Async Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
+                success = crypto_handler->decryptFileHybrid(input_file, output_file,
+                                                            recipient_mlkem_privkey_file,
+                                                            recipient_ecdh_privkey_file);
+            } else if (mode_str == "ecc") {
+                if (user_private_key_file.empty() || sender_public_key_file.empty()) {
+                     std::cerr << "Error: ECC decryption mode requires --user-privkey and --sender-pubkey." << std::endl;
+                    return 1;
                 }
-                if (success) {
-                    std::cout << "Async: File decrypted successfully to " << output_file << std::endl;
-                } else {
-                    std::cerr << "Async Error: File decryption failed." << std::endl;
-                }
-            });
+                success = crypto_handler->decryptFile(input_file, output_file, user_private_key_file, sender_public_key_file);
+            }
+            else {
+                std::cerr << "Error: Decryption not supported for the selected mode or missing required keys." << std::endl;
+            }
+            if (success) {
+                std::cout << "File decrypted successfully to " << output_file << std::endl;
+            } else {
+                std::cerr << "Error: File decryption failed." << std::endl;
+                return 1;
+            }
         }
     } else if (sign_mode) {
         if (signing_private_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
@@ -543,20 +458,19 @@ int main(int argc, char *argv[]) {
             if (effective_passphrase.empty()) {
                  effective_passphrase = prompt_for_passphrase("Enter Passphrase for your signing private key: ");
             }
-            post_task([=, crypto_handler, effective_passphrase_copy = effective_passphrase]() {
-                std::cout << "Async: Signing file " << input_file << "..." << std::endl;
-                 {
-                    std::lock_guard<std::mutex> lock(passphrase_mutex);
-                    global_passphrase_for_pem_cb = effective_passphrase_copy;
-                }
-                bool success = crypto_handler->signFile(input_file, signature_file,
-                                      signing_private_key_file, digest_algo);
-                if (success) {
-                    std::cout << "Async: File signed successfully. Signature saved to " << signature_file << std::endl;
-                } else {
-                    std::cerr << "Async Error: File signing failed." << std::endl;
-                }
-            });
+            std::cout << "Signing file " << input_file << "..." << std::endl;
+             {
+                std::lock_guard<std::mutex> lock(passphrase_mutex);
+                global_passphrase_for_pem_cb = effective_passphrase;
+            }
+            bool success = crypto_handler->signFile(input_file, signature_file,
+                                  signing_private_key_file, digest_algo);
+            if (success) {
+                std::cout << "File signed successfully. Signature saved to " << signature_file << std::endl;
+            } else {
+                std::cerr << "Error: File signing failed." << std::endl;
+                return 1;
+            }
         }
     } else if (verify_mode) {
         if (signing_public_key_file.empty() || signature_file.empty() || non_option_args.size() != 1) {
@@ -568,46 +482,27 @@ int main(int argc, char *argv[]) {
                 std::lock_guard<std::mutex> lock(passphrase_mutex);
                 global_passphrase_for_pem_cb = ""; // Verification uses public key, no passphrase needed for key itself
             }
-            post_task([=, crypto_handler]() {
-                std::cout << "Async: Verifying signature for file " << input_file << "..." << std::endl;
-                bool success = crypto_handler->verifySignature(input_file, signature_file,
-                                             signing_public_key_file);
-                if (success) {
-                    std::cout << "Async: Signature verified successfully." << std::endl;
-                } else {
-                    std::cerr << "Async Error: Verification failed." << std::endl;
-                }
-            });
+            std::cout << "Verifying signature for file " << input_file << "..." << std::endl;
+            bool success = crypto_handler->verifySignature(input_file, signature_file,
+                                         signing_public_key_file);
+            if (success) {
+                std::cout << "Signature verified successfully." << std::endl;
+            } else {
+                std::cerr << "Error: Verification failed." << std::endl;
+                return 1;
+            }
         }
     } else {
-        if (tasks_in_flight == 0 && argc > 1) { // Only show error if some args were given but no valid mode matched
+        if (argc > 1) { // Only show error if some args were given but no valid mode matched
              std::cerr << "Error: No valid operation mode specified or missing arguments." << std::endl;
              display_usage();
-        } else if (argc <= 1) { // No arguments, just show usage
+             return 1;
+        } else { // No arguments, just show usage
             display_usage();
         }
-        // If no tasks were posted, tasks_in_flight will be 0, and the wait below will pass immediately.
     }
 
-
-    // Wait for all tasks to complete
-    if (tasks_in_flight > 0) {
-        std::cout << "Waiting for " << tasks_in_flight << " asynchronous operation(s) to complete..." << std::endl;
-        std::unique_lock<std::mutex> lock(tasks_mutex);
-        cv_all_tasks_done.wait(lock, [&tasks_in_flight]{ return tasks_in_flight == 0; });
-        std::cout << "All asynchronous operations finished." << std::endl;
-    }
-
-
-    // Cleanup
-    work_guard.reset(); // Allow io_ctx.run() to exit once all work is done
-    for (auto& t : threads) {
-        if (t.joinable()) {
-            t.join();
-        }
-    }
-    std::cout << "Asio threads joined." << std::endl;
-
+    // クリーンアップ
     if (default_prov) {
         OSSL_PROVIDER_unload(default_prov);
         std::cout << "OpenSSL provider unloaded." << std::endl;
