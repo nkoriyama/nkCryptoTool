@@ -44,6 +44,7 @@ struct EVP_MD_CTX_Deleter {
 class nkCryptoToolECC : public nkCryptoToolBase {
 private:
     void printOpenSSLErrors();
+    void printProgress(double percentage); // Progress bar helper
     EVP_PKEY* loadPublicKey(const std::filesystem::path& public_key_path);
     EVP_PKEY* loadPrivateKey(const std::filesystem::path& private_key_path);
     std::vector<unsigned char> generateSharedSecret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key);
@@ -66,6 +67,8 @@ private:
         std::vector<unsigned char> tag;
         size_t bytes_read;
         std::function<void(std::error_code)> completion_handler;
+        uintmax_t total_input_size;
+        uintmax_t total_bytes_processed;
 
         EncryptionState(asio::io_context& io_context)
             : input_file(io_context),
@@ -74,7 +77,9 @@ private:
               input_buffer(CHUNK_SIZE),
               output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
               tag(GCM_TAG_LEN),
-              bytes_read(0) {}
+              bytes_read(0),
+              total_input_size(0),
+              total_bytes_processed(0) {}
     };
 
     void handleFileReadForEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
@@ -92,11 +97,11 @@ private:
         std::vector<unsigned char> output_buffer;
         std::vector<unsigned char> tag;
         size_t bytes_read;
-        size_t total_input_size;
-        size_t current_input_offset;
+        uintmax_t total_ciphertext_size;
+        uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
         std::filesystem::path input_filepath_orig;
-        uint32_t ephemeral_key_len; // *** FIX: Added this member ***
+        uint32_t ephemeral_key_len;
 
         DecryptionState(asio::io_context& io_context, const std::filesystem::path& input_path_orig)
             : input_file(io_context),
@@ -106,10 +111,10 @@ private:
               output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
               tag(GCM_TAG_LEN),
               bytes_read(0),
-              total_input_size(0),
-              current_input_offset(0),
+              total_ciphertext_size(0),
+              total_bytes_processed(0),
               input_filepath_orig(input_path_orig),
-              ephemeral_key_len(0) {} // *** FIX: Initialized this member ***
+              ephemeral_key_len(0) {}
     };
 
     void handleFileReadForDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred);

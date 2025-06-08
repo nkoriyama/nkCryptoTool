@@ -35,6 +35,21 @@ void nkCryptoToolECC::printOpenSSLErrors() {
     }
 }
 
+// Helper function to print progress
+void nkCryptoToolECC::printProgress(double percentage) {
+    int barWidth = 50;
+    std::cout << "[";
+    int pos = static_cast<int>(barWidth * percentage);
+    for (int i = 0; i < barWidth; ++i) {
+        if (i < pos) std::cout << "=";
+        else if (i == pos) std::cout << ">";
+        else std::cout << " ";
+    }
+    std::cout << "] " << static_cast<int>(percentage * 100.0) << " %\r";
+    std::cout.flush();
+}
+
+
 // Helper function to load public key
 EVP_PKEY* nkCryptoToolECC::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"), BIO_free);
@@ -121,7 +136,6 @@ std::vector<unsigned char> nkCryptoToolECC::hkdfDerive(const std::vector<unsigne
     OSSL_PARAM params[5];
     int i = 0;
     params[i++] = OSSL_PARAM_construct_utf8_string("digest", const_cast<char*>(digest_algo.c_str()), 0);
-    // *** FIX: Use "key" instead of "ikm" for the input key material parameter name ***
     params[i++] = OSSL_PARAM_construct_octet_string("key", const_cast<unsigned char*>(ikm.data()), ikm.size());
     if (!salt_str.empty()) {
         params[i++] = OSSL_PARAM_construct_octet_string("salt", const_cast<unsigned char*>(reinterpret_cast<const unsigned char*>(salt_str.data())), salt_str.size());
@@ -261,20 +275,25 @@ void nkCryptoToolECC::encryptFile(
     const std::filesystem::path& recipient_public_key_path,
     std::function<void(std::error_code)> completion_handler)
 {
-    // Load recipient's public key
+    auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) {
+        if (!ec) {
+            std::cout << "\nEncryption to '" << output_filepath.string() << "' completed successfully." << std::endl;
+        }
+        completion_handler(ec);
+    };
+
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_public_key(loadPublicKey(recipient_public_key_path));
     if (!recipient_public_key) {
         std::cerr << "Error: Failed to load recipient public key for encryption." << std::endl;
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
-    // Generate ephemeral EC key pair for sender
     std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> pctx_ephemeral(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr), EVP_PKEY_CTX_free);
     if (!pctx_ephemeral || EVP_PKEY_keygen_init(pctx_ephemeral.get()) <= 0) {
         std::cerr << "Error: Failed to initialize ephemeral EC key generation." << std::endl;
         printOpenSSLErrors();
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
     OSSL_PARAM params[2];
@@ -283,14 +302,14 @@ void nkCryptoToolECC::encryptFile(
     if (EVP_PKEY_CTX_set_params(pctx_ephemeral.get(), params) <= 0) {
         std::cerr << "Error: Failed to set EC group for ephemeral key." << std::endl;
         printOpenSSLErrors();
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
     EVP_PKEY* ephemeral_pkey_raw = nullptr;
     if (EVP_PKEY_keygen(pctx_ephemeral.get(), &ephemeral_pkey_raw) <= 0) {
         std::cerr << "Error: Failed to generate ephemeral EC key pair." << std::endl;
         printOpenSSLErrors();
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key(ephemeral_pkey_raw);
@@ -298,14 +317,14 @@ void nkCryptoToolECC::encryptFile(
     std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
     if (shared_secret.empty()) {
         std::cerr << "Error: Failed to derive shared secret for encryption." << std::endl;
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
     std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, "", "aes-256-gcm-key", "SHA256");
     if (encryption_key.empty()) {
         std::cerr << "Error: Failed to derive encryption key." << std::endl;
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
@@ -313,7 +332,7 @@ void nkCryptoToolECC::encryptFile(
     if (RAND_bytes(iv.data(), GCM_IV_LEN) <= 0) {
         std::cerr << "Error: Failed to generate random IV." << std::endl;
         printOpenSSLErrors();
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
@@ -323,7 +342,7 @@ void nkCryptoToolECC::encryptFile(
         EVP_EncryptInit_ex(cipher_ctx.get(), nullptr, nullptr, encryption_key.data(), iv.data()) <= 0) {
         std::cerr << "Error: Failed to initialize AES-GCM encryption." << std::endl;
         printOpenSSLErrors();
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
@@ -331,9 +350,16 @@ void nkCryptoToolECC::encryptFile(
     state->encryption_key = encryption_key;
     state->iv = iv;
     state->cipher_ctx = std::move(cipher_ctx);
-    state->completion_handler = completion_handler;
+    state->completion_handler = wrapped_handler;
 
     std::error_code ec_in;
+    state->total_input_size = std::filesystem::file_size(input_filepath, ec_in);
+     if (ec_in) {
+        std::cerr << "Error getting input file size: " << ec_in.message() << std::endl;
+        state->completion_handler(ec_in);
+        return;
+    }
+
     state->input_file.open(input_filepath.string().c_str(), asio::stream_file::read_only, ec_in);
     if (ec_in) {
         std::cerr << "Error opening input file for encryption: " << ec_in.message() << std::endl;
@@ -422,6 +448,12 @@ void nkCryptoToolECC::handleFileWriteAfterEncryption(std::shared_ptr<EncryptionS
         return;
     }
 
+    state->total_bytes_processed += state->bytes_read;
+    if (state->total_input_size > 0) {
+        printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
+    }
+
+
     state->input_file.async_read_some(asio::buffer(state->input_buffer),
         std::bind(&nkCryptoToolECC::handleFileReadForEncryption, this, state,
                     std::placeholders::_1, std::placeholders::_2));
@@ -458,13 +490,9 @@ void nkCryptoToolECC::finishEncryption(std::shared_ptr<EncryptionState> state, c
                 return;
             }
             asio::async_write(state->output_file, asio::buffer(state->tag),
-                [state](const asio::error_code& ec_write_tag, size_t) {
-                    if (ec_write_tag) {
-                        std::cerr << "Error writing GCM tag to output file: " << ec_write_tag.message() << std::endl;
-                        state->completion_handler(ec_write_tag);
-                        return;
-                    }
-                    state->completion_handler(std::error_code());
+                [state, this](const asio::error_code& ec_write_tag, size_t) {
+                    printProgress(1.0);
+                    state->completion_handler(ec_write_tag);
                 });
         });
 }
@@ -479,15 +507,22 @@ void nkCryptoToolECC::decryptFile(
     const std::filesystem::path&,
     std::function<void(std::error_code)> completion_handler)
 {
+    auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) {
+        if (!ec) {
+            std::cout << "\nDecryption to '" << output_filepath.string() << "' completed successfully." << std::endl;
+        }
+        completion_handler(ec);
+    };
+
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_private_key(loadPrivateKey(user_private_key_path));
     if (!user_private_key) {
         std::cerr << "Error: Failed to load user's private key for decryption." << std::endl;
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        wrapped_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
     auto state = std::make_shared<DecryptionState>(io_context, input_filepath);
-    state->completion_handler = completion_handler;
+    state->completion_handler = wrapped_handler;
 
     std::error_code ec_in;
     state->input_file.open(input_filepath.string().c_str(), asio::stream_file::read_only, ec_in);
@@ -580,7 +615,7 @@ void nkCryptoToolECC::decryptFile(
                             }
 
                             std::error_code file_size_ec;
-                            state->total_input_size = std::filesystem::file_size(state->input_filepath_orig, file_size_ec);
+                            uintmax_t total_file_size = std::filesystem::file_size(state->input_filepath_orig, file_size_ec);
                             if (file_size_ec) {
                                 std::cerr << "Error getting input file size: " << file_size_ec.message() << std::endl;
                                 state->completion_handler(file_size_ec);
@@ -588,13 +623,13 @@ void nkCryptoToolECC::decryptFile(
                             }
 
                             size_t header_total_size = 4 + state->ephemeral_key_len + GCM_IV_LEN;
-                            if (state->total_input_size < header_total_size + GCM_TAG_LEN) {
+                            if (total_file_size < header_total_size + GCM_TAG_LEN) {
                                 std::cerr << "Error: Input file too small to contain header and GCM tag." << std::endl;
                                 state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
                                 return;
                             }
                             
-                            state->total_input_size -= (header_total_size + GCM_TAG_LEN);
+                            state->total_ciphertext_size = total_file_size - header_total_size - GCM_TAG_LEN;
                             handleFileReadForDecryption(state, {}, 0);
                         });
                 });
@@ -602,7 +637,7 @@ void nkCryptoToolECC::decryptFile(
 }
 
 void nkCryptoToolECC::handleFileReadForDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
-    if (ec == asio::error::eof || state->current_input_offset >= state->total_input_size) {
+    if (ec == asio::error::eof || state->total_bytes_processed >= state->total_ciphertext_size) {
         finishDecryption(state, {});
         return;
     }
@@ -614,7 +649,6 @@ void nkCryptoToolECC::handleFileReadForDecryption(std::shared_ptr<DecryptionStat
 
     if (bytes_transferred > 0) {
         state->bytes_read = bytes_transferred;
-        state->current_input_offset += bytes_transferred;
 
         int outlen = 0;
         if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), state->bytes_read) <= 0) {
@@ -632,8 +666,7 @@ void nkCryptoToolECC::handleFileReadForDecryption(std::shared_ptr<DecryptionStat
              handleFileWriteAfterDecryption(state, {}, 0);
         }
     } else {
-        // First call to start the loop
-         size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_input_size - state->current_input_offset);
+         size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_ciphertext_size - state->total_bytes_processed);
         if (to_read > 0) {
             state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), to_read),
                 std::bind(&nkCryptoToolECC::handleFileReadForDecryption, this, state,
@@ -651,12 +684,18 @@ void nkCryptoToolECC::handleFileWriteAfterDecryption(std::shared_ptr<DecryptionS
         return;
     }
 
-    if(state->current_input_offset >= state->total_input_size) {
+    state->total_bytes_processed += state->bytes_read;
+    if (state->total_ciphertext_size > 0) {
+        printProgress(static_cast<double>(state->total_bytes_processed) / state->total_ciphertext_size);
+    }
+
+
+    if(state->total_bytes_processed >= state->total_ciphertext_size) {
         finishDecryption(state, {});
         return;
     }
 
-    size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_input_size - state->current_input_offset);
+    size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_ciphertext_size - state->total_bytes_processed);
     if (to_read > 0) {
         state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), to_read),
             std::bind(&nkCryptoToolECC::handleFileReadForDecryption, this, state,
@@ -697,12 +736,13 @@ void nkCryptoToolECC::finishDecryption(std::shared_ptr<DecryptionState> state, c
             }
 
             asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
-                [state](const asio::error_code& ec_write_final, size_t) {
+                [state, this](const asio::error_code& ec_write_final, size_t) {
                     if (ec_write_final) {
                         std::cerr << "Error writing final decrypted data to output file: " << ec_write_final.message() << std::endl;
                         state->completion_handler(ec_write_final);
                         return;
                     }
+                    printProgress(1.0);
                     state->completion_handler(std::error_code());
                 });
     });

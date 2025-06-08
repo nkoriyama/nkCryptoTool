@@ -19,6 +19,7 @@
 class nkCryptoToolPQC : public nkCryptoToolBase {
 private:
     void printOpenSSLErrors();
+    void printProgress(double percentage); // Progress bar helper
     EVP_PKEY* loadPublicKey(const std::filesystem::path& public_key_path);
     EVP_PKEY* loadPrivateKey(const std::filesystem::path& private_key_path);
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
@@ -45,10 +46,13 @@ private:
         std::vector<unsigned char> input_buffer;
         std::vector<unsigned char> output_buffer;
         std::vector<unsigned char> tag;
+        size_t bytes_read;
         std::function<void(std::error_code)> completion_handler;
         std::vector<unsigned char> kem_ciphertext;
         std::vector<unsigned char> ecdh_sender_pub_key;
         std::vector<std::shared_ptr<uint32_t>> len_storage;
+        uintmax_t total_input_size;
+        uintmax_t total_bytes_processed;
 
         EncryptionState(asio::io_context& io_context)
             : input_file(io_context),
@@ -56,7 +60,10 @@ private:
               cipher_ctx(nullptr, EVP_CIPHER_CTX_free),
               input_buffer(CHUNK_SIZE),
               output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
-              tag(GCM_TAG_LEN) {}
+              tag(GCM_TAG_LEN),
+              bytes_read(0),
+              total_input_size(0),
+              total_bytes_processed(0) {}
     };
 
     void startPQCEncryptionAsync(std::shared_ptr<EncryptionState> state,
@@ -67,6 +74,7 @@ private:
     void write_header(std::shared_ptr<EncryptionState> state, bool is_hybrid, std::function<void(const asio::error_code&)> on_all_written);
     void write_salt_and_iv(std::shared_ptr<EncryptionState> state, std::function<void(const asio::error_code&)> on_complete);
     void handleFileReadForPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
+    void handleFileWriteAfterPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
     void finishPQCEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec);
 
     struct DecryptionState : std::enable_shared_from_this<DecryptionState> {
@@ -79,12 +87,13 @@ private:
         std::vector<unsigned char> input_buffer;
         std::vector<unsigned char> output_buffer;
         std::vector<unsigned char> tag;
+        size_t bytes_read;
         std::function<void(std::error_code)> completion_handler;
         std::filesystem::path input_filepath_orig;
         std::vector<unsigned char> kem_ciphertext_read;
         std::vector<unsigned char> ecdh_sender_pub_key_read;
-        size_t ciphertext_size_to_read;
-        size_t total_bytes_read;
+        uintmax_t total_ciphertext_size;
+        uintmax_t total_bytes_processed;
 
         DecryptionState(asio::io_context& io_context, const std::filesystem::path& input_path_orig)
             : input_file(io_context),
@@ -93,9 +102,10 @@ private:
               input_buffer(CHUNK_SIZE),
               output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
               tag(GCM_TAG_LEN),
+              bytes_read(0),
               input_filepath_orig(input_path_orig),
-              ciphertext_size_to_read(0),
-              total_bytes_read(0) {}
+              total_ciphertext_size(0),
+              total_bytes_processed(0) {}
     };
 
     void startPQCDecryptionAsync(std::shared_ptr<DecryptionState> state,
