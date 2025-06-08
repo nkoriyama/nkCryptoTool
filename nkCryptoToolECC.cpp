@@ -592,112 +592,195 @@ void nkCryptoToolECC::decryptFileHybrid(
     completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
 }
 
-// --- 同期 署名・検証 ---
-bool nkCryptoToolECC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
-    std::vector<unsigned char> input_data;
-    try {
-        input_data = this->readFile(input_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading input file for signing: " << e.what() << std::endl;
-        return false;
-    }
+// --- 非同期 署名 ---
+void nkCryptoToolECC::signFile(
+    asio::io_context& io_context,
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& signature_filepath,
+    const std::filesystem::path& signing_private_key_path,
+    const std::string& digest_algo,
+    std::function<void(std::error_code)> completion_handler)
+{
+    auto state = std::make_shared<SigningState>(io_context);
+    state->completion_handler = completion_handler;
 
     auto private_key = this->loadPrivateKey(signing_private_key_path);
     if (!private_key) {
-        return false;
-    }
-
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-    if (!mdctx) {
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
+        return;
     }
 
     const EVP_MD* digest = EVP_get_digestbyname(digest_algo.c_str());
     if (!digest) {
         std::cerr << "Error: Unknown digest algorithm: " << digest_algo << std::endl;
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
+        return;
     }
 
-    if (EVP_DigestSignInit(mdctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) {
+    if (!state->md_ctx || EVP_DigestSignInit(state->md_ctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) {
         printOpenSSLErrors();
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
     }
 
-    if (EVP_DigestSignUpdate(mdctx.get(), input_data.data(), input_data.size()) <= 0) {
+    std::error_code ec;
+    state->total_input_size = std::filesystem::file_size(input_filepath, ec);
+    if (ec) { state->completion_handler(ec); return; }
+
+    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { state->completion_handler(ec); return; }
+
+    state->output_file.open(signature_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if (ec) { state->completion_handler(ec); return; }
+
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer),
+        std::bind(&nkCryptoToolECC::handleFileReadForSigning, this, state,
+                    std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolECC::handleFileReadForSigning(std::shared_ptr<SigningState> state, const asio::error_code& ec, size_t bytes_transferred) {
+    if (ec == asio::error::eof) {
+        finishSigning(state);
+        return;
+    }
+    if (ec) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    if (EVP_DigestSignUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred) <= 0) {
         printOpenSSLErrors();
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
     }
 
+    state->total_bytes_processed += bytes_transferred;
+    if (state->total_input_size > 0) {
+        printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
+    }
+
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer),
+        std::bind(&nkCryptoToolECC::handleFileReadForSigning, this, state,
+                    std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolECC::finishSigning(std::shared_ptr<SigningState> state) {
     size_t sig_len = 0;
-    if (EVP_DigestSignFinal(mdctx.get(), nullptr, &sig_len) <= 0) {
+    if (EVP_DigestSignFinal(state->md_ctx.get(), nullptr, &sig_len) <= 0) {
         printOpenSSLErrors();
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
     }
 
     std::vector<unsigned char> signature(sig_len);
-    if (EVP_DigestSignFinal(mdctx.get(), signature.data(), &sig_len) <= 0) {
+    if (EVP_DigestSignFinal(state->md_ctx.get(), signature.data(), &sig_len) <= 0) {
         printOpenSSLErrors();
-        return false;
+        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+        return;
     }
     signature.resize(sig_len);
 
-    if (!this->writeFile(signature_filepath, signature)) {
-        return false;
-    }
-
-    return true;
+    asio::async_write(state->output_file, asio::buffer(signature),
+        [this, state](const asio::error_code& write_ec, size_t) {
+            printProgress(1.0);
+            state->completion_handler(write_ec);
+        });
 }
 
-bool nkCryptoToolECC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
-    std::vector<unsigned char> input_data;
-    try {
-        input_data = this->readFile(input_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading input file for verification: " << e.what() << std::endl;
-        return false;
-    }
-
-    std::vector<unsigned char> signature;
-    try {
-        signature = this->readFile(signature_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading signature file: " << e.what() << std::endl;
-        return false;
-    }
+// --- 非同期 検証 ---
+void nkCryptoToolECC::verifySignature(
+    asio::io_context& io_context,
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& signature_filepath,
+    const std::filesystem::path& signing_public_key_path,
+    std::function<void(std::error_code, bool)> completion_handler)
+{
+    auto state = std::make_shared<VerificationState>(io_context);
+    state->verification_completion_handler = completion_handler;
 
     auto public_key = this->loadPublicKey(signing_public_key_path);
     if (!public_key) {
-        return false;
+        state->verification_completion_handler(asio::error::make_error_code(asio::error::invalid_argument), false);
+        return;
     }
-
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-    if (!mdctx) {
-        return false;
-    }
-
+    
     // PQC/ECC署名スキームに応じてダイジェストを動的に決定する必要があるが、
     // ここではECCはSHA256を仮定する
-    const EVP_MD* digest = EVP_sha256(); 
-    if (EVP_DigestVerifyInit(mdctx.get(), nullptr, digest, nullptr, public_key.get()) <= 0) {
+    const EVP_MD* digest = EVP_sha256();
+    if (EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, digest, nullptr, public_key.get()) <= 0) {
         printOpenSSLErrors();
-        return false;
+        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false);
+        return;
     }
 
-    if (EVP_DigestVerifyUpdate(mdctx.get(), input_data.data(), input_data.size()) <= 0) {
-        printOpenSSLErrors();
-        return false;
+    std::error_code ec;
+    state->signature_file.open(signature_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { state->verification_completion_handler(ec, false); return; }
+
+    uintmax_t sig_size = std::filesystem::file_size(signature_filepath, ec);
+    if (ec) { state->verification_completion_handler(ec, false); return; }
+    state->signature.resize(sig_size);
+
+    asio::async_read(state->signature_file, asio::buffer(state->signature),
+        [this, state, input_filepath](const asio::error_code& read_sig_ec, size_t) {
+            if (read_sig_ec) {
+                state->verification_completion_handler(read_sig_ec, false);
+                return;
+            }
+
+            std::error_code open_ec;
+            state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
+            if (open_ec) { state->verification_completion_handler(open_ec, false); return; }
+
+            state->input_file.open(input_filepath.string(), asio::stream_file::read_only, open_ec);
+            if (open_ec) { state->verification_completion_handler(open_ec, false); return; }
+
+            state->input_file.async_read_some(
+                asio::buffer(state->input_buffer),
+                std::bind(&nkCryptoToolECC::handleFileReadForVerification, this, state,
+                            std::placeholders::_1, std::placeholders::_2));
+        });
+}
+
+void nkCryptoToolECC::handleFileReadForVerification(std::shared_ptr<VerificationState> state, const asio::error_code& ec, size_t bytes_transferred) {
+    if (ec == asio::error::eof) {
+        finishVerification(state);
+        return;
+    }
+    if (ec) {
+        state->verification_completion_handler(ec, false);
+        return;
     }
 
-    int result = EVP_DigestVerifyFinal(mdctx.get(), signature.data(), signature.size());
+    if (EVP_DigestVerifyUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred) <= 0) {
+        printOpenSSLErrors();
+        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false);
+        return;
+    }
+
+    state->total_bytes_processed += bytes_transferred;
+    if (state->total_input_size > 0) {
+        printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
+    }
+
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer),
+        std::bind(&nkCryptoToolECC::handleFileReadForVerification, this, state,
+                    std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolECC::finishVerification(std::shared_ptr<VerificationState> state) {
+    printProgress(1.0);
+    int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
     if (result == 1) {
-        return true; // 検証成功
+        state->verification_completion_handler({}, true); // 検証成功
     } else if (result == 0) {
-        std::cerr << "Error: Signature verification failed. The signature does not match the file or public key." << std::endl;
-        printOpenSSLErrors();
-        return false;
+        // printOpenSSLErrors(); // これはエラーではなく、単に検証失敗を示すので不要なことが多い
+        state->verification_completion_handler({}, false); // 検証失敗
     } else {
-        std::cerr << "Error: An error occurred during signature verification." << std::endl;
         printOpenSSLErrors();
-        return false;
+        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false); // OpenSSLエラー
     }
 }

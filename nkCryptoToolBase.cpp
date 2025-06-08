@@ -52,7 +52,7 @@ std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const {
 nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)
     : input_file(io_context),
       output_file(io_context),
-      cipher_ctx(EVP_CIPHER_CTX_new()), // FIX: Correctly initialize unique_ptr with default deleter
+      cipher_ctx(EVP_CIPHER_CTX_new()),
       input_buffer(CHUNK_SIZE),
       output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
       tag(GCM_TAG_LEN),
@@ -148,32 +148,4 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
         return {};
     }
     return derived_key;
-}
-
-// --- Synchronous File I/O ---
-std::vector<unsigned char> nkCryptoToolBase::readFile(const std::filesystem::path& filepath) {
-    std::ifstream file(filepath, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-        throw std::runtime_error("Could not open file for reading: " + filepath.string());
-    }
-    std::streamsize size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    std::vector<unsigned char> buffer(size);
-    if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
-        throw std::runtime_error("Could not read file content: " + filepath.string());
-    }
-    return buffer;
-}
-
-bool nkCryptoToolBase::writeFile(const std::filesystem::path& filepath, const std::vector<unsigned char>& data) {
-    std::ofstream file(filepath, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Error: Could not open file for writing: " << filepath << std::endl;
-        return false;
-    }
-    if (!file.write(reinterpret_cast<const char*>(data.data()), data.size())) {
-        std::cerr << "Error: Could not write file content: " << filepath << std::endl;
-        return false;
-    }
-    return true;
 }

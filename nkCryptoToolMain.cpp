@@ -60,7 +60,7 @@ int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
         std::getline(std::cin, input_passphrase);
     }
 
-    if (input_passphrase.length() > size) {
+    if (input_passphrase.length() > (unsigned int)size) {
         std::cerr << "Error: Passphrase too long." << std::endl;
         return 0;
     }
@@ -130,6 +130,7 @@ int main(int argc, char* argv[]) {
     constexpr int RECIPIENT_ECDH_PUBKEY_OPT = 257;
     constexpr int RECIPIENT_MLKEM_PRIVKEY_OPT = 258;
     constexpr int RECIPIENT_ECDH_PRIVKEY_OPT = 259;
+    constexpr int SIGNATURE_FILE_OPT = 260; // For --signature
 
     struct option long_options[] = {
         {"mode", required_argument, nullptr, 'm'},
@@ -143,7 +144,7 @@ int main(int argc, char* argv[]) {
         {"output-file", required_argument, nullptr, 'o'},
         {"sign", no_argument, nullptr, 'n'},
         {"signing-privkey", required_argument, nullptr, 'i'},
-        {"signature", required_argument, nullptr, 't'},
+        {"signature", required_argument, nullptr, SIGNATURE_FILE_OPT},
         {"digest-algo", required_argument, nullptr, 'a'},
         {"verify", no_argument, nullptr, 'v'},
         {"signing-pubkey", required_argument, nullptr, 'b'},
@@ -174,7 +175,6 @@ int main(int argc, char* argv[]) {
             case 'o': options["output-file"] = optarg; break;
             case 'n': flags["sign"] = true; break;
             case 'i': options["signing-privkey"] = optarg; break;
-            case 't': options["signature-file"] = optarg; break;
             case 'a': options["digest-algo"] = optarg; break;
             case 'v': flags["verify"] = true; break;
             case 'b': options["signing-pubkey"] = optarg; break;
@@ -185,6 +185,7 @@ int main(int argc, char* argv[]) {
             case RECIPIENT_ECDH_PUBKEY_OPT: options["recipient-ecdh-pubkey"] = optarg; break;
             case RECIPIENT_MLKEM_PRIVKEY_OPT: options["recipient-mlkem-privkey"] = optarg; break;
             case RECIPIENT_ECDH_PRIVKEY_OPT: options["recipient-ecdh-privkey"] = optarg; break;
+            case SIGNATURE_FILE_OPT: options["signature-file"] = optarg; break;
             default: display_usage(); return 1;
         }
     }
@@ -213,6 +214,7 @@ int main(int argc, char* argv[]) {
     }
 
     asio::io_context io_context;
+    int return_code = 0;
 
     if (flags["gen_enc_key"]) {
         if (options["mode"] == "hybrid") {
@@ -242,7 +244,7 @@ int main(int argc, char* argv[]) {
             if (pqc_success) {
                 std::cout << "PQC keys generated successfully: " << mlkem_pub_path << " and " << mlkem_priv_path << std::endl;
             } else {
-                std::cerr << "Error: PQC encryption key generation failed." << std::endl; return 1;
+                std::cerr << "Error: PQC encryption key generation failed." << std::endl; return_code = 1;
             }
 
             bool ecc_success = ecc_gen_handler->generateEncryptionKeyPair(
@@ -253,7 +255,7 @@ int main(int argc, char* argv[]) {
             if (ecc_success) {
                 std::cout << "ECC keys generated successfully: " << ecdh_pub_path << " and " << ecdh_priv_path << std::endl;
             } else {
-                std::cerr << "Error: ECC encryption key generation failed." << std::endl; return 1;
+                std::cerr << "Error: ECC encryption key generation failed." << std::endl; return_code = 1;
             }
         } else {
             std::cout << "Generating encryption key pair for mode '" << options["mode"] << "'..." << std::endl;
@@ -267,89 +269,110 @@ int main(int argc, char* argv[]) {
                           << crypto_handler->getEncryptionPublicKeyPath() << " and "
                           << crypto_handler->getEncryptionPrivateKeyPath() << std::endl;
             } else {
-                std::cerr << "Error: Encryption key generation failed." << std::endl; return 1;
+                std::cerr << "Error: Encryption key generation failed." << std::endl; return_code = 1;
             }
         }
     } else if (flags["gen_sign_key"]) {
-        // Signing is not hybrid
          if (options["mode"] == "hybrid") {
             std::cerr << "Error: Key generation for signing is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl;
-            return 1;
-        }
-        std::cout << "Generating signing key pair for mode '" << options["mode"] << "'..." << std::endl;
-        bool success = crypto_handler->generateSigningKeyPair(
-            crypto_handler->getSigningPublicKeyPath(),
-            crypto_handler->getSigningPrivateKeyPath(),
-            global_passphrase_for_pem_cb
-        );
-        if (success) {
-            std::cout << "Signing keys generated successfully." << std::endl;
+            return_code = 1;
         } else {
-            std::cerr << "Error: Signing key generation failed." << std::endl; return 1;
+            std::cout << "Generating signing key pair for mode '" << options["mode"] << "'..." << std::endl;
+            bool success = crypto_handler->generateSigningKeyPair(
+                crypto_handler->getSigningPublicKeyPath(),
+                crypto_handler->getSigningPrivateKeyPath(),
+                global_passphrase_for_pem_cb
+            );
+            if (success) {
+                std::cout << "Signing keys generated successfully." << std::endl;
+            } else {
+                std::cerr << "Error: Signing key generation failed." << std::endl; return_code = 1;
+            }
         }
     } else if (flags["encrypt"]) {
         if (options["mode"] == "hybrid") {
             if (!options.count("recipient-mlkem-pubkey") || !options.count("recipient-ecdh-pubkey") || !options.count("output-file") || non_option_args.size() != 1) {
                  std::cerr << "Error: Hybrid encryption mode requires --recipient-mlkem-pubkey, --recipient-ecdh-pubkey, -o, and an input file." << std::endl;
-                 display_usage(); return 1;
+                 display_usage(); return_code = 1;
+            } else {
+                crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"],
+                     [&return_code](std::error_code ec) { if (ec) {std::cerr << "Error: Hybrid encryption failed: " << ec.message() << std::endl; return_code = 1; }});
+                io_context.run();
             }
-            crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"],
-                 [](std::error_code ec) { if (ec) std::cerr << "Error: Hybrid encryption failed: " << ec.message() << std::endl; });
-            io_context.run();
         } else {
             if (!options.count("recipient-pubkey") || !options.count("output-file") || non_option_args.size() != 1) {
                 std::cerr << "Error: Encryption mode requires --recipient-pubkey, -o, and exactly one input file." << std::endl;
-                display_usage(); return 1;
+                display_usage(); return_code = 1;
+            } else {
+                crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"],
+                    [&return_code](std::error_code ec) { if (ec) {std::cerr << "Error: Encryption failed: " << ec.message() << std::endl; return_code = 1; }});
+                io_context.run();
             }
-            crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"],
-                [](std::error_code ec) { if (ec) std::cerr << "Error: Encryption failed: " << ec.message() << std::endl; });
-            io_context.run();
         }
     } else if (flags["decrypt"]) {
         if (options["mode"] == "hybrid") {
             if (!options.count("recipient-mlkem-privkey") || !options.count("recipient-ecdh-privkey") || !options.count("output-file") || non_option_args.size() != 1) {
                 std::cerr << "Error: Hybrid decryption mode requires --recipient-mlkem-privkey, --recipient-ecdh-privkey, -o, and an input file." << std::endl;
-                display_usage(); return 1;
+                display_usage(); return_code = 1;
+            } else {
+                crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"],
+                    [&return_code](std::error_code ec) { if (ec) {std::cerr << "Error: Hybrid decryption failed: " << ec.message() << std::endl; return_code = 1;}});
+                io_context.run();
             }
-            crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"],
-                [](std::error_code ec) { if (ec) std::cerr << "Error: Hybrid decryption failed: " << ec.message() << std::endl; });
-            io_context.run();
         } else {
             if (!options.count("user-privkey") || !options.count("output-file") || non_option_args.size() != 1) {
                 std::cerr << "Error: Decryption mode requires --user-privkey, -o, and exactly one input file." << std::endl;
-                display_usage(); return 1;
+                display_usage(); return_code = 1;
+            } else {
+                crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "",
+                    [&return_code](std::error_code ec) { if (ec) {std::cerr << "Error: Decryption failed: " << ec.message() << std::endl; return_code = 1;}});
+                io_context.run();
             }
-            crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "",
-                [](std::error_code ec) { if (ec) std::cerr << "Error: Decryption failed: " << ec.message() << std::endl; });
-            io_context.run();
         }
     } else if (flags["sign"]) {
         if (options["mode"] == "hybrid") {
-            std::cerr << "Error: Signing is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return 1;
-        }
-        if (!options.count("signing-privkey") || !options.count("signature-file") || non_option_args.size() != 1) {
+            std::cerr << "Error: Signing is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return_code = 1;
+        } else if (!options.count("signing-privkey") || !options.count("signature-file") || non_option_args.size() != 1) {
             std::cerr << "Error: Signing mode requires --signing-privkey, --signature, and exactly one input file." << std::endl;
-            display_usage(); return 1;
+            display_usage(); return_code = 1;
+        } else {
+            crypto_handler->signFile(io_context, non_option_args[0], options["signature-file"], options["signing-privkey"], options["digest-algo"],
+                [&return_code](std::error_code ec) {
+                    if (ec) {
+                        std::cerr << "\nError: Signing failed: " << ec.message() << std::endl;
+                        return_code = 1;
+                    } else {
+                         std::cout << "\nFile signed successfully." << std::endl;
+                    }
+                });
+            io_context.run();
         }
-        bool success = crypto_handler->signFile(non_option_args[0], options["signature-file"], options["signing-privkey"], options["digest-algo"]);
-        if (success) { std::cout << "File signed successfully." << std::endl; } 
-        else { std::cerr << "Error: Signing failed." << std::endl; return 1; }
     } else if (flags["verify"]) {
         if (options["mode"] == "hybrid") {
-            std::cerr << "Error: Verification is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return 1;
-        }
-        if (!options.count("signing-pubkey") || !options.count("signature-file") || non_option_args.size() != 1) {
+            std::cerr << "Error: Verification is not applicable in 'hybrid' mode. Choose 'ecc' or 'pqc'." << std::endl; return_code = 1;
+        } else if (!options.count("signing-pubkey") || !options.count("signature-file") || non_option_args.size() != 1) {
             std::cerr << "Error: Verification requires --signing-pubkey, --signature, and one input file." << std::endl;
-            display_usage(); return 1;
+            display_usage(); return_code = 1;
+        } else {
+            crypto_handler->verifySignature(io_context, non_option_args[0], options["signature-file"], options["signing-pubkey"],
+                [&return_code](std::error_code ec, bool success) {
+                    if (ec) {
+                        std::cerr << "\nError: An error occurred during verification: " << ec.message() << std::endl;
+                        return_code = 1;
+                    } else if (success) {
+                        std::cout << "\nSignature verified successfully." << std::endl;
+                    } else {
+                        std::cerr << "\nError: Signature verification failed. The signature does not match." << std::endl;
+                        return_code = 1;
+                    }
+                });
+            io_context.run();
         }
-        bool success = crypto_handler->verifySignature(non_option_args[0], options["signature-file"], options["signing-pubkey"]);
-        if (success) { std::cout << "Signature verified successfully." << std::endl; } 
-        else { std::cerr << "Error: Verification failed." << std::endl; return 1; }
     } else {
-        if (argc > 1) {
+        if (argc > 1 || !non_option_args.empty()) {
              std::cerr << "Error: No valid operation mode specified or missing arguments." << std::endl;
              display_usage();
-             return 1;
+             return_code = 1;
         } else {
             display_usage();
         }
@@ -360,5 +383,5 @@ int main(int argc, char* argv[]) {
         std::cout << "OpenSSL provider unloaded." << std::endl;
     }
 
-    return 0;
+    return return_code;
 }

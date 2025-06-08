@@ -504,7 +504,6 @@ void nkCryptoToolPQC::finishPQCDecryption(std::shared_ptr<DecryptionState> state
     
     state->tag.resize(GCM_TAG_LEN);
     asio::error_code tag_ec;
-    // Read the remaining tag synchronously for simplicity
     asio::read(state->input_file, asio::buffer(state->tag), tag_ec);
     
     if(tag_ec && tag_ec != asio::error::eof) {
@@ -536,77 +535,160 @@ void nkCryptoToolPQC::finishPQCDecryption(std::shared_ptr<DecryptionState> state
     state->completion_handler({});
 }
 
-// --- 同期 署名・検証 ---
-bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& /* digest_algo is unused for PQC */) {
-    std::vector<unsigned char> file_content;
-    try {
-        file_content = this->readFile(input_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading input file for signing: " << e.what() << std::endl;
-        return false;
+// --- 非同期 署名 (PQC One-Shot) ---
+void nkCryptoToolPQC::signFile(
+    asio::io_context& io_context,
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& signature_filepath,
+    const std::filesystem::path& signing_private_key_path,
+    const std::string&, // digest_algo is unused for PQC
+    std::function<void(std::error_code)> completion_handler)
+{
+    auto state = std::make_shared<SigningState>(io_context);
+    state->completion_handler = completion_handler;
+
+    auto private_key = this->loadPrivateKey(signing_private_key_path);
+    if (!private_key) {
+        completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
+        return;
     }
 
-    auto priv_key = this->loadPrivateKey(signing_private_key_path);
-    if (!priv_key) return false;
+    std::error_code ec;
+    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { completion_handler(ec); return; }
 
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-    if (!mdctx) return false;
+    state->output_file.open(signature_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if (ec) { completion_handler(ec); return; }
 
-    // ML-DSA does not use a separate digest algorithm parameter in EVP_DigestSignInit
-    if (1 != EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, priv_key.get())) {
-        printOpenSSLErrors();
-        return false;
-    }
+    uintmax_t file_size = std::filesystem::file_size(input_filepath, ec);
+    if (ec) { completion_handler(ec); return; }
+    state->file_content.resize(file_size);
 
-    size_t sig_len;
-    if (1 != EVP_DigestSign(mdctx.get(), nullptr, &sig_len, file_content.data(), file_content.size())) {
-        printOpenSSLErrors();
-        return false;
-    }
+    // Read the whole file into memory
+    asio::async_read(state->input_file, asio::buffer(state->file_content),
+        [this, state, private_key = std::move(private_key)](const asio::error_code& read_ec, size_t) mutable {
+            if (read_ec) {
+                state->completion_handler(read_ec);
+                return;
+            }
+            
+            // File is now in memory, perform one-shot signing
+            std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
+            if (!mdctx) {
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
 
-    std::vector<unsigned char> signature(sig_len);
-    if (1 != EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, file_content.data(), file_content.size())) {
-        printOpenSSLErrors();
-        return false;
-    }
-    signature.resize(sig_len);
+            size_t sig_len;
+            // Re-initialize context for each one-shot operation for safety
+            if (EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, private_key.get()) <= 0) {
+                printOpenSSLErrors();
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
+            
+            // Use the one-shot EVP_DigestSign. Note: this is a single call for update and final.
+            // The streaming API (Update/Final) is not supported for ML-DSA.
+            if (EVP_DigestSign(mdctx.get(), nullptr, &sig_len, state->file_content.data(), state->file_content.size()) <= 0) {
+                 printOpenSSLErrors();
+                 state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                 return;
+            }
 
-    return this->writeFile(signature_filepath, signature);
+            std::vector<unsigned char> signature(sig_len);
+            
+            // Re-initialize context again to perform the actual signing
+            if (EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, private_key.get()) <= 0) {
+                printOpenSSLErrors();
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
+            if (EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, state->file_content.data(), state->file_content.size()) <= 0) {
+                 printOpenSSLErrors();
+                 state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                 return;
+            }
+            signature.resize(sig_len);
+
+            asio::async_write(state->output_file, asio::buffer(signature),
+                [state](const asio::error_code& write_ec, size_t) {
+                    state->completion_handler(write_ec);
+                });
+        });
 }
 
-bool nkCryptoToolPQC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
-    std::vector<unsigned char> file_content;
-     try {
-        file_content = this->readFile(input_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading input file for verification: " << e.what() << std::endl;
-        return false;
+
+// --- 非同期 検証 (PQC One-Shot) ---
+void nkCryptoToolPQC::verifySignature(
+    asio::io_context& io_context,
+    const std::filesystem::path& input_filepath,
+    const std::filesystem::path& signature_filepath,
+    const std::filesystem::path& signing_public_key_path,
+    std::function<void(std::error_code, bool)> completion_handler)
+{
+    auto state = std::make_shared<VerificationState>(io_context);
+    state->verification_completion_handler = completion_handler;
+
+    auto public_key = this->loadPublicKey(signing_public_key_path);
+    if (!public_key) {
+        completion_handler(asio::error::make_error_code(asio::error::invalid_argument), false);
+        return;
     }
     
-    std::vector<unsigned char> signature;
-    try {
-        signature = this->readFile(signature_filepath);
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Error reading signature file: " << e.what() << std::endl;
-        return false;
-    }
+    std::error_code ec;
+    // Read signature file first
+    state->signature_file.open(signature_filepath.string(), asio::stream_file::read_only, ec);
+    if (ec) { completion_handler(ec, false); return; }
 
-    auto pub_key = this->loadPublicKey(signing_public_key_path);
-    if(!pub_key) return false;
+    uintmax_t sig_size = std::filesystem::file_size(signature_filepath, ec);
+    if (ec) { completion_handler(ec, false); return; }
+    state->signature.resize(sig_size);
 
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-    if (!mdctx) return false;
+    asio::async_read(state->signature_file, asio::buffer(state->signature),
+        [this, state, input_filepath, public_key = std::move(public_key)](const asio::error_code& read_sig_ec, size_t) mutable {
+            if (read_sig_ec) {
+                state->verification_completion_handler(read_sig_ec, false);
+                return;
+            }
+            
+            // Then read the input file
+            std::error_code read_input_ec;
+            state->input_file.open(input_filepath.string(), asio::stream_file::read_only, read_input_ec);
+            if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
 
-    if (1 != EVP_DigestVerifyInit(mdctx.get(), nullptr, nullptr, nullptr, pub_key.get())) {
-        printOpenSSLErrors();
-        return false;
-    }
-    
-    if (1 == EVP_DigestVerify(mdctx.get(), signature.data(), signature.size(), file_content.data(), file_content.size())) {
-        return true; // Success
-    } else {
-        std::cerr << "Error: Signature verification failed." << std::endl;
-        printOpenSSLErrors();
-        return false;
-    }
+            uintmax_t input_size = std::filesystem::file_size(input_filepath, read_input_ec);
+            if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
+            state->file_content.resize(input_size);
+
+            asio::async_read(state->input_file, asio::buffer(state->file_content),
+                [this, state, public_key = std::move(public_key)](const asio::error_code& final_read_ec, size_t) mutable {
+                    if (final_read_ec) {
+                        state->verification_completion_handler(final_read_ec, false);
+                        return;
+                    }
+
+                    // Both files are in memory, perform one-shot verification
+                    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
+                    if (!mdctx) {
+                        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false);
+                        return;
+                    }
+                    if (EVP_DigestVerifyInit(mdctx.get(), nullptr, nullptr, nullptr, public_key.get()) <= 0) {
+                        printOpenSSLErrors();
+                        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false);
+                        return;
+                    }
+                    
+                    int result = EVP_DigestVerify(mdctx.get(), state->signature.data(), state->signature.size(), state->file_content.data(), state->file_content.size());
+                    
+                    if (result == 1) {
+                        state->verification_completion_handler({}, true); // Success
+                    } else if (result == 0) {
+                        state->verification_completion_handler({}, false); // Verification failed
+                    } else {
+                        printOpenSSLErrors();
+                        state->verification_completion_handler(asio::error::make_error_code(asio::error::operation_not_supported), false); // OpenSSL error
+                    }
+                });
+        });
 }

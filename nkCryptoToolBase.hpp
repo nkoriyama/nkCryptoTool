@@ -65,9 +65,6 @@ protected:
         virtual ~AsyncStateBase() = default;
     };
 
-    // Helper functions for synchronous file operations (used in signing/verification)
-    std::vector<unsigned char> readFile(const std::filesystem::path& filepath);
-    bool writeFile(const std::filesystem::path& filepath, const std::vector<unsigned char>& data);
 
 public:
     nkCryptoToolBase();
@@ -100,7 +97,7 @@ public:
         const std::filesystem::path& input_filepath,
         const std::filesystem::path& output_filepath,
         const std::filesystem::path& user_private_key_path,
-        const std::filesystem::path& sender_public_key_path, 
+        const std::filesystem::path& sender_public_key_path,
         std::function<void(std::error_code)> completion_handler) = 0;
 
     virtual void decryptFileHybrid(
@@ -111,8 +108,20 @@ public:
         const std::filesystem::path& recipient_ecdh_private_key_path,
         std::function<void(std::error_code)> completion_handler) = 0;
 
-    virtual bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) = 0;
-    virtual bool verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) = 0;
+    virtual void signFile(
+        asio::io_context& io_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& signature_filepath,
+        const std::filesystem::path& signing_private_key_path,
+        const std::string& digest_algo,
+        std::function<void(std::error_code)> completion_handler) = 0;
+
+    virtual void verifySignature(
+        asio::io_context& io_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& signature_filepath,
+        const std::filesystem::path& signing_public_key_path,
+        std::function<void(std::error_code, bool)> completion_handler) = 0;
 
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;

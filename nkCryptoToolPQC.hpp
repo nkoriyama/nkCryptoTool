@@ -9,7 +9,6 @@
 class nkCryptoToolPQC : public nkCryptoToolBase {
 private:
     // --- State structures for async operations ---
-    // Inherit from the base state and add PQC/Hybrid specific members
     struct EncryptionState : public AsyncStateBase, public std::enable_shared_from_this<EncryptionState> {
         std::vector<unsigned char> encryption_key;
         std::vector<unsigned char> iv;
@@ -26,7 +25,6 @@ private:
             }
     };
 
-    // PQC/Hybrid Encryption Core Logic and Handlers
     void startPQCEncryptionAsync(std::shared_ptr<EncryptionState> state,
                                  const std::filesystem::path& input_filepath,
                                  const std::filesystem::path& output_filepath,
@@ -53,7 +51,6 @@ private:
               total_ciphertext_size(0) {}
     };
 
-    // PQC/Hybrid Decryption Core Logic and Handlers
     void startPQCDecryptionAsync(std::shared_ptr<DecryptionState> state,
                                  const std::filesystem::path& input_filepath,
                                  const std::filesystem::path& output_filepath,
@@ -63,6 +60,29 @@ private:
     void handleFileWriteAfterPQCDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred);
     void finishPQCDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec);
 
+    // --- State for PQC one-shot signing/verification ---
+    // Note: PQC signing reads the whole file due to OpenSSL API limitations for streaming ML-DSA.
+    struct SigningState : public std::enable_shared_from_this<SigningState> {
+        asio::stream_file input_file;
+        asio::stream_file output_file;
+        std::vector<unsigned char> file_content;
+        std::function<void(std::error_code)> completion_handler;
+
+        SigningState(asio::io_context& io_context)
+            : input_file(io_context), output_file(io_context) {}
+    };
+    
+    struct VerificationState : public std::enable_shared_from_this<VerificationState> {
+        asio::stream_file input_file;
+        asio::stream_file signature_file;
+        std::vector<unsigned char> file_content;
+        std::vector<unsigned char> signature;
+        std::function<void(std::error_code, bool)> verification_completion_handler;
+
+        VerificationState(asio::io_context& io_context)
+            : input_file(io_context), signature_file(io_context) {}
+    };
+    
 public:
     nkCryptoToolPQC();
     ~nkCryptoToolPQC();
@@ -102,8 +122,20 @@ public:
         const std::filesystem::path& recipient_ecdh_private_key_path,
         std::function<void(std::error_code)> completion_handler) override;
 
-    bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) override;
-    bool verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) override;
+    void signFile(
+        asio::io_context& io_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& signature_filepath,
+        const std::filesystem::path& signing_private_key_path,
+        const std::string& digest_algo,
+        std::function<void(std::error_code)> completion_handler) override;
+
+    void verifySignature(
+        asio::io_context& io_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& signature_filepath,
+        const std::filesystem::path& signing_public_key_path,
+        std::function<void(std::error_code, bool)> completion_handler) override;
 
     std::filesystem::path getEncryptionPrivateKeyPath() const override;
     std::filesystem::path getSigningPrivateKeyPath() const override;
