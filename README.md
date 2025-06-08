@@ -30,9 +30,9 @@ OpenSSL のインストール: OpenSSL 3.0 以降がシステムにインスト�
 
 - Windowsの場合: OpenSSLの公式ウェブサイトからインストーラをダウンロードするか、vcpkgなどのパッケージマネージャを使用してください。msys2の場合、pacman -S mingw-w64-x86_64-openssl
 
-### OQS OpenSSL 3プロバイダのインストール (PQC使用時)
+### OQS OpenSSL 3プロバイダのインストール (OpenSSL3.5未満でPQC使用時)
 
-PQC機能を使用するには、OQS OpenSSL 3プロバイダをインストールし、OpenSSLの設定で有効にするか、プログラム実行時に明示的にロードする必要があります。詳細な手順はOQSのGitHubリポジトリを参照してください。
+OpenSSL3.5未満でPQC機能を使用するには、OQS OpenSSL 3プロバイダをインストールし、OpenSSLの設定で有効にするか、プログラム実行時に明示的にロードする必要があります。詳細な手順はOQSのGitHubリポジトリを参照してください。
 
 ビルドディレクトリの作成:
 
