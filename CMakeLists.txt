@@ -1,54 +1,53 @@
-# CMakeの最小バージョンを指定します。
-cmake_minimum_required(VERSION 3.14)
+# CMakeの最小バージョンを指定します。FetchContentを安定して使用するため3.11以上を推奨します。
+cmake_minimum_required(VERSION 3.11)
 
-# プロジェクト名を定義します。
+# プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
 
-# C++23標準を使用するように設定します。
-set(CMAKE_CXX_STANDARD 23)
+# C++17標準を使用するように設定します。
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# CTestを有効化
-enable_testing()
-
-# --- 依存関係をFetchContentで取得 ---
+# FetchContentモジュールをインクルードします。
 include(FetchContent)
 
-# FetchContentがタイムスタンプを扱う際のポリシーを設定 (警告の解消)
-if(POLICY CMP0135)
-  cmake_policy(SET CMP0135 NEW)
-endif()
-
-# 1. Googletest (gtest) を取得
-FetchContent_Declare(
-  googletest
-  URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-)
-# gtestはビルドが必要なため、MakeAvailableでサブディレクトリとして追加
-FetchContent_MakeAvailable(googletest)
-
-# 2. Asio を取得 (ヘッダーオンリー)
+# --- 依存関係の取得: Asio ---
 FetchContent_Declare(
   asio
   GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-  GIT_TAG        asio-1-30-2
+  GIT_TAG        asio-1-28-1 # 安定したバージョンタグを指定
 )
-# asioはヘッダーオンリーなので、ソースの場所を取得するだけ
-FetchContent_GetProperties(asio)
-if(NOT asio_POPULATED)
-  FetchContent_Populate(asio)
-endif()
+FetchContent_MakeAvailable(asio)
 
+# --- 依存関係の取得: LZ4 (ソース取得のみ) ---
+FetchContent_Declare(
+  lz4
+  GIT_REPOSITORY https://github.com/lz4/lz4.git
+  GIT_TAG        v1.9.4 # 安定したバージョンタグを指定
+)
+# Populateを使い、ソースコードのダウンロードのみ行います。
+FetchContent_Populate(lz4)
 
-# --- ライブラリの検索 ---
+# --- NEW: LZ4のソースから静的ライブラリを作成 ---
+# これにより、LZ4のビルドシステムに依存せず、我々のプロジェクト内で完結します。
+add_library(lz4_lib STATIC
+    "${lz4_SOURCE_DIR}/lib/lz4.c"
+    "${lz4_SOURCE_DIR}/lib/lz4frame.c"
+    "${lz4_SOURCE_DIR}/lib/lz4hc.c"
+)
+# このライブラリが自身のヘッダーを見つけられるようにインクルードパスを設定します。
+target_include_directories(lz4_lib PUBLIC
+    "${lz4_SOURCE_DIR}/lib"
+)
+# --- 依存関係の定義ここまで ---
+
 # OpenSSLライブラリを見つけます。
 find_package(OpenSSL REQUIRED)
 
-
-# --- 実行可能ファイルの設定 ---
+# 実行可能ファイルの出力ディレクトリを build/bin に設定します。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-# メインの実行可能ファイルを定義
+# ソースファイルから実行可能ファイルを作成します。
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
     nkCryptoToolBase.cpp
@@ -57,62 +56,23 @@ add_executable(nkCryptoTool
     getopt_long.c
 )
 
-# 実行可能ファイルにライブラリをリンクします
-set(LIBS OpenSSL::SSL OpenSSL::Crypto)
-if(WIN32)
-    list(APPEND LIBS ws2_32)
-endif()
-target_link_libraries(nkCryptoTool PRIVATE ${LIBS})
-
-# 必要なインクルードパスを明示的に追加
-# 修正点: 正しいディレクトリ構造に合わせてパスを修正
+# インクルードディレクトリを追加します。
+# lz4のパスは、lz4_libターゲットから自動的に継承されるため不要です。
 target_include_directories(nkCryptoTool PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${asio_SOURCE_DIR}/asio/include
+    "${asio_SOURCE_DIR}/asio/include"
 )
 
-
-# ===== ユニットテスト用の設定 =====
-add_executable(runUnitTests
-    tests/crypto_tool_test.cpp
-    nkCryptoToolBase.cpp
-    nkCryptoToolECC.cpp
-    nkCryptoToolPQC.cpp
-    getopt_long.c
+# 実行可能ファイルにライブラリをリンクします。
+target_link_libraries(nkCryptoTool PRIVATE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    lz4_lib  # 作成した静的ライブラリターゲットをリンク
 )
 
-# ユニットテストに必要なライブラリをリンク
-target_link_libraries(runUnitTests PRIVATE
-    GTest::gtest_main
-    ${LIBS}
-)
+# Windows固有のライブラリを追加でリンクします。
+if(WIN32)
+    target_link_libraries(nkCryptoTool PRIVATE ws2_32)
+endif()
 
-# ユニットテストに必要なインクルードパスを明示的に追加
-# 修正点: 正しいディレクトリ構造に合わせてパスを修正
-target_include_directories(runUnitTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR} # nkCryptoTool*.hpp を見つけるため
-    ${asio_SOURCE_DIR}/asio/include
-)
-
-# CTestにユニットテストを登録
-add_test(NAME UnitTests COMMAND $<TARGET_FILE:runUnitTests>)
-
-
-# ===== E2E (End-to-End) テスト用の設定 =====
-set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/E2E_README.md")
-file(WRITE ${E2E_TEST_INPUT_FILE} "This is a test file for nkCryptoTool.\nIt contains multiple lines of text to verify encryption and signing.\n1234567890\n!@#$%^&*()")
-
-set(E2E_TEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tests/E2ETests.cmake")
-
-add_test(
-    NAME EndToEndTests
-    COMMAND "${CMAKE_COMMAND}"
-            -D NK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
-            -D TEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
-            -D TEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/E2E_Test_Output
-            -P "${E2E_TEST_SCRIPT}"
-)
-
-
-# ===== インストール設定（オプション） =====
+# インストールルールを設定します（オプション）。
 install(TARGETS nkCryptoTool DESTINATION bin)

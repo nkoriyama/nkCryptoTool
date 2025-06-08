@@ -6,12 +6,13 @@
 #include <openssl/pem.h>
 #include <openssl/err.h>
 #include <openssl/kdf.h>
+#include <asio/write.hpp>
+#include <asio/read.hpp>
+#include <functional>
 
-// External callback for PEM passphrase, defined in nkCryptoToolMain.cpp
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 extern std::string global_passphrase_for_pem_cb;
 
-// --- OpenSSL Custom Deleters Implementation ---
 void EVP_PKEY_Deleter::operator()(EVP_PKEY *p) const { EVP_PKEY_free(p); }
 void EVP_PKEY_CTX_Deleter::operator()(EVP_PKEY_CTX *p) const { EVP_PKEY_CTX_free(p); }
 void EVP_CIPHER_CTX_Deleter::operator()(EVP_CIPHER_CTX *p) const { EVP_CIPHER_CTX_free(p); }
@@ -20,35 +21,17 @@ void BIO_Deleter::operator()(BIO *b) const { BIO_free_all(b); }
 void EVP_KDF_Deleter::operator()(EVP_KDF *p) const { EVP_KDF_free(p); }
 void EVP_KDF_CTX_Deleter::operator()(EVP_KDF_CTX *p) const { EVP_KDF_CTX_free(p); }
 
-// --- Constructor / Destructor ---
 nkCryptoToolBase::nkCryptoToolBase() : key_base_directory("keys") {
     try {
-      if (!std::filesystem::exists(key_base_directory)) {
-        std::filesystem::create_directories(key_base_directory);
-      }
+        if (!std::filesystem::exists(key_base_directory)) {
+            std::filesystem::create_directories(key_base_directory);
+        }
     } catch (const std::filesystem::filesystem_error& e) {
-      std::cerr << "Error creating directory '" << key_base_directory << "': " << e.what() << std::endl;
+        std::cerr << "Error creating directory '" << key_base_directory.string() << "': " << e.what() << std::endl;
     }
 }
-
 nkCryptoToolBase::~nkCryptoToolBase() {}
 
-void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
-    key_base_directory = dir;
-    try {
-      if (!std::filesystem::exists(key_base_directory)) {
-        std::filesystem::create_directories(key_base_directory);
-      }
-    } catch (const std::filesystem::filesystem_error& e) {
-      std::cerr << "Error creating directory '" << key_base_directory << "': " << e.what() << std::endl;
-    }
-}
-
-std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const {
-    return key_base_directory;
-}
-
-// --- AsyncStateBase Constructor ---
 nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)
     : input_file(io_context),
       output_file(io_context),
@@ -57,9 +40,28 @@ nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)
       output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
       tag(GCM_TAG_LEN),
       bytes_read(0),
-      total_bytes_processed(0) {}
+      total_bytes_processed(0) {
+    compression_buffer.resize(LZ4_compressBound(CHUNK_SIZE));
+}
 
-// --- Common Helper Functions Implementation ---
+nkCryptoToolBase::AsyncStateBase::~AsyncStateBase() {
+    if (compression_algo == CompressionAlgorithm::LZ4) {
+        if (compression_stream) LZ4_freeStream(static_cast<LZ4_stream_t*>(compression_stream));
+        if (decompression_stream) LZ4_freeStreamDecode(static_cast<LZ4_streamDecode_t*>(decompression_stream));
+    }
+}
+
+void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
+    key_base_directory = dir;
+    try {
+        if (!std::filesystem::exists(key_base_directory)) {
+            std::filesystem::create_directories(key_base_directory);
+        }
+    } catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Error creating directory '" << key_base_directory.string() << "': " << e.what() << std::endl;
+    }
+}
+std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
 
 void nkCryptoToolBase::printOpenSSLErrors() {
     unsigned long err_code;
@@ -86,31 +88,23 @@ void nkCryptoToolBase::printProgress(double percentage) {
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
-        std::cerr << "Error loading public key: Could not open file " << public_key_path << std::endl;
-        printOpenSSLErrors();
+        std::cerr << "Error loading public key: " << public_key_path << std::endl;
         return nullptr;
     }
-    EVP_PKEY* public_key = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!public_key) {
-        std::cerr << "Error loading public key: PEM_read_bio_PUBKEY failed for " << public_key_path << std::endl;
-        printOpenSSLErrors();
-    }
-    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(public_key);
+    EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
+    if (!pkey) printOpenSSLErrors();
+    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
-        std::cerr << "Error loading private key: Could not open file " << private_key_path << std::endl;
-        printOpenSSLErrors();
+        std::cerr << "Error loading private key: " << private_key_path << std::endl;
         return nullptr;
     }
-    EVP_PKEY* private_key = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, &global_passphrase_for_pem_cb);
-    if (!private_key) {
-        std::cerr << "Error loading private key: PEM_read_bio_PrivateKey failed for " << private_key_path << std::endl;
-        printOpenSSLErrors();
-    }
-    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(private_key);
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, &global_passphrase_for_pem_cb);
+    if (!pkey) printOpenSSLErrors();
+    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
 std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
@@ -139,7 +133,7 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
     if (!info_str.empty()) {
         params[p++] = OSSL_PARAM_construct_octet_string("info", (void*)info_str.c_str(), info_str.length());
     }
-    params[p++] = OSSL_PARAM_construct_end();
+    params[p] = OSSL_PARAM_construct_end();
 
     std::vector<unsigned char> derived_key(output_len);
     if (EVP_KDF_derive(kctx.get(), derived_key.data(), output_len, params) <= 0) {
@@ -148,4 +142,189 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
         return {};
     }
     return derived_key;
+}
+
+// --- Encryption Pipeline ---
+void nkCryptoToolBase::startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size) {
+    state->total_bytes_processed = 0;
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer),
+        std::bind(&nkCryptoToolBase::handleReadForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred) {
+    if (ec == asio::error::eof) {
+        finishEncryptionPipeline(state);
+        return;
+    }
+    if (ec) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    const unsigned char* data_to_encrypt = state->input_buffer.data();
+    int len_to_encrypt = bytes_transferred;
+
+    if (state->compression_algo == CompressionAlgorithm::LZ4) {
+        const int compressed_len = LZ4_compress_fast_continue(static_cast<LZ4_stream_t*>(state->compression_stream),
+            reinterpret_cast<const char*>(state->input_buffer.data()), reinterpret_cast<char*>(state->compression_buffer.data()),
+            bytes_transferred, state->compression_buffer.size(), 1);
+        if (compressed_len <= 0) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+        data_to_encrypt = state->compression_buffer.data();
+        len_to_encrypt = compressed_len;
+    }
+
+    int outlen = 0;
+    if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, data_to_encrypt, len_to_encrypt) <= 0) {
+        printOpenSSLErrors();
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+    
+    state->total_bytes_processed += bytes_transferred;
+
+    asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
+        std::bind(&nkCryptoToolBase::handleWriteForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t) {
+    if (ec) {
+        state->completion_handler(ec);
+        return;
+    }
+    if (total_input_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / total_input_size);
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer),
+        std::bind(&nkCryptoToolBase::handleReadForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
+    int outlen = 0;
+    if (EVP_EncryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+        printOpenSSLErrors();
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+    
+    std::error_code ec;
+    asio::write(state->output_file, asio::buffer(state->output_buffer.data(), outlen), ec);
+    if (ec) { state->completion_handler(ec); return; }
+
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+        printOpenSSLErrors();
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+
+    asio::write(state->output_file, asio::buffer(state->tag), ec);
+    printProgress(1.0);
+    state->completion_handler(ec);
+}
+
+// --- Decryption Pipeline ---
+void nkCryptoToolBase::startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size) {
+    state->total_bytes_processed = 0;
+    size_t to_read = std::min(static_cast<uintmax_t>(CHUNK_SIZE), total_ciphertext_size);
+    if (to_read == 0) {
+        finishDecryptionPipeline(state);
+        return;
+    }
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer.data(), to_read),
+        std::bind(&nkCryptoToolBase::handleReadForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred) {
+    if (bytes_transferred == 0 && (ec == asio::error::eof || state->total_bytes_processed >= total_ciphertext_size)) {
+        finishDecryptionPipeline(state);
+        return;
+    }
+    if (ec && ec != asio::error::eof) {
+        state->completion_handler(ec);
+        return;
+    }
+    
+    int outlen = 0;
+    if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), bytes_transferred) <= 0) {
+        printOpenSSLErrors();
+        state->completion_handler(std::make_error_code(std::errc::operation_not_permitted)); // <-- FIXED
+        return;
+    }
+
+    state->total_bytes_processed += bytes_transferred;
+
+    if (outlen > 0) {
+        if (state->compression_algo == CompressionAlgorithm::LZ4) {
+            const char* current_decrypted = reinterpret_cast<const char*>(state->output_buffer.data());
+            int decrypted_len = outlen;
+            
+            while(decrypted_len > 0) {
+                int decompressed_bytes = LZ4_decompress_safe_continue(static_cast<LZ4_streamDecode_t*>(state->decompression_stream),
+                    current_decrypted, reinterpret_cast<char*>(state->compression_buffer.data()),
+                    decrypted_len, state->compression_buffer.size());
+                if (decompressed_bytes < 0) {
+                    state->completion_handler(std::make_error_code(std::errc::io_error));
+                    return;
+                }
+                
+                std::error_code write_ec;
+                asio::write(state->output_file, asio::buffer(state->compression_buffer.data(), decompressed_bytes), write_ec);
+                if (write_ec) { state->completion_handler(write_ec); return; }
+                
+                decrypted_len = 0;
+            }
+             handleWriteForDecryption(state, total_ciphertext_size, {}, 0);
+        } else {
+            asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
+                std::bind(&nkCryptoToolBase::handleWriteForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+        }
+    } else {
+        handleWriteForDecryption(state, total_ciphertext_size, {}, 0);
+    }
+}
+
+void nkCryptoToolBase::handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t) {
+    if (ec) { state->completion_handler(ec); return; }
+    
+    if (total_ciphertext_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / total_ciphertext_size);
+
+    if(state->total_bytes_processed >= total_ciphertext_size) {
+        finishDecryptionPipeline(state);
+        return;
+    }
+
+    size_t to_read = std::min(static_cast<uintmax_t>(CHUNK_SIZE), total_ciphertext_size - state->total_bytes_processed);
+    state->input_file.async_read_some(
+        asio::buffer(state->input_buffer.data(), to_read),
+        std::bind(&nkCryptoToolBase::handleReadForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
+    std::error_code ec;
+    asio::read(state->input_file, asio::buffer(state->tag), ec);
+    if (ec && ec != asio::error::eof) {
+        state->completion_handler(ec);
+        return;
+    }
+    
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::operation_not_permitted)); // <-- FIXED
+        return;
+    }
+
+    int outlen = 0;
+    if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::operation_not_permitted)); // <-- FIXED
+        return;
+    }
+
+    if (outlen > 0) {
+        asio::write(state->output_file, asio::buffer(state->output_buffer.data(), outlen), ec);
+        if (ec) { state->completion_handler(ec); return; }
+    }
+    printProgress(1.0);
+    state->completion_handler({});
 }

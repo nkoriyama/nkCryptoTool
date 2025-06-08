@@ -15,13 +15,10 @@
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
+#include <lz4.h>
 
-// Forward declaration for Asio
-namespace asio {
-class io_context;
-}
+namespace asio { class io_context; }
 
-// --- OpenSSL Custom Deleters ---
 struct EVP_PKEY_Deleter { void operator()(EVP_PKEY *p) const; };
 struct EVP_PKEY_CTX_Deleter { void operator()(EVP_PKEY_CTX *p) const; };
 struct EVP_CIPHER_CTX_Deleter { void operator()(EVP_CIPHER_CTX *p) const; };
@@ -34,13 +31,32 @@ class nkCryptoToolBase {
 private:
     std::filesystem::path key_base_directory;
 
+public: // <-- publicスコープに移動
+    // --- Compression Algorithm Enum ---
+    enum class CompressionAlgorithm : uint8_t {
+        NONE = 0,
+        LZ4  = 1,
+        ZSTD = 2,
+    };
+
 protected:
     // --- Constants ---
     static constexpr int CHUNK_SIZE = 4096;
     static constexpr int GCM_IV_LEN = 12;
     static constexpr int GCM_TAG_LEN = 16;
+    static constexpr char MAGIC[4] = {'N', 'K', 'C', '1'};
 
-    // --- Common Helper Functions ---
+    // --- File Header Structure ---
+    #pragma pack(push, 1)
+    struct FileHeader {
+        char magic[4];
+        uint8_t version;
+        CompressionAlgorithm compression_algo;
+        uint16_t reserved;
+    };
+    #pragma pack(pop)
+
+    // (残りのprotectedメンバーは変更なし)
     void printOpenSSLErrors();
     void printProgress(double percentage);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
@@ -49,7 +65,6 @@ protected:
                                           const std::string& salt, const std::string& info,
                                           const std::string& digest_algo);
 
-    // --- Base State for Asynchronous Operations ---
     struct AsyncStateBase {
         asio::stream_file input_file;
         asio::stream_file output_file;
@@ -61,10 +76,17 @@ protected:
         uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
 
+        CompressionAlgorithm compression_algo = CompressionAlgorithm::NONE;
+        void* compression_stream = nullptr;
+        void* decompression_stream = nullptr;
+        std::vector<unsigned char> compression_buffer;
+
         AsyncStateBase(asio::io_context& io_context);
-        virtual ~AsyncStateBase() = default;
+        virtual ~AsyncStateBase();
     };
 
+    void startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size);
+    void startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size);
 
 public:
     nkCryptoToolBase();
@@ -73,60 +95,27 @@ public:
     void setKeyBaseDirectory(const std::filesystem::path& dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
-    // --- Pure Virtual Functions for Derived Classes ---
     virtual bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
 
-    virtual void encryptFile(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& recipient_public_key_path,
-        std::function<void(std::error_code)> completion_handler) = 0;
-
-    virtual void encryptFileHybrid(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& recipient_mlkem_public_key_path,
-        const std::filesystem::path& recipient_ecdh_public_key_path,
-        std::function<void(std::error_code)> completion_handler) = 0;
-
-    virtual void decryptFile(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& user_private_key_path,
-        const std::filesystem::path& sender_public_key_path,
-        std::function<void(std::error_code)> completion_handler) = 0;
-
-    virtual void decryptFileHybrid(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& recipient_mlkem_private_key_path,
-        const std::filesystem::path& recipient_ecdh_private_key_path,
-        std::function<void(std::error_code)> completion_handler) = 0;
-
-    virtual void signFile(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& signature_filepath,
-        const std::filesystem::path& signing_private_key_path,
-        const std::string& digest_algo,
-        std::function<void(std::error_code)> completion_handler) = 0;
-
-    virtual void verifySignature(
-        asio::io_context& io_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& signature_filepath,
-        const std::filesystem::path& signing_public_key_path,
-        std::function<void(std::error_code, bool)> completion_handler) = 0;
+    virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
+    virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
+    virtual void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
+    virtual void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
+    virtual void signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) = 0;
+    virtual void verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code, bool)>) = 0;
 
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
     virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
-};
 
+private:
+    void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
+    void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
+    void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
+    void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred);
+    void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
+    void finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state);
+};
 #endif
