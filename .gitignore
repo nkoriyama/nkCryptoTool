@@ -26,6 +26,7 @@ encrypt.bin
 
 # Key files (if not meant for version control)
 /keys/
+/Testing/
 
 # VS Code specific (optional, if you're using VS Code and want to ignore its settings)
 .vscode/
