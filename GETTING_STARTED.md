@@ -32,7 +32,7 @@ cd nkCryptoTool
 ```bash
 mkdir build
 cd build
-cmake ..
+cmake .. -DOPENSSL_ROOT_DIR="Openssl installed dir"
 make
 ```
 
