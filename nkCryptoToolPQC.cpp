@@ -252,7 +252,6 @@ void nkCryptoToolPQC::startPQCEncryptionAsync(std::shared_ptr<EncryptionState> s
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_kem_public_key(recipient_kem_public_key_raw);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_ecdh_public_key(recipient_ecdh_public_key_raw);
 
-    // Wrap original completion handler to add success message
     auto original_completion_handler = state->completion_handler;
     state->completion_handler = [output_filepath, original_completion_handler](std::error_code ec) {
         if (!ec) {
@@ -301,44 +300,42 @@ void nkCryptoToolPQC::startPQCEncryptionAsync(std::shared_ptr<EncryptionState> s
     state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
     if (ec) { state->completion_handler(ec); return; }
 
-    // Symmetric header writing logic
-    auto write_len_and_data = [this, state, is_hybrid = (recipient_ecdh_public_key != nullptr)](std::function<void(const asio::error_code&)> on_complete) {
-        state->len_storage.push_back(std::make_shared<uint32_t>(state->kem_ciphertext.size()));
-        asio::async_write(state->output_file, asio::buffer(state->len_storage.back().get(), sizeof(uint32_t)),
-            [this, state, is_hybrid, on_complete](const asio::error_code& ec, size_t) {
-                if (ec) { on_complete(ec); return; }
-                asio::async_write(state->output_file, asio::buffer(state->kem_ciphertext),
-                    [this, state, is_hybrid, on_complete](const asio::error_code& ec, size_t) {
-                        if (ec) { on_complete(ec); return; }
-                        if (is_hybrid) {
-                            state->len_storage.push_back(std::make_shared<uint32_t>(state->ecdh_sender_pub_key.size()));
-                            asio::async_write(state->output_file, asio::buffer(state->len_storage.back().get(), sizeof(uint32_t)),
-                                [this, state, on_complete](const asio::error_code& ec, size_t) {
-                                    if (ec) { on_complete(ec); return; }
-                                    asio::async_write(state->output_file, asio::buffer(state->ecdh_sender_pub_key),
-                                        [this, state, on_complete](const asio::error_code& ec, size_t) {
-                                            if (ec) { on_complete(ec); return; }
-                                            write_salt_and_iv(state, on_complete);
-                                        });
-                                });
-                        } else {
-                            write_salt_and_iv(state, on_complete);
-                        }
-                    });
-            });
-    };
-
-    write_len_and_data([this, state](const asio::error_code& ec) {
+    write_header(state, (recipient_ecdh_public_key != nullptr), [this, state](const asio::error_code& ec) {
         if (ec) {
             state->completion_handler(ec);
         } else {
-            // Start reading the file to encrypt
             state->input_file.async_read_some(asio::buffer(state->input_buffer),
                 asio::bind_executor(state->input_file.get_executor(),
                     std::bind(&nkCryptoToolPQC::handleFileReadForPQCEncryption, this, state,
                               std::placeholders::_1, std::placeholders::_2)));
         }
     });
+}
+
+void nkCryptoToolPQC::write_header(std::shared_ptr<EncryptionState> state, bool is_hybrid, std::function<void(const asio::error_code&)> on_all_written) {
+    state->len_storage.push_back(std::make_shared<uint32_t>(state->kem_ciphertext.size()));
+    asio::async_write(state->output_file, asio::buffer(state->len_storage.back().get(), sizeof(uint32_t)),
+        [this, state, is_hybrid, on_all_written](const asio::error_code& ec, size_t) {
+            if (ec) { on_all_written(ec); return; }
+            asio::async_write(state->output_file, asio::buffer(state->kem_ciphertext),
+                [this, state, is_hybrid, on_all_written](const asio::error_code& ec, size_t) {
+                    if (ec) { on_all_written(ec); return; }
+                    if (is_hybrid) {
+                        state->len_storage.push_back(std::make_shared<uint32_t>(state->ecdh_sender_pub_key.size()));
+                        asio::async_write(state->output_file, asio::buffer(state->len_storage.back().get(), sizeof(uint32_t)),
+                            [this, state, on_all_written](const asio::error_code& ec, size_t) {
+                                if (ec) { on_all_written(ec); return; }
+                                asio::async_write(state->output_file, asio::buffer(state->ecdh_sender_pub_key),
+                                    [this, state, on_all_written](const asio::error_code& ec, size_t) {
+                                        if (ec) { on_all_written(ec); return; }
+                                        write_salt_and_iv(state, on_all_written);
+                                    });
+                            });
+                    } else {
+                        write_salt_and_iv(state, on_all_written);
+                    }
+                });
+        });
 }
 
 void nkCryptoToolPQC::write_salt_and_iv(std::shared_ptr<EncryptionState> state, std::function<void(const asio::error_code&)> on_complete) {
@@ -427,6 +424,14 @@ void nkCryptoToolPQC::decryptFileHybrid(asio::io_context& io_context, const std:
 
 // Core Decryption Logic
 void nkCryptoToolPQC::startPQCDecryptionAsync(std::shared_ptr<DecryptionState> state, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, EVP_PKEY* user_kem_private_key_raw, EVP_PKEY* user_ecdh_private_key_raw) {
+    auto original_completion_handler = state->completion_handler;
+    state->completion_handler = [output_filepath, original_completion_handler](std::error_code ec) {
+        if (!ec) {
+            std::cout << "PQC Decryption to '" << output_filepath.string() << "' completed successfully." << std::endl;
+        }
+        original_completion_handler(ec);
+    };
+
     std::shared_ptr<EVP_PKEY> user_kem_private_key(user_kem_private_key_raw, EVP_PKEY_Deleter());
     std::shared_ptr<EVP_PKEY> user_ecdh_private_key(user_ecdh_private_key_raw, EVP_PKEY_Deleter());
 
@@ -632,7 +637,7 @@ void nkCryptoToolPQC::finishPQCDecryption(std::shared_ptr<DecryptionState> state
 bool nkCryptoToolPQC::aesGcmEncrypt(const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, std::vector<unsigned char>&, std::vector<unsigned char>&) { return true; }
 bool nkCryptoToolPQC::aesGcmDecrypt(const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, const std::vector<unsigned char>&, std::vector<unsigned char>&) { return true; }
 
-bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string&) {
+bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& /* digest_algo */) {
     std::vector<unsigned char> file_content;
     try {
         file_content = readFile(input_filepath);
@@ -642,25 +647,36 @@ bool nkCryptoToolPQC::signFile(const std::filesystem::path& input_filepath, cons
     }
 
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> priv_key(loadPrivateKey(signing_private_key_path));
-    if(!priv_key) return false;
+    if (!priv_key) return false;
 
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> sctx(EVP_PKEY_CTX_new_from_pkey(nullptr, priv_key.get(), nullptr));
-    if (!sctx || 1 != EVP_PKEY_sign_init(sctx.get())) {
-        std::cerr << "Error: EVP_PKEY_sign_init failed." << std::endl;
+    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
+    if (!mdctx) {
+        std::cerr << "Error creating EVP_MD_CTX for signing." << std::endl;
+        return false;
+    }
+
+    if (1 != EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, priv_key.get())) {
+        std::cerr << "Error: EVP_DigestSignInit failed." << std::endl;
         printOpenSSLErrors();
         return false;
     }
 
     size_t sig_len;
-    if (1 != EVP_PKEY_sign(sctx.get(), nullptr, &sig_len, file_content.data(), file_content.size())) {
-        std::cerr << "Error: EVP_PKEY_sign failed (to get length)." << std::endl;
+    if (1 != EVP_DigestSign(mdctx.get(), nullptr, &sig_len, file_content.data(), file_content.size())) {
+        std::cerr << "Error: EVP_DigestSign failed (to get length)." << std::endl;
         printOpenSSLErrors();
         return false;
     }
 
     std::vector<unsigned char> signature(sig_len);
-    if (1 != EVP_PKEY_sign(sctx.get(), signature.data(), &sig_len, file_content.data(), file_content.size())) {
-        std::cerr << "Error: EVP_PKEY_sign failed (to sign)." << std::endl;
+    if (1 != EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, priv_key.get())) {
+        std::cerr << "Error: EVP_DigestSignInit (2nd call) failed." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+
+    if (1 != EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, file_content.data(), file_content.size())) {
+        std::cerr << "Error: EVP_DigestSign failed (to sign)." << std::endl;
         printOpenSSLErrors();
         return false;
     }
@@ -689,12 +705,23 @@ bool nkCryptoToolPQC::verifySignature(const std::filesystem::path& input_filepat
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pub_key(loadPublicKey(signing_public_key_path));
     if(!pub_key) return false;
 
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> vctx(EVP_PKEY_CTX_new_from_pkey(nullptr, pub_key.get(), nullptr));
-    if (!vctx || 1 != EVP_PKEY_verify_init(vctx.get())) {
-        std::cerr << "Error: EVP_PKEY_verify_init failed." << std::endl;
+    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
+    if (!mdctx) {
+        std::cerr << "Error creating EVP_MD_CTX for verification." << std::endl;
+        return false;
+    }
+
+    if (1 != EVP_DigestVerifyInit(mdctx.get(), nullptr, nullptr, nullptr, pub_key.get())) {
+        std::cerr << "Error: EVP_DigestVerifyInit failed." << std::endl;
         printOpenSSLErrors();
         return false;
     }
     
-    return EVP_PKEY_verify(vctx.get(), signature.data(), signature.size(), file_content.data(), file_content.size()) == 1;
+    if (1 == EVP_DigestVerify(mdctx.get(), signature.data(), signature.size(), file_content.data(), file_content.size())) {
+        return true; // Success
+    } else {
+        std::cerr << "Error: Signature verification failed." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
 }

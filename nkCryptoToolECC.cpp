@@ -25,15 +25,13 @@
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 extern std::string global_passphrase_for_pem_cb; // Assumed to be set by main for synchronous key ops
 
-// Custom deleters for OpenSSL unique_ptr
-// (Definitions moved to header, do not redefine here)
-
 // Helper function to print OpenSSL errors
 void nkCryptoToolECC::printOpenSSLErrors() {
     unsigned long err_code;
     while ((err_code = ERR_get_error())) {
-        char *err_str = ERR_error_string(err_code, nullptr);
-        std::cerr << "OpenSSL Error: " << err_str << std::endl;
+        char err_buf[256];
+        ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
+        std::cerr << "OpenSSL Error: " << err_buf << std::endl;
     }
 }
 
@@ -93,7 +91,6 @@ std::vector<unsigned char> nkCryptoToolECC::generateSharedSecret(EVP_PKEY* priva
         return {};
     }
 
-    // std::cout << "Derived shared secret length: " << secret_len << " bytes" << std::endl;
     return shared_secret;
 }
 
@@ -124,7 +121,8 @@ std::vector<unsigned char> nkCryptoToolECC::hkdfDerive(const std::vector<unsigne
     OSSL_PARAM params[5];
     int i = 0;
     params[i++] = OSSL_PARAM_construct_utf8_string("digest", const_cast<char*>(digest_algo.c_str()), 0);
-    params[i++] = OSSL_PARAM_construct_octet_string("ikm", const_cast<unsigned char*>(ikm.data()), ikm.size());
+    // *** FIX: Use "key" instead of "ikm" for the input key material parameter name ***
+    params[i++] = OSSL_PARAM_construct_octet_string("key", const_cast<unsigned char*>(ikm.data()), ikm.size());
     if (!salt_str.empty()) {
         params[i++] = OSSL_PARAM_construct_octet_string("salt", const_cast<unsigned char*>(reinterpret_cast<const unsigned char*>(salt_str.data())), salt_str.size());
     }
@@ -143,15 +141,10 @@ std::vector<unsigned char> nkCryptoToolECC::hkdfDerive(const std::vector<unsigne
 }
 
 // Constructor
-nkCryptoToolECC::nkCryptoToolECC() {
-    // OpenSSL 3.0 requires providers to be loaded
-    // OSSL_PROVIDER_load(nullptr, "default"); // This should be handled in main
-}
+nkCryptoToolECC::nkCryptoToolECC() {}
 
 // Destructor
-nkCryptoToolECC::~nkCryptoToolECC() {
-    // Providers should be unloaded by main
-}
+nkCryptoToolECC::~nkCryptoToolECC() {}
 
 // Implement virtual methods for default key paths
 std::filesystem::path nkCryptoToolECC::getEncryptionPrivateKeyPath() const {
@@ -197,7 +190,6 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
-    // Write private key
     std::unique_ptr<BIO, decltype(&BIO_free)> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"), BIO_free);
     if (!priv_bio || PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), EVP_aes_256_cbc(),
                                                  passphrase.empty() ? nullptr : const_cast<char*>(passphrase.data()),
@@ -207,7 +199,6 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
         return false;
     }
 
-    // Write public key
     std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"), BIO_free);
     if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) {
         std::cerr << "Error: Failed to write public key to " << public_key_path << std::endl;
@@ -219,8 +210,6 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
 }
 
 bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
-    // Similar to encryption key generation, but often uses different parameters for signing
-    // For simplicity, using same EC curve as encryption
     std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr), EVP_PKEY_CTX_free);
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) {
         std::cerr << "Error: Failed to initialize EC key generation for signing." << std::endl;
@@ -246,7 +235,6 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
-    // Write private key
     std::unique_ptr<BIO, decltype(&BIO_free)> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"), BIO_free);
     if (!priv_bio || PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), EVP_aes_256_cbc(),
                                                  passphrase.empty() ? nullptr : const_cast<char*>(passphrase.data()),
@@ -256,7 +244,6 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
         return false;
     }
 
-    // Write public key
     std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"), BIO_free);
     if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) {
         std::cerr << "Error: Failed to write signing public key to " << public_key_path << std::endl;
@@ -278,7 +265,7 @@ void nkCryptoToolECC::encryptFile(
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_public_key(loadPublicKey(recipient_public_key_path));
     if (!recipient_public_key) {
         std::cerr << "Error: Failed to load recipient public key for encryption." << std::endl;
-        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); // Use a suitable error code
+        completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
@@ -308,7 +295,6 @@ void nkCryptoToolECC::encryptFile(
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key(ephemeral_pkey_raw);
 
-    // Derive shared secret
     std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
     if (shared_secret.empty()) {
         std::cerr << "Error: Failed to derive shared secret for encryption." << std::endl;
@@ -316,15 +302,13 @@ void nkCryptoToolECC::encryptFile(
         return;
     }
 
-    // Derive encryption key using HKDF
-    std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, "", "aes-256-gcm-key", "SHA256"); // 32 bytes for AES256
+    std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, "", "aes-256-gcm-key", "SHA256");
     if (encryption_key.empty()) {
         std::cerr << "Error: Failed to derive encryption key." << std::endl;
         completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
 
-    // Generate random IV
     std::vector<unsigned char> iv(GCM_IV_LEN);
     if (RAND_bytes(iv.data(), GCM_IV_LEN) <= 0) {
         std::cerr << "Error: Failed to generate random IV." << std::endl;
@@ -333,7 +317,6 @@ void nkCryptoToolECC::encryptFile(
         return;
     }
 
-    // Initialize AES-GCM cipher context
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> cipher_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     if (!cipher_ctx || EVP_EncryptInit_ex(cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0 ||
         EVP_CIPHER_CTX_ctrl(cipher_ctx.get(), EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, nullptr) <= 0 ||
@@ -344,15 +327,12 @@ void nkCryptoToolECC::encryptFile(
         return;
     }
 
-    // Create a shared_ptr for the state to manage its lifetime across async operations
     auto state = std::make_shared<EncryptionState>(io_context);
-    state->shared_secret = shared_secret; // Store for potential debugging, though not directly used in file ops
     state->encryption_key = encryption_key;
     state->iv = iv;
     state->cipher_ctx = std::move(cipher_ctx);
     state->completion_handler = completion_handler;
 
-    // Asynchronously open input and output files
     std::error_code ec_in;
     state->input_file.open(input_filepath.string().c_str(), asio::stream_file::read_only, ec_in);
     if (ec_in) {
@@ -369,8 +349,6 @@ void nkCryptoToolECC::encryptFile(
         return;
     }
 
-    // Before starting file read, write the ephemeral public key and IV to the output file.
-    // Ephemeral public key needs to be exported for decryption.
     std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(BIO_new(BIO_s_mem()), BIO_free);
     if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get()) <= 0) {
         std::cerr << "Error: Failed to write ephemeral public key to memory BIO." << std::endl;
@@ -383,25 +361,21 @@ void nkCryptoToolECC::encryptFile(
     BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
     std::vector<unsigned char> ephemeral_pub_key_bytes(bio_buf->data, bio_buf->data + bio_buf->length);
 
-    // Prepend ephemeral public key size (4 bytes), then ephemeral public key, then IV (GCM_IV_LEN bytes)
     std::vector<unsigned char> header_data;
     uint32_t key_len = static_cast<uint32_t>(ephemeral_pub_key_bytes.size());
-    header_data.push_back(static_cast<unsigned char>(key_len & 0xFF));
-    header_data.push_back(static_cast<unsigned char>((key_len >> 8) & 0xFF));
-    header_data.push_back(static_cast<unsigned char>((key_len >> 16) & 0xFF));
-    header_data.push_back(static_cast<unsigned char>((key_len >> 24) & 0xFF));
-    header_data.insert(header_data.end(), ephemeral_pub_key_bytes.begin(), ephemeral_pub_key_bytes.end());
-    header_data.insert(header_data.end(), state->iv.begin(), state->iv.end());
+    header_data.resize(4 + key_len + GCM_IV_LEN);
+    memcpy(header_data.data(), &key_len, 4);
+    memcpy(header_data.data() + 4, ephemeral_pub_key_bytes.data(), key_len);
+    memcpy(header_data.data() + 4 + key_len, state->iv.data(), GCM_IV_LEN);
 
-    // Write header (ephemeral public key and IV)
+
     asio::async_write(state->output_file, asio::buffer(header_data),
-        [state, this](const asio::error_code& ec, size_t /*bytes_transferred*/) {
+        [state, this](const asio::error_code& ec, size_t) {
             if (ec) {
                 std::cerr << "Error writing header to output file: " << ec.message() << std::endl;
                 state->completion_handler(ec);
                 return;
             }
-            // Start reading the input file
             state->input_file.async_read_some(asio::buffer(state->input_buffer),
                 std::bind(&nkCryptoToolECC::handleFileReadForEncryption, this, state,
                             std::placeholders::_1, std::placeholders::_2));
@@ -410,8 +384,7 @@ void nkCryptoToolECC::encryptFile(
 
 void nkCryptoToolECC::handleFileReadForEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
     if (ec == asio::error::eof) {
-        // End of input file, finalize encryption
-        finishEncryption(state, std::error_code()); // Pass no error
+        finishEncryption(state, std::error_code());
         return;
     }
     if (ec) {
@@ -428,14 +401,12 @@ void nkCryptoToolECC::handleFileReadForEncryption(std::shared_ptr<EncryptionStat
         state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
-    state->output_buffer.resize(outlen); // Resize to actual output size
-
+    
     if (outlen > 0) {
-        asio::async_write(state->output_file, asio::buffer(state->output_buffer),
+        asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
             std::bind(&nkCryptoToolECC::handleFileWriteAfterEncryption, this, state,
                         std::placeholders::_1, std::placeholders::_2));
     } else {
-        // No output from current update, continue reading input
         state->input_file.async_read_some(
             asio::buffer(state->input_buffer),
             std::bind(&nkCryptoToolECC::handleFileReadForEncryption, this, state,
@@ -444,26 +415,24 @@ void nkCryptoToolECC::handleFileReadForEncryption(std::shared_ptr<EncryptionStat
     }
 }
 
-void nkCryptoToolECC::handleFileWriteAfterEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
+void nkCryptoToolECC::handleFileWriteAfterEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec, size_t) {
     if (ec) {
         std::cerr << "Error writing encrypted data to output file: " << ec.message() << std::endl;
         state->completion_handler(ec);
         return;
     }
 
-    // Continue reading the input file for the next chunk
     state->input_file.async_read_some(asio::buffer(state->input_buffer),
         std::bind(&nkCryptoToolECC::handleFileReadForEncryption, this, state,
                     std::placeholders::_1, std::placeholders::_2));
 }
 
 void nkCryptoToolECC::finishEncryption(std::shared_ptr<EncryptionState> state, const asio::error_code& ec) {
-    if (ec) { // This ec would come from previous steps if an error was passed
+    if (ec) {
         state->completion_handler(ec);
         return;
     }
 
-    // Finalize encryption and get remaining ciphertext and GCM tag
     int outlen = 0;
     if (EVP_EncryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
         std::cerr << "Error finalizing encryption." << std::endl;
@@ -471,7 +440,8 @@ void nkCryptoToolECC::finishEncryption(std::shared_ptr<EncryptionState> state, c
         state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
         return;
     }
-    state->output_buffer.resize(outlen); // Resize to actual output size for final block
+
+    std::vector<unsigned char> final_block(state->output_buffer.data(), state->output_buffer.data() + outlen);
 
     if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
         std::cerr << "Error getting GCM tag." << std::endl;
@@ -480,24 +450,21 @@ void nkCryptoToolECC::finishEncryption(std::shared_ptr<EncryptionState> state, c
         return;
     }
 
-    // Write remaining ciphertext (if any)
-    asio::async_write(state->output_file, asio::buffer(state->output_buffer),
-        [state, this](const asio::error_code& ec_write_final, size_t /*bytes_transferred_final*/) {
+    asio::async_write(state->output_file, asio::buffer(final_block),
+        [state, this](const asio::error_code& ec_write_final, size_t) {
             if (ec_write_final) {
                 std::cerr << "Error writing final encrypted data to output file: " << ec_write_final.message() << std::endl;
                 state->completion_handler(ec_write_final);
                 return;
             }
-            // Write GCM tag
             asio::async_write(state->output_file, asio::buffer(state->tag),
-                [state, this](const asio::error_code& ec_write_tag, size_t /*bytes_transferred_tag*/) {
+                [state](const asio::error_code& ec_write_tag, size_t) {
                     if (ec_write_tag) {
                         std::cerr << "Error writing GCM tag to output file: " << ec_write_tag.message() << std::endl;
                         state->completion_handler(ec_write_tag);
                         return;
                     }
-                    // All done!
-                    state->completion_handler(std::error_code()); // Success
+                    state->completion_handler(std::error_code());
                 });
         });
 }
@@ -509,10 +476,9 @@ void nkCryptoToolECC::decryptFile(
     const std::filesystem::path& input_filepath,
     const std::filesystem::path& output_filepath,
     const std::filesystem::path& user_private_key_path,
-    const std::filesystem::path& sender_public_key_path_unused, // This argument is now redundant but kept for virtual method signature
+    const std::filesystem::path&,
     std::function<void(std::error_code)> completion_handler)
 {
-    // Load user's private key
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> user_private_key(loadPrivateKey(user_private_key_path));
     if (!user_private_key) {
         std::cerr << "Error: Failed to load user's private key for decryption." << std::endl;
@@ -523,7 +489,6 @@ void nkCryptoToolECC::decryptFile(
     auto state = std::make_shared<DecryptionState>(io_context, input_filepath);
     state->completion_handler = completion_handler;
 
-    // Open input file synchronously
     std::error_code ec_in;
     state->input_file.open(input_filepath.string().c_str(), asio::stream_file::read_only, ec_in);
     if (ec_in) {
@@ -532,7 +497,6 @@ void nkCryptoToolECC::decryptFile(
         return;
     }
 
-    // Open output file synchronously
     std::error_code ec_out;
     state->output_file.open(output_filepath.string().c_str(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec_out);
     if (ec_out) {
@@ -541,37 +505,33 @@ void nkCryptoToolECC::decryptFile(
         return;
     }
 
-    // Read ephemeral public key size (4 bytes)
-    std::vector<unsigned char> key_len_bytes(4);
-    asio::async_read(state->input_file, asio::buffer(key_len_bytes),
-        [state, this, user_private_key = std::move(user_private_key), key_len_bytes = std::move(key_len_bytes)](const asio::error_code& ec_len, size_t bytes_transferred_len) mutable {
-            if (ec_len || bytes_transferred_len != 4) {
-                std::cerr << "Error reading ephemeral public key length or incorrect length: " << ec_len.message() << std::endl;
-                state->completion_handler(ec_len ? ec_len : asio::error::make_error_code(asio::error::bad_descriptor));
+    auto key_len_bytes = std::make_shared<std::vector<unsigned char>>(4);
+    asio::async_read(state->input_file, asio::buffer(*key_len_bytes),
+        [state, this, user_private_key = std::move(user_private_key), key_len_bytes](const asio::error_code& ec_len, size_t) mutable {
+            if (ec_len) {
+                std::cerr << "Error reading ephemeral public key length: " << ec_len.message() << std::endl;
+                state->completion_handler(ec_len);
                 return;
             }
-            uint32_t ephemeral_key_len = (static_cast<uint32_t>(key_len_bytes[0]) << 0) |
-                                         (static_cast<uint32_t>(key_len_bytes[1]) << 8) |
-                                         (static_cast<uint32_t>(key_len_bytes[2]) << 16) |
-                                         (static_cast<uint32_t>(key_len_bytes[3]) << 24);
+            
+            memcpy(&state->ephemeral_key_len, key_len_bytes->data(), 4);
 
-            if (ephemeral_key_len == 0 || ephemeral_key_len > 4096) { // Sanity check for key length (e.g., max 4KB)
-                std::cerr << "Error: Invalid ephemeral public key length read from header (" << ephemeral_key_len << " bytes)." << std::endl;
+            if (state->ephemeral_key_len == 0 || state->ephemeral_key_len > 4096) {
+                std::cerr << "Error: Invalid ephemeral public key length read from header (" << state->ephemeral_key_len << " bytes)." << std::endl;
                 state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
                 return;
             }
 
-            std::vector<unsigned char> ephemeral_pub_key_bytes(ephemeral_key_len);
-            asio::async_read(state->input_file, asio::buffer(ephemeral_pub_key_bytes),
-                [state, this, user_private_key = std::move(user_private_key), ephemeral_pub_key_bytes = std::move(ephemeral_pub_key_bytes)](const asio::error_code& ec_ephem_key, size_t bytes_transferred_ephem_key) mutable {
-                    if (ec_ephem_key || bytes_transferred_ephem_key != ephemeral_pub_key_bytes.size()) {
-                        std::cerr << "Error reading ephemeral public key from header or incorrect length: " << ec_ephem_key.message() << std::endl;
-                        state->completion_handler(ec_ephem_key ? ec_ephem_key : asio::error::make_error_code(asio::error::bad_descriptor));
+            auto ephemeral_pub_key_bytes = std::make_shared<std::vector<unsigned char>>(state->ephemeral_key_len);
+            asio::async_read(state->input_file, asio::buffer(*ephemeral_pub_key_bytes),
+                [state, this, user_private_key = std::move(user_private_key), ephemeral_pub_key_bytes](const asio::error_code& ec_ephem_key, size_t) mutable {
+                    if (ec_ephem_key) {
+                        std::cerr << "Error reading ephemeral public key from header: " << ec_ephem_key.message() << std::endl;
+                        state->completion_handler(ec_ephem_key);
                         return;
                     }
 
-                    // Load ephemeral public key from bytes
-                    std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio_mem(BIO_new_mem_buf(ephemeral_pub_key_bytes.data(), static_cast<int>(ephemeral_pub_key_bytes.size())), BIO_free);
+                    std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio_mem(BIO_new_mem_buf(ephemeral_pub_key_bytes->data(), static_cast<int>(ephemeral_pub_key_bytes->size())), BIO_free);
                     if (!pub_bio_mem) {
                         std::cerr << "Error: Failed to create memory BIO for ephemeral public key." << std::endl;
                         state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
@@ -586,7 +546,6 @@ void nkCryptoToolECC::decryptFile(
                         return;
                     }
 
-                    // Derive shared secret (using the loaded user_private_key and the just-read sender_ephemeral_public_key)
                     state->shared_secret = generateSharedSecret(user_private_key.get(), sender_ephemeral_public_key.get());
                     if (state->shared_secret.empty()) {
                         std::cerr << "Error: Failed to derive shared secret for decryption." << std::endl;
@@ -594,7 +553,6 @@ void nkCryptoToolECC::decryptFile(
                         return;
                     }
 
-                    // Derive decryption key using HKDF
                     state->decryption_key = hkdfDerive(state->shared_secret, 32, "", "aes-256-gcm-key", "SHA256");
                     if (state->decryption_key.empty()) {
                         std::cerr << "Error: Failed to derive decryption key." << std::endl;
@@ -602,17 +560,15 @@ void nkCryptoToolECC::decryptFile(
                         return;
                     }
 
-                    // Read IV (GCM_IV_LEN bytes)
                     state->iv.resize(GCM_IV_LEN);
                     asio::async_read(state->input_file, asio::buffer(state->iv),
-                        [state, this, ephemeral_pub_key_bytes](const asio::error_code& ec_iv, size_t bytes_transferred_iv) {
-                            if (ec_iv || bytes_transferred_iv != GCM_IV_LEN) {
-                                std::cerr << "Error reading IV from input file or incorrect IV length: " << ec_iv.message() << std::endl;
-                                state->completion_handler(ec_iv ? ec_iv : asio::error::make_error_code(asio::error::bad_descriptor));
+                        [state, this](const asio::error_code& ec_iv, size_t) {
+                            if (ec_iv) {
+                                std::cerr << "Error reading IV from input file: " << ec_iv.message() << std::endl;
+                                state->completion_handler(ec_iv);
                                 return;
                             }
 
-                            // Initialize AES-GCM cipher context for decryption
                             state->cipher_ctx.reset(EVP_CIPHER_CTX_new());
                             if (!state->cipher_ctx || EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0 ||
                                 EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_IVLEN, GCM_IV_LEN, nullptr) <= 0 ||
@@ -623,155 +579,154 @@ void nkCryptoToolECC::decryptFile(
                                 return;
                             }
 
-                            // Get total file size to know where the tag is
                             std::error_code file_size_ec;
-                            state->total_input_size = std::filesystem::file_size(state->input_filepath_orig, file_size_ec); // Use the stored original input_filepath
+                            state->total_input_size = std::filesystem::file_size(state->input_filepath_orig, file_size_ec);
                             if (file_size_ec) {
                                 std::cerr << "Error getting input file size: " << file_size_ec.message() << std::endl;
                                 state->completion_handler(file_size_ec);
                                 return;
                             }
 
-                            // Subtract the size of key_len_bytes, ephemeral_pub_key_bytes, IV_LEN, and GCM_TAG_LEN from total size
-                            size_t header_total_size = 4 + ephemeral_pub_key_bytes.size() + GCM_IV_LEN;
+                            size_t header_total_size = 4 + state->ephemeral_key_len + GCM_IV_LEN;
                             if (state->total_input_size < header_total_size + GCM_TAG_LEN) {
                                 std::cerr << "Error: Input file too small to contain header and GCM tag." << std::endl;
                                 state->completion_handler(asio::error::make_error_code(asio::error::invalid_argument));
                                 return;
                             }
-                            // The total_input_size for the loop is the remaining ciphertext size.
-                            // The actual read position is managed by asio::stream_file.
+                            
                             state->total_input_size -= (header_total_size + GCM_TAG_LEN);
-
-
-                            // Start reading the input file for ciphertext
-                            state->input_file.async_read_some(asio::buffer(state->input_buffer),
-                                asio::bind_executor(state->input_file.get_executor(), // Bind to file's executor for safety
-                                    std::bind(&nkCryptoToolECC::handleFileReadForDecryption, this, state,
-                                                std::placeholders::_1, std::placeholders::_2)));
+                            handleFileReadForDecryption(state, {}, 0);
                         });
                 });
         });
 }
 
 void nkCryptoToolECC::handleFileReadForDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
-    if (ec == asio::error::eof) {
-        // All ciphertext read, now read the GCM tag and finalize decryption
-        asio::async_read(state->input_file, asio::buffer(state->tag),
-            asio::bind_executor(state->input_file.get_executor(),
-                std::bind(&nkCryptoToolECC::finishDecryption, this, state,
-                            std::placeholders::_1)));
+    if (ec == asio::error::eof || state->current_input_offset >= state->total_input_size) {
+        finishDecryption(state, {});
         return;
     }
-    if (ec) {
+     if (ec) {
         std::cerr << "Error reading input file during decryption: " << ec.message() << std::endl;
         state->completion_handler(ec);
         return;
     }
 
-    state->bytes_read = bytes_transferred;
-    int outlen = 0;
-    if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), state->bytes_read) <= 0) {
-        std::cerr << "Error during decryption update." << std::endl;
-        printOpenSSLErrors();
-        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
-        return;
-    }
-    state->output_buffer.resize(outlen); // Resize to actual output size
+    if (bytes_transferred > 0) {
+        state->bytes_read = bytes_transferred;
+        state->current_input_offset += bytes_transferred;
 
-    if (outlen > 0) {
-        asio::async_write(state->output_file, asio::buffer(state->output_buffer),
-            asio::bind_executor(state->output_file.get_executor(),
+        int outlen = 0;
+        if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), state->bytes_read) <= 0) {
+            std::cerr << "Error during decryption update." << std::endl;
+            printOpenSSLErrors();
+            state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+            return;
+        }
+
+        if (outlen > 0) {
+            asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
                 std::bind(&nkCryptoToolECC::handleFileWriteAfterDecryption, this, state,
-                            std::placeholders::_1, std::placeholders::_2)));
+                            std::placeholders::_1, std::placeholders::_2));
+        } else {
+             handleFileWriteAfterDecryption(state, {}, 0);
+        }
     } else {
-        // No output from current update, continue reading input
-        state->input_file.async_read_some(asio::buffer(state->input_buffer),
-            asio::bind_executor(state->input_file.get_executor(),
+        // First call to start the loop
+         size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_input_size - state->current_input_offset);
+        if (to_read > 0) {
+            state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), to_read),
                 std::bind(&nkCryptoToolECC::handleFileReadForDecryption, this, state,
-                            std::placeholders::_1, std::placeholders::_2)));
+                            std::placeholders::_1, std::placeholders::_2));
+        } else {
+            finishDecryption(state, {});
+        }
     }
 }
 
-void nkCryptoToolECC::handleFileWriteAfterDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t bytes_transferred) {
+void nkCryptoToolECC::handleFileWriteAfterDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec, size_t) {
     if (ec) {
         std::cerr << "Error writing decrypted data to output file: " << ec.message() << std::endl;
         state->completion_handler(ec);
         return;
     }
 
-    // Continue reading the input file for the next chunk
-    state->input_file.async_read_some(asio::buffer(state->input_buffer),
-        asio::bind_executor(state->input_file.get_executor(),
+    if(state->current_input_offset >= state->total_input_size) {
+        finishDecryption(state, {});
+        return;
+    }
+
+    size_t to_read = std::min((size_t)CHUNK_SIZE, state->total_input_size - state->current_input_offset);
+    if (to_read > 0) {
+        state->input_file.async_read_some(asio::buffer(state->input_buffer.data(), to_read),
             std::bind(&nkCryptoToolECC::handleFileReadForDecryption, this, state,
-                        std::placeholders::_1, std::placeholders::_2)));
+                        std::placeholders::_1, std::placeholders::_2));
+    } else {
+         finishDecryption(state, {});
+    }
 }
 
 void nkCryptoToolECC::finishDecryption(std::shared_ptr<DecryptionState> state, const asio::error_code& ec) {
     if (ec) {
-        std::cerr << "Error reading GCM tag: " << ec.message() << std::endl;
         state->completion_handler(ec);
         return;
     }
-
-    // Set expected tag
-    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
-        std::cerr << "Error setting GCM tag for verification." << std::endl;
-        printOpenSSLErrors();
-        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
-        return;
-    }
-
-    // Finalize decryption and verify tag
-    int outlen = 0;
-    if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
-        std::cerr << "Error finalizing decryption or GCM tag mismatch." << std::endl;
-        printOpenSSLErrors();
-        state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported)); // Likely authentication error
-        return;
-    }
-    state->output_buffer.resize(outlen); // Resize to actual output size for final block
-
-    asio::async_write(state->output_file, asio::buffer(state->output_buffer),
-        [state, this](const asio::error_code& ec_write_final, size_t /*bytes_transferred_final*/) {
-            if (ec_write_final) {
-                std::cerr << "Error writing final decrypted data to output file: " << ec_write_final.message() << std::endl;
-                state->completion_handler(ec_write_final);
+    
+    state->tag.resize(GCM_TAG_LEN);
+    asio::async_read(state->input_file, asio::buffer(state->tag), 
+        [state, this](const asio::error_code& tag_ec, size_t bytes_read) {
+            if(tag_ec || bytes_read != GCM_TAG_LEN) {
+                 std::cerr << "Error reading GCM tag: " << tag_ec.message() << std::endl;
+                state->completion_handler(tag_ec ? tag_ec : asio::error::make_error_code(asio::error::bad_descriptor));
                 return;
             }
-            // All done!
-            state->completion_handler(std::error_code()); // Success
-        });
+
+            if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+                std::cerr << "Error setting GCM tag for verification." << std::endl;
+                printOpenSSLErrors();
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
+
+            int outlen = 0;
+            if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+                std::cerr << "Error finalizing decryption or GCM tag mismatch." << std::endl;
+                printOpenSSLErrors();
+                state->completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
+                return;
+            }
+
+            asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
+                [state](const asio::error_code& ec_write_final, size_t) {
+                    if (ec_write_final) {
+                        std::cerr << "Error writing final decrypted data to output file: " << ec_write_final.message() << std::endl;
+                        state->completion_handler(ec_write_final);
+                        return;
+                    }
+                    state->completion_handler(std::error_code());
+                });
+    });
 }
 
 
-// Placeholder for Hybrid methods (not implemented in this example)
 void nkCryptoToolECC::encryptFileHybrid(
-    asio::io_context& io_context,
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_mlkem_public_key_path,
-    const std::filesystem::path& recipient_ecdh_public_key_path,
+    asio::io_context&, const std::filesystem::path&, const std::filesystem::path&,
+    const std::filesystem::path&, const std::filesystem::path&,
     std::function<void(std::error_code)> completion_handler) {
     std::cerr << "Hybrid encryption not implemented for ECC mode." << std::endl;
     completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
 }
 
 void nkCryptoToolECC::decryptFileHybrid(
-    asio::io_context& io_context,
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_mlkem_private_key_path,
-    const std::filesystem::path& recipient_ecdh_private_key_path,
+    asio::io_context&, const std::filesystem::path&, const std::filesystem::path&,
+    const std::filesystem::path&, const std::filesystem::path&,
     std::function<void(std::error_code)> completion_handler) {
     std::cerr << "Hybrid decryption not implemented for ECC mode." << std::endl;
     completion_handler(asio::error::make_error_code(asio::error::operation_not_supported));
 }
 
 
-// Signing/Verification methods (synchronous as before, not affected by file streaming for now)
 bool nkCryptoToolECC::signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
-    // Read input file content
     std::vector<unsigned char> input_data;
     try {
         input_data = readFile(input_filepath);
@@ -819,13 +774,26 @@ bool nkCryptoToolECC::signFile(const std::filesystem::path& input_filepath, cons
     }
 
     std::vector<unsigned char> signature(sig_len);
+
+    if (EVP_DigestSignInit(mdctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) {
+        std::cerr << "Error: Failed to re-initialize digest signing." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+
+    if (EVP_DigestSignUpdate(mdctx.get(), input_data.data(), input_data.size()) <= 0) {
+        std::cerr << "Error: Failed to re-update digest for signing." << std::endl;
+        printOpenSSLErrors();
+        return false;
+    }
+
     if (EVP_DigestSignFinal(mdctx.get(), signature.data(), &sig_len) <= 0) {
         std::cerr << "Error: Failed to generate signature." << std::endl;
         printOpenSSLErrors();
         return false;
     }
+    signature.resize(sig_len);
 
-    // Write signature to file
     if (!writeFile(signature_filepath, signature)) {
         std::cerr << "Error: Failed to write signature to " << signature_filepath << std::endl;
         return false;
@@ -835,7 +803,6 @@ bool nkCryptoToolECC::signFile(const std::filesystem::path& input_filepath, cons
 }
 
 bool nkCryptoToolECC::verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
-    // Read input file content
     std::vector<unsigned char> input_data;
     try {
         input_data = readFile(input_filepath);
@@ -844,7 +811,6 @@ bool nkCryptoToolECC::verifySignature(const std::filesystem::path& input_filepat
         return false;
     }
 
-    // Read signature file
     std::vector<unsigned char> signature;
     try {
         signature = readFile(signature_filepath);
@@ -866,11 +832,7 @@ bool nkCryptoToolECC::verifySignature(const std::filesystem::path& input_filepat
         return false;
     }
 
-    // For verification, we generally don't specify the digest in EVP_DigestVerifyInit if it's implicitly part of the signature
-    // or if the public key has an associated digest. For ECDSA, the digest is hashed by the signer.
-    // So we just need to verify the signature against the hash of the input data.
-    // However, if the key is generic, we might need to specify. Let's assume SHA256 for this example.
-    const EVP_MD* digest = EVP_sha256(); // Assume SHA256, or pass as argument if dynamic
+    const EVP_MD* digest = EVP_sha256();
     if (EVP_DigestVerifyInit(mdctx.get(), nullptr, digest, nullptr, public_key.get()) <= 0) {
         std::cerr << "Error: Failed to initialize digest verification." << std::endl;
         printOpenSSLErrors();
@@ -885,14 +847,12 @@ bool nkCryptoToolECC::verifySignature(const std::filesystem::path& input_filepat
 
     int result = EVP_DigestVerifyFinal(mdctx.get(), signature.data(), signature.size());
     if (result == 1) {
-        // Signature is valid
         return true;
     } else if (result == 0) {
         std::cerr << "Error: Signature verification failed. The signature does not match the file or public key." << std::endl;
         printOpenSSLErrors();
         return false;
     } else {
-        // Error occurred during verification
         std::cerr << "Error: An error occurred during signature verification." << std::endl;
         printOpenSSLErrors();
         return false;
