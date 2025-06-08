@@ -5,42 +5,81 @@
 
 #include <string>
 #include <vector>
-#include <stdexcept> // For std::runtime_error
-#include <filesystem> // For std::filesystem::path
-#include <functional> // For std::function
-#include <system_error> // For std::error_code
+#include <stdexcept>
+#include <filesystem>
+#include <functional>
+#include <system_error>
+#include <memory>
+#include <asio.hpp>
+#include <asio/stream_file.hpp>
+#include <asio/buffer.hpp>
+#include <openssl/evp.h>
+#include <openssl/bio.h>
 
 // Forward declaration for Asio
 namespace asio {
 class io_context;
 }
 
+// --- OpenSSL Custom Deleters ---
+struct EVP_PKEY_Deleter { void operator()(EVP_PKEY *p) const; };
+struct EVP_PKEY_CTX_Deleter { void operator()(EVP_PKEY_CTX *p) const; };
+struct EVP_CIPHER_CTX_Deleter { void operator()(EVP_CIPHER_CTX *p) const; };
+struct EVP_MD_CTX_Deleter { void operator()(EVP_MD_CTX *p) const; };
+struct BIO_Deleter { void operator()(BIO *b) const; };
+struct EVP_KDF_Deleter { void operator()(EVP_KDF *p) const; };
+struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
+
 class nkCryptoToolBase {
 private:
-    std::filesystem::path key_base_directory; // Now non-static
+    std::filesystem::path key_base_directory;
 
 protected:
-    // Helper function to read file content into a vector of bytes (still synchronous, used by other non-async methods)
-    std::vector<unsigned char> readFile(const std::filesystem::path& filepath);
+    // --- Constants ---
+    static constexpr int CHUNK_SIZE = 4096;
+    static constexpr int GCM_IV_LEN = 12;
+    static constexpr int GCM_TAG_LEN = 16;
 
-    // Helper function to write content from a vector of bytes to a file (still synchronous, used by other non-async methods)
+    // --- Common Helper Functions ---
+    void printOpenSSLErrors();
+    void printProgress(double percentage);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path);
+    std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
+                                          const std::string& salt, const std::string& info,
+                                          const std::string& digest_algo);
+
+    // --- Base State for Asynchronous Operations ---
+    struct AsyncStateBase {
+        asio::stream_file input_file;
+        asio::stream_file output_file;
+        std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx;
+        std::vector<unsigned char> input_buffer;
+        std::vector<unsigned char> output_buffer;
+        std::vector<unsigned char> tag;
+        size_t bytes_read;
+        uintmax_t total_bytes_processed;
+        std::function<void(std::error_code)> completion_handler;
+
+        AsyncStateBase(asio::io_context& io_context);
+        virtual ~AsyncStateBase() = default;
+    };
+
+    // Helper functions for synchronous file operations (used in signing/verification)
+    std::vector<unsigned char> readFile(const std::filesystem::path& filepath);
     bool writeFile(const std::filesystem::path& filepath, const std::vector<unsigned char>& data);
 
 public:
     nkCryptoToolBase();
     virtual ~nkCryptoToolBase();
 
-    // Non-static method to set the base directory for keys
     void setKeyBaseDirectory(const std::filesystem::path& dir);
-    // Non-static method to get the base directory for keys
     std::filesystem::path getKeyBaseDirectory() const;
 
-    // Key generation methods (virtual for specific implementations) - These can remain synchronous for now
+    // --- Pure Virtual Functions for Derived Classes ---
     virtual bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
 
-    // Asynchronous Encryption/Decryption methods (virtual for specific implementations)
-    // Now takes io_context and a completion handler
     virtual void encryptFile(
         asio::io_context& io_context,
         const std::filesystem::path& input_filepath,
@@ -61,8 +100,6 @@ public:
         const std::filesystem::path& input_filepath,
         const std::filesystem::path& output_filepath,
         const std::filesystem::path& user_private_key_path,
-        // sender_public_key_path is now redundant for ECC decryption as ephemeral key is in file header,
-        // but kept for virtual method compatibility.
         const std::filesystem::path& sender_public_key_path, 
         std::function<void(std::error_code)> completion_handler) = 0;
 
@@ -74,11 +111,9 @@ public:
         const std::filesystem::path& recipient_ecdh_private_key_path,
         std::function<void(std::error_code)> completion_handler) = 0;
 
-    // Signing/Verification methods (virtual for specific implementations) - Can remain synchronous
     virtual bool signFile(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) = 0;
     virtual bool verifySignature(const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) = 0;
 
-    // Virtual methods for getting default key paths (used in main for key generation)
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
