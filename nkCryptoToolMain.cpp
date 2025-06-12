@@ -60,8 +60,33 @@ std::string get_masked_passphrase() {
     return passphrase_input;
 }
 
-// OpenSSL PEM passphrase callback function
-// Uses userdata to show which key is being read.
+// NEW: Function to get and verify a passphrase from the user.
+std::string get_and_verify_passphrase(const std::string& prompt) {
+    std::string pass1, pass2;
+    do {
+        std::cout << prompt;
+        std::cout.flush();
+        pass1 = get_masked_passphrase();
+
+        // If the user wants no passphrase, don't ask for verification.
+        if (pass1.empty()) {
+            return "";
+        }
+
+        std::cout << "Verifying - Enter same passphrase again: ";
+        std::cout.flush();
+        pass2 = get_masked_passphrase();
+
+        if (pass1 != pass2) {
+            std::cerr << "\nPassphrases do not match. Please try again." << std::endl;
+        }
+    } while (pass1 != pass2);
+
+    return pass1;
+}
+
+
+// OpenSSL PEM passphrase callback function for READING keys.
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     (void)rwflag;
     const char* key_description = static_cast<const char*>(userdata);
@@ -191,12 +216,8 @@ int main(int argc, char* argv[]) {
                 ecdh_passphrase = passphrase_from_args;
                 std::cout << "Using provided passphrase for both ML-KEM and ECDH keys." << std::endl;
             } else {
-                std::cout << "Enter passphrase for ML-KEM private key (press Enter to save unencrypted): ";
-                std::cout.flush();
-                mlkem_passphrase = get_masked_passphrase();
-                std::cout << "Enter passphrase for ECDH private key (press Enter to save unencrypted): ";
-                std::cout.flush();
-                ecdh_passphrase = get_masked_passphrase();
+                mlkem_passphrase = get_and_verify_passphrase("Enter passphrase for ML-KEM private key (press Enter to save unencrypted): ");
+                ecdh_passphrase = get_and_verify_passphrase("Enter passphrase for ECDH private key (press Enter to save unencrypted): ");
             }
             auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
             success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory()/"public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory()/"private_enc_hybrid_mlkem.key", mlkem_passphrase);
@@ -209,9 +230,8 @@ int main(int argc, char* argv[]) {
             std::string passphrase_to_use;
             if (!passphrase_was_provided) {
                  const char* key_type = flags["gen-enc-key"] ? "encryption" : "signing";
-                 std::cout << "Enter passphrase to encrypt " << key_type << " private key (press Enter to save unencrypted): ";
-                 std::cout.flush();
-                 passphrase_to_use = get_masked_passphrase();
+                 std::string prompt = "Enter passphrase to encrypt " + std::string(key_type) + " private key (press Enter to save unencrypted): ";
+                 passphrase_to_use = get_and_verify_passphrase(prompt);
             } else {
                  passphrase_to_use = passphrase_from_args;
             }
