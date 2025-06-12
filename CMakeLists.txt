@@ -73,3 +73,28 @@ endif()
 
 # インストールルールを設定します（オプション）。
 install(TARGETS nkCryptoTool DESTINATION bin)
+
+# ==============================================================================
+# Testing Configuration (CTest)
+# ==============================================================================
+
+# CTestを有効にする
+enable_testing()
+
+# E2Eテスト用のダミー入力ファイルを作成
+set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
+file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
+
+# CTestにE2Eテストスクリプトを追加
+# NAME: CTestに表示されるテスト名
+# COMMAND: 実行するコマンド。cmake -P でCMakeスクリプトを実行します。
+# WORKING_DIRECTORY: コマンドの実行ディレクトリ。ビルドディレクトリを指定します。
+add_test(
+    NAME nkCryptoTool_E2E_Tests
+    COMMAND "${CMAKE_COMMAND}"
+        -D NK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
+        -D TEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
+        -D TEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/E2ETestOutput
+        -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
