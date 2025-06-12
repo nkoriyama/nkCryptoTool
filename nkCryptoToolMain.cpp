@@ -26,62 +26,55 @@
 #include <cstdio> // For fileno()
 #endif
 
-// Global passphrase variable passed to key generation functions.
-std::string global_passphrase_for_pem_cb;
-std::mutex passphrase_mutex;
-
 // --- Helper function for masked passphrase input ---
 std::string get_masked_passphrase() {
-    std::string passphrase;
-
+    std::string passphrase_input;
 #if defined(_WIN32) || defined(_WIN64)
     char ch;
     while ((ch = _getch()) != '\r') {
         if (ch == '\b') {
-            if (!passphrase.empty()) {
-                passphrase.pop_back();
+            if (!passphrase_input.empty()) {
+                passphrase_input.pop_back();
                 std::cout << "\b \b";
             }
         } else {
-            passphrase.push_back(ch);
+            passphrase_input.push_back(ch);
             std::cout << '*';
         }
     }
     std::cout << std::endl;
 #else
     if (!isatty(STDIN_FILENO)) {
-        std::getline(std::cin, passphrase);
-        return passphrase;
+        std::getline(std::cin, passphrase_input);
+        return passphrase_input;
     }
     termios oldt;
     tcgetattr(STDIN_FILENO, &oldt);
     termios newt = oldt;
     newt.c_lflag &= ~ECHO;
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    std::getline(std::cin, passphrase);
+    std::getline(std::cin, passphrase_input);
     tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
     std::cout << std::endl;
 #endif
-
-    return passphrase;
+    return passphrase_input;
 }
 
-
 // OpenSSL PEM passphrase callback function
-// MODIFIED: This callback is now ONLY for READING private keys.
+// Uses userdata to show which key is being read.
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     (void)rwflag;
-    (void)userdata; // No longer used, passphrase is not passed from args here.
+    const char* key_description = static_cast<const char*>(userdata);
 
-    std::cout << "Enter passphrase for private key: ";
+    if (key_description && *key_description) {
+        std::cout << "Enter passphrase for " << key_description << ": ";
+    } else {
+        std::cout << "Enter passphrase for private key: ";
+    }
     std::cout.flush();
     std::string final_passphrase = get_masked_passphrase();
 
     if (std::cin.eof()) { return 0; }
-
-    // NOTE: When reading a key, an empty passphrase is a valid attempt
-    // for a key that might have been saved unencrypted.
-    // OpenSSL handles the case where an unencrypted key is read.
 
     if (final_passphrase.length() >= (unsigned int)size) {
         std::cerr << "\nError: Passphrase is too long." << std::endl;
@@ -102,8 +95,8 @@ void display_usage() {
               << "Key Generation:\n"
               << "  --gen-enc-key       Generate encryption key pair(s).\n"
               << "  --gen-sign-key      Generate signing key pair ('ecc' or 'pqc' mode).\n"
-              << "  --passphrase <pwd>  Passphrase for private key encryption. If not provided, or empty, you will be prompted.\n"
-              << "                      To specify no passphrase from the command line, use --passphrase \"\"\n\n"
+              << "  --passphrase <pwd>  Passphrase for private key encryption. For hybrid key generation, this passphrase is applied to BOTH keys.\n"
+              << "                      If not provided, or empty, you will be prompted.\n\n"
               << "Encryption:\n"
               << "  --encrypt           Encrypt input file.\n"
               << "  -o, --output-file <path>   Output file path.\n"
@@ -135,56 +128,20 @@ int main(int argc, char* argv[]) {
     std::map<std::string, bool> flags;
     std::map<std::string, std::string> options;
     std::vector<std::string> non_option_args;
+    std::string passphrase_from_args;
+    bool passphrase_was_provided = false;
 
     options["mode"] = "ecc";
     options["digest-algo"] = "SHA256";
     options["compress"] = "none";
-    bool passphrase_was_provided = false;
 
-    enum {
-        OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT,
-        OPT_SIGN, OPT_VERIFY, OPT_RECIPIENT_PUBKEY, OPT_USER_PRIVKEY,
-        OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY,
-        OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY,
-        OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE,
-        OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_COMPRESS
-    };
-
-    struct option long_options[] = {
-        {"mode", required_argument, nullptr, 'm'},
-        {"passphrase", required_argument, nullptr, 'p'},
-        {"output-file", required_argument, nullptr, 'o'},
-        {"help", no_argument, nullptr, 'h'},
-        {"gen-enc-key", no_argument, nullptr, OPT_GEN_ENC_KEY},
-        {"gen-sign-key", no_argument, nullptr, OPT_GEN_SIGN_KEY},
-        // ... (rest of options are the same)
-        {"encrypt", no_argument, nullptr, OPT_ENCRYPT},
-        {"decrypt", no_argument, nullptr, OPT_DECRYPT},
-        {"sign", no_argument, nullptr, OPT_SIGN},
-        {"verify", no_argument, nullptr, OPT_VERIFY},
-        {"compress", required_argument, nullptr, OPT_COMPRESS},
-        {"recipient-pubkey", required_argument, nullptr, OPT_RECIPIENT_PUBKEY},
-        {"user-privkey", required_argument, nullptr, OPT_USER_PRIVKEY},
-        {"recipient-mlkem-pubkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PUBKEY},
-        {"recipient-ecdh-pubkey", required_argument, nullptr, OPT_RECIPIENT_ECDH_PUBKEY},
-        {"recipient-mlkem-privkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PRIVKEY},
-        {"recipient-ecdh-privkey", required_argument, nullptr, OPT_RECIPIENT_ECDH_PRIVKEY},
-        {"signing-privkey", required_argument, nullptr, OPT_SIGNING_PRIVKEY},
-        {"signing-pubkey", required_argument, nullptr, OPT_SIGNING_PUBKEY},
-        {"signature", required_argument, nullptr, OPT_SIGNATURE},
-        {"digest-algo", required_argument, nullptr, OPT_DIGEST_ALGO},
-        {"key-dir", required_argument, nullptr, OPT_KEY_DIR},
-        {nullptr, 0, nullptr, 0}
-    };
+    enum { OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT, OPT_SIGN, OPT_VERIFY, OPT_RECIPIENT_PUBKEY, OPT_USER_PRIVKEY, OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY, OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY, OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE, OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_COMPRESS };
+    struct option long_options[] = { {"mode", required_argument, nullptr, 'm'}, {"passphrase", required_argument, nullptr, 'p'}, {"output-file", required_argument, nullptr, 'o'}, {"help", no_argument, nullptr, 'h'}, {"gen-enc-key", no_argument, nullptr, OPT_GEN_ENC_KEY}, {"gen-sign-key", no_argument, nullptr, OPT_GEN_SIGN_KEY}, {"encrypt", no_argument, nullptr, OPT_ENCRYPT}, {"decrypt", no_argument, nullptr, OPT_DECRYPT}, {"sign", no_argument, nullptr, OPT_SIGN}, {"verify", no_argument, nullptr, OPT_VERIFY}, {"compress", required_argument, nullptr, OPT_COMPRESS}, {"recipient-pubkey", required_argument, nullptr, OPT_RECIPIENT_PUBKEY}, {"user-privkey", required_argument, nullptr, OPT_USER_PRIVKEY}, {"recipient-mlkem-pubkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PUBKEY}, {"recipient-ecdh-pubkey", required_argument, nullptr, OPT_RECIPIENT_ECDH_PUBKEY}, {"recipient-mlkem-privkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PRIVKEY}, {"recipient-ecdh-privkey", required_argument, nullptr, OPT_RECIPIENT_ECDH_PRIVKEY}, {"signing-privkey", required_argument, nullptr, OPT_SIGNING_PRIVKEY}, {"signing-pubkey", required_argument, nullptr, OPT_SIGNING_PUBKEY}, {"signature", required_argument, nullptr, OPT_SIGNATURE}, {"digest-algo", required_argument, nullptr, OPT_DIGEST_ALGO}, {"key-dir", required_argument, nullptr, OPT_KEY_DIR}, {nullptr, 0, nullptr, 0} };
 
     int opt;
     while ((opt = getopt_long(argc, argv, "m:p:o:h", long_options, nullptr)) != -1) {
         switch (opt) {
-            case 'p':
-                global_passphrase_for_pem_cb = optarg;
-                passphrase_was_provided = true;
-                break;
-            // ... (rest of cases are the same)
+            case 'p': passphrase_from_args = optarg; passphrase_was_provided = true; break;
             case 'm': options["mode"] = optarg; break;
             case 'o': options["output-file"] = optarg; break;
             case 'h': display_usage(); return 0;
@@ -210,86 +167,76 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    for (int i = optind; i < argc; ++i) {
-        non_option_args.push_back(argv[i]);
-    }
+    for (int i = optind; i < argc; ++i) { non_option_args.push_back(argv[i]); }
 
     std::unique_ptr<nkCryptoToolBase> crypto_handler;
-    if (options["mode"] == "ecc") {
-        crypto_handler = std::make_unique<nkCryptoToolECC>();
-    } else if (options["mode"] == "pqc" || options["mode"] == "hybrid") {
-        crypto_handler = std::make_unique<nkCryptoToolPQC>();
-        if (options["mode"] == "pqc") options["digest-algo"] = "SHA3-256";
-    } else {
-        std::cerr << "Error: Invalid mode '" << options["mode"] << "'." << std::endl;
-        return 1;
-    }
+    if (options["mode"] == "ecc") { crypto_handler = std::make_unique<nkCryptoToolECC>(); } 
+    else if (options["mode"] == "pqc" || options["mode"] == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); if (options["mode"] == "pqc") options["digest-algo"] = "SHA3-256"; } 
+    else { std::cerr << "Error: Invalid mode '" << options["mode"] << "'." << std::endl; return 1; }
 
-    if (options.count("key-dir")) {
-        crypto_handler->setKeyBaseDirectory(options["key-dir"]);
-    }
+    if (options.count("key-dir")) { crypto_handler->setKeyBaseDirectory(options["key-dir"]); }
     
     asio::io_context io_context;
     int return_code = 0;
     bool op_started = false;
 
-    // --- Key Generation Logic ---
     if (flags["gen-enc-key"] || flags["gen-sign-key"]) {
         op_started = true;
         bool success = false;
         
-        std::string passphrase_to_use;
-        if (!passphrase_was_provided) {
-             std::cout << "Enter passphrase to encrypt private key (press Enter to save unencrypted): ";
-             std::cout.flush();
-             passphrase_to_use = get_masked_passphrase();
-        } else {
-             passphrase_to_use = global_passphrase_for_pem_cb;
-        }
-
-        if (flags["gen-enc-key"]) {
-            if (options["mode"] == "hybrid") {
-                // ... (hybrid key gen logic remains the same, but uses passphrase_to_use)
-                auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory()/"public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory()/"private_enc_hybrid_mlkem.key", passphrase_to_use);
-                if(success) {
-                    nkCryptoToolECC ecc_handler;
-                    ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
-                    success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory()/"public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory()/"private_enc_hybrid_ecdh.key", passphrase_to_use);
-                }
+        if (flags["gen-enc-key"] && options["mode"] == "hybrid") {
+            std::string mlkem_passphrase, ecdh_passphrase;
+            if (passphrase_was_provided) {
+                mlkem_passphrase = passphrase_from_args;
+                ecdh_passphrase = passphrase_from_args;
+                std::cout << "Using provided passphrase for both ML-KEM and ECDH keys." << std::endl;
             } else {
-                success = crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use);
+                std::cout << "Enter passphrase for ML-KEM private key (press Enter to save unencrypted): ";
+                std::cout.flush();
+                mlkem_passphrase = get_masked_passphrase();
+                std::cout << "Enter passphrase for ECDH private key (press Enter to save unencrypted): ";
+                std::cout.flush();
+                ecdh_passphrase = get_masked_passphrase();
             }
-        } else { // gen-sign-key
-             success = crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use);
+            auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
+            success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory()/"public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory()/"private_enc_hybrid_mlkem.key", mlkem_passphrase);
+            if(success) {
+                nkCryptoToolECC ecc_handler;
+                ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
+                success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory()/"public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory()/"private_enc_hybrid_ecdh.key", ecdh_passphrase);
+            }
+        } else {
+            std::string passphrase_to_use;
+            if (!passphrase_was_provided) {
+                 const char* key_type = flags["gen-enc-key"] ? "encryption" : "signing";
+                 std::cout << "Enter passphrase to encrypt " << key_type << " private key (press Enter to save unencrypted): ";
+                 std::cout.flush();
+                 passphrase_to_use = get_masked_passphrase();
+            } else {
+                 passphrase_to_use = passphrase_from_args;
+            }
+            if (flags["gen-enc-key"]) {
+                success = crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use);
+            } else {
+                success = crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use);
+            }
         }
 
-        if (success) {
-            std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl;
-        } else {
-            std::cerr << "Error: Key pair generation failed." << std::endl;
-            return_code = 1;
-        }
+        if (success) { std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl; } 
+        else { std::cerr << "Error: Key pair generation failed." << std::endl; return_code = 1; }
     }
-    // ... (rest of main logic for encrypt, decrypt, etc. remains the same)
     else if (flags["encrypt"]) {
         op_started = true;
         if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
         auto algo = nkCryptoToolBase::CompressionAlgorithm::NONE;
         if (options["compress"] == "lz4") algo = nkCryptoToolBase::CompressionAlgorithm::LZ4;
-        if (options["mode"] == "hybrid") {
-            crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; });
-        } else {
-            crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; });
-        }
+        if (options["mode"] == "hybrid") { crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); } 
+        else { crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); }
     } else if (flags["decrypt"]) {
         op_started = true;
         if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
-        if (options["mode"] == "hybrid") {
-             crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; });
-        } else {
-             crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; });
-        }
+        if (options["mode"] == "hybrid") { crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); } 
+        else { crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; }); }
     } else if (flags["sign"]) {
         op_started = true;
         if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
@@ -298,11 +245,7 @@ int main(int argc, char* argv[]) {
         op_started = true;
         if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
         crypto_handler->verifySignature(io_context, non_option_args[0], options["signature"], options["signing-pubkey"],
-             [&](std::error_code ec, bool result){ 
-                 if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; }
-                 else if (result) { std::cout << "\nSignature verified successfully." << std::endl; }
-                 else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;}
-             });
+             [&](std::error_code ec, bool result){ if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; } else if (result) { std::cout << "\nSignature verified successfully." << std::endl; } else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;} });
     } else {
         if (argc > 1) { std::cerr << "Error: No valid operation specified." << std::endl; return_code = 1; }
         display_usage();

@@ -36,13 +36,11 @@ public:
     };
 
 protected:
-    // --- Constants ---
     static constexpr int CHUNK_SIZE = 4096;
     static constexpr int GCM_IV_LEN = 12;
     static constexpr int GCM_TAG_LEN = 16;
     static constexpr char MAGIC[4] = {'N', 'K', 'C', '1'};
 
-    // --- File Header Structure ---
     #pragma pack(push, 1)
     struct FileHeader {
         char magic[4];
@@ -55,7 +53,8 @@ protected:
     void printOpenSSLErrors();
     void printProgress(double percentage);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path);
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description);
+
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
                                           const std::string& salt, const std::string& info,
                                           const std::string& digest_algo);
@@ -70,17 +69,13 @@ protected:
         size_t bytes_read;
         uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
-
         CompressionAlgorithm compression_algo = CompressionAlgorithm::NONE;
         void* compression_stream = nullptr;
         void* decompression_stream = nullptr;
         std::vector<unsigned char> compression_buffer;
-
-        // --- Members for robust compressed streaming ---
-        std::vector<unsigned char> compression_frame_buffer; // Used during encryption to hold a framed chunk
-        std::vector<unsigned char> decryption_buffer;      // Buffers decrypted data to reassemble frames
-        uint32_t expected_frame_size;                      // State for the frame parser
-
+        std::vector<unsigned char> compression_frame_buffer;
+        std::vector<unsigned char> decryption_buffer;
+        uint32_t expected_frame_size;
         AsyncStateBase(asio::io_context& io_context);
         virtual ~AsyncStateBase();
     };
@@ -97,14 +92,12 @@ public:
 
     virtual bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
-
     virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
     virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
     virtual void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
     virtual void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
     virtual void signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) = 0;
     virtual void verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code, bool)>) = 0;
-
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
@@ -112,11 +105,9 @@ public:
 
 private:
     std::filesystem::path key_base_directory;
-
     void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
     void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
-
     void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading);
     void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
