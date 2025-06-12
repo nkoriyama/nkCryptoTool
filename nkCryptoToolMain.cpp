@@ -17,32 +17,78 @@
 #include "nkCryptoToolECC.hpp"
 #include "nkCryptoToolPQC.hpp"
 
+// Platform-specific headers for masked password input
+#if defined(_WIN32) || defined(_WIN64)
+#include <conio.h> // For _getch()
+#else
+#include <termios.h>
+#include <unistd.h>
+#include <cstdio> // For fileno()
+#endif
+
 // Global passphrase variable passed to key generation functions.
 std::string global_passphrase_for_pem_cb;
 std::mutex passphrase_mutex;
 
+// --- Helper function for masked passphrase input ---
+std::string get_masked_passphrase() {
+    std::string passphrase;
+
+#if defined(_WIN32) || defined(_WIN64)
+    char ch;
+    while ((ch = _getch()) != '\r') {
+        if (ch == '\b') {
+            if (!passphrase.empty()) {
+                passphrase.pop_back();
+                std::cout << "\b \b";
+            }
+        } else {
+            passphrase.push_back(ch);
+            std::cout << '*';
+        }
+    }
+    std::cout << std::endl;
+#else
+    if (!isatty(STDIN_FILENO)) {
+        std::getline(std::cin, passphrase);
+        return passphrase;
+    }
+    termios oldt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    termios newt = oldt;
+    newt.c_lflag &= ~ECHO;
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    std::getline(std::cin, passphrase);
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    std::cout << std::endl;
+#endif
+
+    return passphrase;
+}
+
+
 // OpenSSL PEM passphrase callback function
+// MODIFIED: This callback is now ONLY for READING private keys.
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     (void)rwflag;
-    const std::string* passphrase_from_arg = static_cast<const std::string*>(userdata);
-    std::string final_passphrase;
+    (void)userdata; // No longer used, passphrase is not passed from args here.
 
-    if (passphrase_from_arg && !passphrase_from_arg->empty()) {
-        final_passphrase = *passphrase_from_arg;
-    } else {
-        std::cout << "Enter passphrase for private key: ";
-        std::getline(std::cin, final_passphrase);
-        if (std::cin.eof()) { return 0; }
-    }
-    if (final_passphrase.empty()) {
-        std::cerr << "\nError: Passphrase cannot be empty for encryption." << std::endl;
-        return 0;
-    }
+    std::cout << "Enter passphrase for private key: ";
+    std::cout.flush();
+    std::string final_passphrase = get_masked_passphrase();
+
+    if (std::cin.eof()) { return 0; }
+
+    // NOTE: When reading a key, an empty passphrase is a valid attempt
+    // for a key that might have been saved unencrypted.
+    // OpenSSL handles the case where an unencrypted key is read.
+
     if (final_passphrase.length() >= (unsigned int)size) {
         std::cerr << "\nError: Passphrase is too long." << std::endl;
         return 0;
     }
-    strncpy(buf, final_passphrase.c_str(), size - 1);
+
+    strncpy(buf, final_passphrase.c_str(), size);
     buf[size - 1] = '\0';
     return static_cast<int>(strlen(buf));
 }
@@ -56,7 +102,8 @@ void display_usage() {
               << "Key Generation:\n"
               << "  --gen-enc-key       Generate encryption key pair(s).\n"
               << "  --gen-sign-key      Generate signing key pair ('ecc' or 'pqc' mode).\n"
-              << "  --passphrase <pwd>  Passphrase for private key encryption. If not provided, you will be prompted.\n\n"
+              << "  --passphrase <pwd>  Passphrase for private key encryption. If not provided, or empty, you will be prompted.\n"
+              << "                      To specify no passphrase from the command line, use --passphrase \"\"\n\n"
               << "Encryption:\n"
               << "  --encrypt           Encrypt input file.\n"
               << "  -o, --output-file <path>   Output file path.\n"
@@ -92,6 +139,7 @@ int main(int argc, char* argv[]) {
     options["mode"] = "ecc";
     options["digest-algo"] = "SHA256";
     options["compress"] = "none";
+    bool passphrase_was_provided = false;
 
     enum {
         OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT,
@@ -109,6 +157,7 @@ int main(int argc, char* argv[]) {
         {"help", no_argument, nullptr, 'h'},
         {"gen-enc-key", no_argument, nullptr, OPT_GEN_ENC_KEY},
         {"gen-sign-key", no_argument, nullptr, OPT_GEN_SIGN_KEY},
+        // ... (rest of options are the same)
         {"encrypt", no_argument, nullptr, OPT_ENCRYPT},
         {"decrypt", no_argument, nullptr, OPT_DECRYPT},
         {"sign", no_argument, nullptr, OPT_SIGN},
@@ -131,8 +180,12 @@ int main(int argc, char* argv[]) {
     int opt;
     while ((opt = getopt_long(argc, argv, "m:p:o:h", long_options, nullptr)) != -1) {
         switch (opt) {
+            case 'p':
+                global_passphrase_for_pem_cb = optarg;
+                passphrase_was_provided = true;
+                break;
+            // ... (rest of cases are the same)
             case 'm': options["mode"] = optarg; break;
-            case 'p': global_passphrase_for_pem_cb = optarg; break;
             case 'o': options["output-file"] = optarg; break;
             case 'h': display_usage(); return 0;
             case OPT_GEN_ENC_KEY: flags["gen-enc-key"] = true; break;
@@ -180,92 +233,70 @@ int main(int argc, char* argv[]) {
     int return_code = 0;
     bool op_started = false;
 
-    if (flags["gen-enc-key"]) {
+    // --- Key Generation Logic ---
+    if (flags["gen-enc-key"] || flags["gen-sign-key"]) {
         op_started = true;
         bool success = false;
-        if (options["mode"] == "hybrid") {
-            std::cout << "Generating hybrid keys (ML-KEM and ECDH)..." << std::endl;
-            auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-            success = pqc_handler->generateEncryptionKeyPair(
-                pqc_handler->getKeyBaseDirectory() / "public_enc_hybrid_mlkem.key",
-                pqc_handler->getKeyBaseDirectory() / "private_enc_hybrid_mlkem.key",
-                global_passphrase_for_pem_cb
-            );
-            if(success) {
-                nkCryptoToolECC ecc_handler;
-                ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
-                success = ecc_handler.generateEncryptionKeyPair(
-                    ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key",
-                    ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key",
-                    global_passphrase_for_pem_cb
-                );
-            }
+        
+        std::string passphrase_to_use;
+        if (!passphrase_was_provided) {
+             std::cout << "Enter passphrase to encrypt private key (press Enter to save unencrypted): ";
+             std::cout.flush();
+             passphrase_to_use = get_masked_passphrase();
         } else {
-            success = crypto_handler->generateEncryptionKeyPair(
-                crypto_handler->getEncryptionPublicKeyPath(),
-                crypto_handler->getEncryptionPrivateKeyPath(),
-                global_passphrase_for_pem_cb
-            );
+             passphrase_to_use = global_passphrase_for_pem_cb;
+        }
+
+        if (flags["gen-enc-key"]) {
+            if (options["mode"] == "hybrid") {
+                // ... (hybrid key gen logic remains the same, but uses passphrase_to_use)
+                auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
+                success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory()/"public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory()/"private_enc_hybrid_mlkem.key", passphrase_to_use);
+                if(success) {
+                    nkCryptoToolECC ecc_handler;
+                    ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
+                    success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory()/"public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory()/"private_enc_hybrid_ecdh.key", passphrase_to_use);
+                }
+            } else {
+                success = crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use);
+            }
+        } else { // gen-sign-key
+             success = crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use);
         }
 
         if (success) {
-            std::cout << "Encryption keys generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl;
+            std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl;
         } else {
-            std::cerr << "Error: Encryption key generation failed." << std::endl;
+            std::cerr << "Error: Key pair generation failed." << std::endl;
             return_code = 1;
         }
-    } else if (flags["gen-sign-key"]) {
+    }
+    // ... (rest of main logic for encrypt, decrypt, etc. remains the same)
+    else if (flags["encrypt"]) {
         op_started = true;
-        bool success = crypto_handler->generateSigningKeyPair(
-            crypto_handler->getSigningPublicKeyPath(),
-            crypto_handler->getSigningPrivateKeyPath(),
-            global_passphrase_for_pem_cb
-        );
-        if (success) {
-            std::cout << "Signing keys generated successfully to " << crypto_handler->getKeyBaseDirectory().string() << std::endl;
-        } else {
-            std::cerr << "Error: Signing key generation failed." << std::endl;
-            return_code = 1;
-        }
-    } else if (flags["encrypt"]) {
-        op_started = true;
-        if(non_option_args.empty()){
-            std::cerr << "Error: Input file not specified." << std::endl; return 1;
-        }
+        if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
         auto algo = nkCryptoToolBase::CompressionAlgorithm::NONE;
         if (options["compress"] == "lz4") algo = nkCryptoToolBase::CompressionAlgorithm::LZ4;
-
         if (options["mode"] == "hybrid") {
-            crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo,
-                [&](std::error_code ec){ if(ec) return_code = 1; });
+            crypto_handler->encryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; });
         } else {
-            crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"], algo,
-                [&](std::error_code ec){ if(ec) return_code = 1; });
+            crypto_handler->encryptFile(io_context, non_option_args[0], options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; });
         }
     } else if (flags["decrypt"]) {
         op_started = true;
-        if(non_option_args.empty()){
-            std::cerr << "Error: Input file not specified." << std::endl; return 1;
-        }
+        if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
         if (options["mode"] == "hybrid") {
-             crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"],
-                [&](std::error_code ec){ if(ec) return_code = 1; });
+             crypto_handler->decryptFileHybrid(io_context, non_option_args[0], options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; });
         } else {
-             crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "",
-                [&](std::error_code ec){ if(ec) return_code = 1; });
+             crypto_handler->decryptFile(io_context, non_option_args[0], options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; });
         }
     } else if (flags["sign"]) {
         op_started = true;
-        if(non_option_args.empty()){
-            std::cerr << "Error: Input file not specified." << std::endl; return 1;
-        }
-        crypto_handler->signFile(io_context, non_option_args[0], options["signature"], options["signing-privkey"], options["digest-algo"],
-             [&](std::error_code ec){ if(ec) return_code = 1; });
+        if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
+        crypto_handler->signFile(io_context, non_option_args[0], options["signature"], options["signing-privkey"], options["digest-algo"], [&](std::error_code ec){ if(ec) return_code = 1; });
     } else if (flags["verify"]) {
         op_started = true;
-        if(non_option_args.empty()){
-            std::cerr << "Error: Input file not specified." << std::endl; return 1;
-        }
+        if(non_option_args.empty()){ std::cerr << "Error: Input file not specified." << std::endl; return 1; }
         crypto_handler->verifySignature(io_context, non_option_args[0], options["signature"], options["signing-pubkey"],
              [&](std::error_code ec, bool result){ 
                  if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; }
@@ -273,20 +304,12 @@ int main(int argc, char* argv[]) {
                  else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;}
              });
     } else {
-        if (argc > 1) {
-            std::cerr << "Error: No valid operation specified." << std::endl;
-            return_code = 1;
-        }
+        if (argc > 1) { std::cerr << "Error: No valid operation specified." << std::endl; return_code = 1; }
         display_usage();
     }
     
     if (op_started && return_code == 0) {
-        try {
-            io_context.run();
-        } catch (const std::exception& e) {
-            std::cerr << "An unexpected error occurred: " << e.what() << std::endl;
-            return_code = 1;
-        }
+        try { io_context.run(); } catch (const std::exception& e) { std::cerr << "An unexpected error occurred: " << e.what() << std::endl; return_code = 1; }
     }
     
     OSSL_PROVIDER_unload(nullptr);
