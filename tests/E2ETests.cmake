@@ -1,223 +1,145 @@
+# ===================================================================
 # End-to-End Test Script for nkCryptoTool
 # This script is executed by CTest via `cmake -P`
+# ===================================================================
 
-# --- Scenario Definition: Hybrid Encryption/Decryption ---
-function(run_hybrid_encryption_scenario)
+# --- Generic Encryption/Decryption Scenario Function ---
+# This function handles a full encryption/decryption cycle for any mode.
+#
+# Arguments:
+#   MODE:         The crypto mode (ecc, pqc, hybrid)
+#   USE_COMPRESS: BOOL true to enable lz4 compression, false otherwise
+#
+function(run_encryption_scenario MODE USE_COMPRESS)
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
+    if(USE_COMPRESS)
+        set(SCENARIO_VARIANT " (with LZ4 compression)")
+        set(SCENARIO_SUFFIX "_compressed")
+    else()
+        set(SCENARIO_VARIANT "")
+        set(SCENARIO_SUFFIX "")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: Hybrid Encryption/Decryption")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption${SCENARIO_VARIANT}")
     message(STATUS "=============================================")
 
-    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/hybrid_encryption")
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/${MODE}_encryption${SCENARIO_SUFFIX}")
     set(KEY_DIR "${SCENARIO_DIR}/keys")
-    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted_hybrid.bin")
-    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted_hybrid.txt")
+    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted.bin")
+    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted.txt")
     file(REMOVE_RECURSE "${SCENARIO_DIR}")
     file(MAKE_DIRECTORY "${KEY_DIR}")
 
-    message(STATUS "  -> Generating hybrid keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode hybrid --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    # --- Key Generation ---
+    message(STATUS "  -> Generating ${MODE} keys...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Hybrid key generation failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
     endif()
 
+    # --- Build command arguments ---
+    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}")
+
+    if(USE_COMPRESS)
+        list(APPEND ENCRYPT_ARGS --compress lz4)
+    endif()
+
+    if("${MODE}" STREQUAL "hybrid")
+        list(APPEND ENCRYPT_ARGS --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key")
+        list(APPEND ENCRYPT_ARGS --recipient-ecdh-pubkey "${KEY_DIR}/public_enc_hybrid_ecdh.key")
+        list(APPEND DECRYPT_ARGS --recipient-mlkem-privkey "${KEY_DIR}/private_enc_hybrid_mlkem.key")
+        # FIX: Corrected typo from KEY_dir to KEY_DIR
+        list(APPEND DECRYPT_ARGS --recipient-ecdh-privkey "${KEY_DIR}/private_enc_hybrid_ecdh.key")
+    else()
+        list(APPEND ENCRYPT_ARGS --recipient-pubkey "${KEY_DIR}/public_enc_${MODE}.key")
+        list(APPEND DECRYPT_ARGS --user-privkey "${KEY_DIR}/private_enc_${MODE}.key")
+    endif()
+    list(APPEND ENCRYPT_ARGS "${TEST_INPUT_FILE}")
+    list(APPEND DECRYPT_ARGS "${ENCRYPTED_FILE}")
+
+    # --- Encryption ---
     message(STATUS "  -> Encrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode hybrid --encrypt
-                --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key"
-                --recipient-ecdh-pubkey "${KEY_DIR}/public_enc_hybrid_ecdh.key"
-                -o "${ENCRYPTED_FILE}" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" ${ENCRYPT_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Hybrid encryption failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption failed.")
     endif()
 
+    # --- Decryption ---
     message(STATUS "  -> Decrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode hybrid --decrypt
-                --recipient-mlkem-privkey "${KEY_DIR}/private_enc_hybrid_mlkem.key"
-                --recipient-ecdh-privkey "${KEY_DIR}/private_enc_hybrid_ecdh.key"
-                -o "${DECRYPTED_FILE}" "${ENCRYPTED_FILE}"
-        RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" ${DECRYPT_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Hybrid decryption failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
     endif()
 
+    # --- Verification ---
     message(STATUS "  -> Verifying file content...")
     execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Verification failed: Decrypted hybrid file does not match original.")
+        message(FATAL_ERROR "  [FAILED] Verification failed: Decrypted file does not match original.")
     endif()
-    message(STATUS "  [PASSED] Scenario: Hybrid Encryption/Decryption")
+
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption${SCENARIO_VARIANT}")
 endfunction()
 
 
-# --- Scenario Definition: PQC Encryption/Decryption ---
-function(run_pqc_encryption_scenario)
+# --- Scenario Definition: Signing/Verification (remains specific) ---
+function(run_signing_scenario MODE)
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: PQC Encryption/Decryption")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
     message(STATUS "=============================================")
 
-    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/pqc_encryption")
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/${MODE}_signing")
     set(KEY_DIR "${SCENARIO_DIR}/keys")
-    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted_pqc.bin")
-    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted_pqc.txt")
+    set(SIGNATURE_FILE "${SCENARIO_DIR}/test.sig")
     file(REMOVE_RECURSE "${SCENARIO_DIR}")
     file(MAKE_DIRECTORY "${KEY_DIR}")
 
-    message(STATUS "  -> Generating PQC encryption keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode pqc --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    message(STATUS "  -> Generating ${MODE} signing keys...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC enc key generation failed.")
-    endif()
-
-    message(STATUS "  -> Encrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode pqc --encrypt --recipient-pubkey "${KEY_DIR}/public_enc_pqc.key" -o "${ENCRYPTED_FILE}" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC encryption failed.")
-    endif()
-
-    message(STATUS "  -> Decrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode pqc --decrypt --user-privkey "${KEY_DIR}/private_enc_pqc.key" -o "${DECRYPTED_FILE}" "${ENCRYPTED_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC decryption failed.")
-    endif()
-
-    message(STATUS "  -> Verifying file content...")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Verification failed: Decrypted PQC file does not match original.")
-    endif()
-    message(STATUS "  [PASSED] Scenario: PQC Encryption/Decryption")
-endfunction()
-
-
-# --- Scenario Definition: ECC Encryption/Decryption ---
-function(run_ecc_encryption_scenario)
-    message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ECC Encryption/Decryption")
-    message(STATUS "=============================================")
-    
-    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/ecc_encryption")
-    set(KEY_DIR "${SCENARIO_DIR}/keys")
-    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted_ecc.bin")
-    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted_ecc.txt")
-    file(REMOVE_RECURSE "${SCENARIO_DIR}")
-    file(MAKE_DIRECTORY "${KEY_DIR}")
-
-    message(STATUS "  -> Generating ECC encryption keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode ecc --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC enc key generation failed.")
-    endif()
-
-    message(STATUS "  -> Encrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode ecc --encrypt --recipient-pubkey "${KEY_DIR}/public_enc_ecc.key" -o "${ENCRYPTED_FILE}" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC encryption failed.")
-    endif()
-
-    message(STATUS "  -> Decrypting file...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode ecc --decrypt --user-privkey "${KEY_DIR}/private_enc_ecc.key" -o "${DECRYPTED_FILE}" "${ENCRYPTED_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC decryption failed.")
-    endif()
-
-    message(STATUS "  -> Verifying file content...")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Verification failed: Decrypted ECC file does not match original.")
-    endif()
-    message(STATUS "  [PASSED] Scenario: ECC Encryption/Decryption")
-endfunction()
-
-
-# --- Scenario Definition: PQC Signing/Verification ---
-function(run_pqc_signing_scenario)
-    message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: PQC Signing/Verification")
-    message(STATUS "=============================================")
-
-    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/pqc_signing")
-    set(KEY_DIR "${SCENARIO_DIR}/keys")
-    set(SIGNATURE_FILE "${SCENARIO_DIR}/test_pqc.sig")
-    file(REMOVE_RECURSE "${SCENARIO_DIR}")
-    file(MAKE_DIRECTORY "${KEY_DIR}")
-
-    message(STATUS "  -> Generating PQC signing keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode pqc --gen-sign-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC sign key generation failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} sign key generation failed.")
     endif()
 
     message(STATUS "  -> Signing file...")
     execute_process(
-        # 修正: 入力ファイル (${TEST_INPUT_FILE}) をコマンドの最後に移動
-        COMMAND "${NK_TOOL_EXE}" --mode pqc --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_pqc.key" "${TEST_INPUT_FILE}"
+        COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_${MODE}.key" "${TEST_INPUT_FILE}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC signing failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing failed.")
     endif()
 
     message(STATUS "  -> Verifying signature...")
     execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode pqc --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_pqc.key" "${TEST_INPUT_FILE}"
+        COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_${MODE}.key" "${TEST_INPUT_FILE}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] PQC signature verification failed.")
+        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signature verification failed.")
     endif()
-    message(STATUS "  [PASSED] Scenario: PQC Signing/Verification")
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
 endfunction()
 
 
-# --- Scenario Definition: ECC Signing/Verification ---
-function(run_ecc_signing_scenario)
-    message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ECC Signing/Verification")
-    message(STATUS "=============================================")
+# ===================================================================
+# --- Main script execution: Call all scenarios
+# ===================================================================
 
-    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/ecc_signing")
-    set(KEY_DIR "${SCENARIO_DIR}/keys")
-    set(SIGNATURE_FILE "${SCENARIO_DIR}/test_ecc.sig")
-    file(REMOVE_RECURSE "${SCENARIO_DIR}")
-    file(MAKE_DIRECTORY "${KEY_DIR}")
+# --- Run Encryption Scenarios (without compression) ---
+run_encryption_scenario(hybrid OFF)
+run_encryption_scenario(pqc    OFF)
+run_encryption_scenario(ecc    OFF)
 
-    message(STATUS "  -> Generating ECC signing keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode ecc --gen-sign-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC sign key generation failed.")
-    endif()
+# --- Run Encryption Scenarios (WITH compression) ---
+run_encryption_scenario(hybrid ON)
+run_encryption_scenario(pqc    ON)
+run_encryption_scenario(ecc    ON)
 
-    message(STATUS "  -> Signing file...")
-    execute_process(
-        # 修正: 入力ファイル (${TEST_INPUT_FILE}) をコマンドの最後に移動
-        COMMAND "${NK_TOOL_EXE}" --mode ecc --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_ecc.key" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC signing failed.")
-    endif()
-
-    message(STATUS "  -> Verifying signature...")
-    execute_process(
-        COMMAND "${NK_TOOL_EXE}" --mode ecc --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_ecc.key" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ECC signature verification failed.")
-    endif()
-    message(STATUS "  [PASSED] Scenario: ECC Signing/Verification")
-endfunction()
-
-
-# --- Main script execution: Call all scenarios ---
-run_hybrid_encryption_scenario()
-run_pqc_encryption_scenario()
-run_ecc_encryption_scenario()
-run_pqc_signing_scenario()
-run_ecc_signing_scenario()
+# --- Run Signing Scenarios ---
+run_signing_scenario(pqc)
+run_signing_scenario(ecc)
