@@ -6,10 +6,16 @@
 #include "nkCryptoToolBase.hpp"
 
 class nkCryptoToolPQC : public nkCryptoToolBase {
+private:
+    // PQC署名はストリーミングに対応していないため、独自の非同期状態を持つ
+    struct SigningState;
+    struct VerificationState;
+
 public:
     nkCryptoToolPQC();
     ~nkCryptoToolPQC();
 
+    // ベースクラスの仮想関数をオーバーライド
     bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
@@ -26,4 +32,4 @@ public:
     std::filesystem::path getEncryptionPublicKeyPath() const override;
     std::filesystem::path getSigningPublicKeyPath() const override;
 };
-#endif
+#endif // NKCRYPTOTOOLPQC_HPP

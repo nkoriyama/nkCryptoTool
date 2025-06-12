@@ -28,11 +28,7 @@ struct EVP_KDF_Deleter { void operator()(EVP_KDF *p) const; };
 struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
 
 class nkCryptoToolBase {
-private:
-    std::filesystem::path key_base_directory;
-
-public: // <-- publicスコープに移動
-    // --- Compression Algorithm Enum ---
+public:
     enum class CompressionAlgorithm : uint8_t {
         NONE = 0,
         LZ4  = 1,
@@ -56,7 +52,6 @@ protected:
     };
     #pragma pack(pop)
 
-    // (残りのprotectedメンバーは変更なし)
     void printOpenSSLErrors();
     void printProgress(double percentage);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
@@ -80,6 +75,11 @@ protected:
         void* compression_stream = nullptr;
         void* decompression_stream = nullptr;
         std::vector<unsigned char> compression_buffer;
+
+        // --- Members for robust compressed streaming ---
+        std::vector<unsigned char> compression_frame_buffer; // Used during encryption to hold a framed chunk
+        std::vector<unsigned char> decryption_buffer;      // Buffers decrypted data to reassemble frames
+        uint32_t expected_frame_size;                      // State for the frame parser
 
         AsyncStateBase(asio::io_context& io_context);
         virtual ~AsyncStateBase();
@@ -111,9 +111,13 @@ public:
     virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
 
 private:
+    std::filesystem::path key_base_directory;
+
     void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
     void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
+
+    void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading);
     void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
     void finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state);

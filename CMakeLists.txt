@@ -28,14 +28,12 @@ FetchContent_Declare(
 # Populateを使い、ソースコードのダウンロードのみ行います。
 FetchContent_Populate(lz4)
 
-# --- NEW: LZ4のソースから静的ライブラリを作成 ---
-# これにより、LZ4のビルドシステムに依存せず、我々のプロジェクト内で完結します。
+# --- LZ4のソースから静的ライブラリを作成 ---
 add_library(lz4_lib STATIC
     "${lz4_SOURCE_DIR}/lib/lz4.c"
     "${lz4_SOURCE_DIR}/lib/lz4frame.c"
     "${lz4_SOURCE_DIR}/lib/lz4hc.c"
 )
-# このライブラリが自身のヘッダーを見つけられるようにインクルードパスを設定します。
 target_include_directories(lz4_lib PUBLIC
     "${lz4_SOURCE_DIR}/lib"
 )
@@ -48,16 +46,15 @@ find_package(OpenSSL REQUIRED)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ソースファイルから実行可能ファイルを作成します。
+# Windows環境で不要なgetopt_long.cを削除しました。
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
-    getopt_long.c
 )
 
 # インクルードディレクトリを追加します。
-# lz4のパスは、lz4_libターゲットから自動的に継承されるため不要です。
 target_include_directories(nkCryptoTool PRIVATE
     "${asio_SOURCE_DIR}/asio/include"
 )
