@@ -31,5 +31,22 @@ public:
     std::filesystem::path getSigningPrivateKeyPath() const override;
     std::filesystem::path getEncryptionPublicKeyPath() const override;
     std::filesystem::path getSigningPublicKeyPath() const override;
+
+        // 【追加】抽象クラスにならないよう、純粋仮想関数をオーバーライド
+    asio::awaitable<void> encryptFileParallel(
+        asio::io_context& worker_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& recipient_public_key_path,
+        CompressionAlgorithm algo
+    ) override;
+
+    asio::awaitable<void> decryptFileParallel(
+        asio::io_context& worker_context,
+        const std::filesystem::path& input_filepath,
+        const std::filesystem::path& output_filepath,
+        const std::filesystem::path& user_private_key_path
+    ) override;
+
 };
 #endif // NKCRYPTOTOOLPQC_HPP

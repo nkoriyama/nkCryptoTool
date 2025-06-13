@@ -227,3 +227,19 @@ void nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::f
         });
     });
 }
+
+asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
+    asio::io_context&, const std::filesystem::path&, const std::filesystem::path&,
+    const std::filesystem::path&, CompressionAlgorithm
+) {
+    std::cerr << "PQC parallel encryption is not yet implemented." << std::endl;
+    co_return;
+}
+
+asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
+    asio::io_context&, const std::filesystem::path&, const std::filesystem::path&,
+    const std::filesystem::path&
+) {
+    std::cerr << "PQC parallel decryption is not yet implemented." << std::endl;
+    co_return;
+}

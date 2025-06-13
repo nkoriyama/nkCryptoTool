@@ -4,8 +4,8 @@ cmake_minimum_required(VERSION 3.11)
 # プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
 
-# C++17標準を使用するように設定します。
-set(CMAKE_CXX_STANDARD 17)
+# C++20標準を使用するように設定します。
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # FetchContentモジュールをインクルードします。
