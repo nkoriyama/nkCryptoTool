@@ -350,7 +350,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
     co_await asio::async_write(output_file, asio::buffer(iv), asio::use_awaitable);
     
     // --- 並列処理ループ ---
-    const size_t READ_CHUNK_SIZE = 1 * 1024 * 1024; // 1MB
+    const size_t READ_CHUNK_SIZE = 64 * 1024; // 64KB に変更
     auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
     auto map_mutex = std::make_shared<std::mutex>();
     auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
@@ -386,9 +386,9 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
             } catch(...) {
                 std::scoped_lock lock(*map_mutex);
                 if(!*first_exception) *first_exception = std::current_exception();
+                (*tasks_in_flight)--; // 例外発生時のみデクリメント
+                return;
             }
-            
-            (*tasks_in_flight)--;
 
             asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
                 if(*first_exception) {
@@ -404,7 +404,6 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
                     auto data_to_write = std::move(it->second);
                     completed_chunks->erase(it);
                     
-                    (*tasks_in_flight)++;
                     asio::co_spawn(writer_strand,
                         asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
                         [tasks_in_flight, first_exception, map_mutex](std::exception_ptr p, std::size_t) { 
@@ -412,7 +411,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
                                 std::scoped_lock lock(*map_mutex);
                                 *first_exception = p;
                             }
-                            (*tasks_in_flight)--; 
+                            (*tasks_in_flight)--; // 書き込み完了後にデクリメント
                         }
                     );
                     (*next_sequence_to_write)++;
@@ -421,7 +420,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
         });
         if (total_input_size > 0) printProgress(static_cast<double>(bytes_processed_so_far) / total_input_size); 
     }
-
+    
     while (*tasks_in_flight > 0) {
         co_await asio::steady_timer(executor, std::chrono::milliseconds(20)).async_wait(asio::use_awaitable);
     }
@@ -430,7 +429,6 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
         std::rethrow_exception(first_exception->value());
     }
     
-    // --- 暗号化の最終処理 ---
     std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
     int final_len = 0;
     if (EVP_EncryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
@@ -475,7 +473,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
     if(ec) { throw std::system_error(ec, "Failed to get file size"); }
 
-    // --- ヘッダーとメタデータの読み込み ---
     FileHeader header;
     co_await asio::async_read(input_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
     if(memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) {
@@ -499,7 +496,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     co_await asio::async_read(input_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable); iv.resize(len);
     co_await asio::async_read(input_file, asio::buffer(iv), asio::use_awaitable);
 
-    // --- PQC 復号セットアップ ---
     auto recipient_mlkem_private_key = loadPrivateKey(recipient_mlkem_private_key_path, "ML-KEM private key");
     if (!recipient_mlkem_private_key) { throw std::runtime_error("Failed to load user ML-KEM private key."); }
 
@@ -518,8 +514,7 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
     EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
 
-    // --- 並列処理ループ ---
-    const size_t READ_CHUNK_SIZE = 1 * 1024 * 1024 + GCM_TAG_LEN; // 1MB + slack
+    const size_t READ_CHUNK_SIZE = 64 * 1024; // 64KB に変更
     auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
     auto map_mutex = std::make_shared<std::mutex>();
     auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
@@ -535,6 +530,7 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     while(bytes_read_so_far < ciphertext_size) {
         if(*first_exception) break;
         size_t to_read = std::min((uintmax_t)READ_CHUNK_SIZE, ciphertext_size - bytes_read_so_far);
+        if (to_read == 0) break;
         std::vector<unsigned char> buffer(to_read);
         auto [read_ec, bytes_read] = co_await asio::async_read(input_file, asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
         
@@ -543,7 +539,10 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
             break;
         }
         if (bytes_read > 0) { bytes_read_so_far += bytes_read; }
-        if (bytes_read == 0) break;
+        if (bytes_read == 0 && bytes_read_so_far < ciphertext_size) {
+            *first_exception = std::make_exception_ptr(std::runtime_error("File ended prematurely."));
+            break;
+        }
         buffer.resize(bytes_read);
         
         (*tasks_in_flight)++;
@@ -559,10 +558,10 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
             } catch (...) {
                 std::scoped_lock lock(*map_mutex);
                 if(!*first_exception) *first_exception = std::current_exception();
+                (*tasks_in_flight)--;
+                return;
             }
 
-            (*tasks_in_flight)--;
-            
             asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
                 if(*first_exception) { return; }
                 std::scoped_lock lock(*map_mutex);
@@ -573,7 +572,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
                     auto data_to_write = std::move(it->second);
                     completed_chunks->erase(it);
                     
-                    (*tasks_in_flight)++;
                     asio::co_spawn(writer_strand,
                         asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
                         [tasks_in_flight, first_exception, map_mutex](std::exception_ptr p, std::size_t) { 
@@ -600,7 +598,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
         std::rethrow_exception(first_exception->value());
     }
 
-    // --- 復号の最終処理（GCMタグ検証） ---
     std::vector<unsigned char> tag(GCM_TAG_LEN);
     co_await asio::async_read(input_file, asio::buffer(tag), asio::use_awaitable);
     
