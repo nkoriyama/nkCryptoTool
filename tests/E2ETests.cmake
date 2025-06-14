@@ -9,14 +9,19 @@
 # Arguments:
 #   MODE:         The crypto mode (ecc, pqc, hybrid)
 #   USE_COMPRESS: BOOL true to enable lz4 compression, false otherwise
+#   USE_PARALLEL: BOOL true to enable parallel processing, false otherwise
 #
-function(run_encryption_scenario MODE USE_COMPRESS)
+function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    # --- Determine scenario name and suffix based on options ---
     if(USE_COMPRESS)
         set(SCENARIO_VARIANT " (with LZ4 compression)")
         set(SCENARIO_SUFFIX "_compressed")
+    elseif(USE_PARALLEL)
+        set(SCENARIO_VARIANT " (in parallel)")
+        set(SCENARIO_SUFFIX "_parallel")
     else()
         set(SCENARIO_VARIANT "")
         set(SCENARIO_SUFFIX "")
@@ -35,7 +40,13 @@ function(run_encryption_scenario MODE USE_COMPRESS)
 
     # --- Key Generation ---
     message(STATUS "  -> Generating ${MODE} keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+    # For hybrid mode, we generate both key types. Other modes generate their specific key.
+    if("${MODE}" STREQUAL "hybrid")
+         execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+    else()
+         execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+    endif()
+
     if(NOT res EQUAL 0)
         message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
     endif()
@@ -48,11 +59,15 @@ function(run_encryption_scenario MODE USE_COMPRESS)
         list(APPEND ENCRYPT_ARGS --compress lz4)
     endif()
 
+    if(USE_PARALLEL)
+        list(APPEND ENCRYPT_ARGS --parallel)
+        list(APPEND DECRYPT_ARGS --parallel)
+    endif()
+
     if("${MODE}" STREQUAL "hybrid")
         list(APPEND ENCRYPT_ARGS --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key")
         list(APPEND ENCRYPT_ARGS --recipient-ecdh-pubkey "${KEY_DIR}/public_enc_hybrid_ecdh.key")
         list(APPEND DECRYPT_ARGS --recipient-mlkem-privkey "${KEY_DIR}/private_enc_hybrid_mlkem.key")
-        # FIX: Corrected typo from KEY_dir to KEY_DIR
         list(APPEND DECRYPT_ARGS --recipient-ecdh-privkey "${KEY_DIR}/private_enc_hybrid_ecdh.key")
     else()
         list(APPEND ENCRYPT_ARGS --recipient-pubkey "${KEY_DIR}/public_enc_${MODE}.key")
@@ -130,15 +145,19 @@ endfunction()
 # --- Main script execution: Call all scenarios
 # ===================================================================
 
-# --- Run Encryption Scenarios (without compression) ---
-run_encryption_scenario(hybrid OFF)
-run_encryption_scenario(pqc    OFF)
-run_encryption_scenario(ecc    OFF)
+# --- Run Standard Encryption Scenarios (without compression) ---
+run_encryption_scenario(hybrid OFF OFF)
+run_encryption_scenario(pqc    OFF OFF)
+run_encryption_scenario(ecc    OFF OFF)
 
 # --- Run Encryption Scenarios (WITH compression) ---
-run_encryption_scenario(hybrid ON)
-run_encryption_scenario(pqc    ON)
-run_encryption_scenario(ecc    ON)
+run_encryption_scenario(hybrid ON  OFF)
+run_encryption_scenario(pqc    ON  OFF)
+run_encryption_scenario(ecc    ON  OFF)
+
+# --- Run Parallel Encryption Scenarios (compression is not supported) ---
+run_encryption_scenario(pqc    OFF ON)
+run_encryption_scenario(ecc    OFF ON)
 
 # --- Run Signing Scenarios ---
 run_signing_scenario(pqc)
