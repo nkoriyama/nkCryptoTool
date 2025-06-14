@@ -7,7 +7,6 @@
 
 class nkCryptoToolPQC : public nkCryptoToolBase {
 private:
-    // PQC署名はストリーミングに対応していないため、独自の非同期状態を持つ
     struct SigningState;
     struct VerificationState;
 
@@ -15,7 +14,6 @@ public:
     nkCryptoToolPQC();
     ~nkCryptoToolPQC();
 
-    // ベースクラスの仮想関数をオーバーライド
     bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
@@ -32,20 +30,20 @@ public:
     std::filesystem::path getEncryptionPublicKeyPath() const override;
     std::filesystem::path getSigningPublicKeyPath() const override;
 
-        // 【追加】抽象クラスにならないよう、純粋仮想関数をオーバーライド
+    // --- 並列処理インターフェース：引数を string に変更 ---
     asio::awaitable<void> encryptFileParallel(
         asio::io_context& worker_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& recipient_public_key_path,
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string recipient_public_key_path,
         CompressionAlgorithm algo
     ) override;
 
     asio::awaitable<void> decryptFileParallel(
         asio::io_context& worker_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& user_private_key_path
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string user_private_key_path
     ) override;
 
 };

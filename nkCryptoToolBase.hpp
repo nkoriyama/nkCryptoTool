@@ -11,7 +11,7 @@
 #include <system_error>
 #include <memory>
 #include <asio.hpp>
-#include <asio/awaitable.hpp> // 【追加】C++20コルーチン(awaitable)のため
+#include <asio/awaitable.hpp>
 #include <asio/stream_file.hpp>
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
@@ -60,7 +60,6 @@ protected:
                                           const std::string& salt, const std::string& info,
                                           const std::string& digest_algo);
     
-    // --- 旧非同期パイプライン用の構造体 (コールバックベース) ---
     struct AsyncStateBase {
         asio::stream_file input_file;
         asio::stream_file output_file;
@@ -82,7 +81,6 @@ protected:
         virtual ~AsyncStateBase();
     };
     
-    // --- 旧非同期パイプライン用のヘルパー (コールバックベース) ---
     void startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size);
     void startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size);
 
@@ -93,7 +91,6 @@ public:
     void setKeyBaseDirectory(const std::filesystem::path& dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
-    // --- 共通インターフェース ---
     virtual bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual void signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) = 0;
@@ -103,34 +100,29 @@ public:
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
     virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
 
-    // --- 旧インターフェース (コールバックベース) ---
     virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
     virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
     virtual void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
     virtual void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
 
-    #if 1
-    // --- 【新規】並列処理インターフェース (C++20 コルーチンベース) ---
+    // --- 並列処理インターフェース：引数を値渡しに変更 ---
     virtual asio::awaitable<void> encryptFileParallel(
         asio::io_context& worker_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& recipient_public_key_path,
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string recipient_public_key_path,
         CompressionAlgorithm algo
     ) = 0;
 
     virtual asio::awaitable<void> decryptFileParallel(
         asio::io_context& worker_context,
-        const std::filesystem::path& input_filepath,
-        const std::filesystem::path& output_filepath,
-        const std::filesystem::path& user_private_key_path
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string user_private_key_path
     ) = 0;
-#endif
 
 private:
     std::filesystem::path key_base_directory;
-
-    // --- 旧非同期パイプラインの実装詳細 (コールバックベース) ---
     void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
     void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);

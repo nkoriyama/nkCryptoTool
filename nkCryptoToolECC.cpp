@@ -8,7 +8,7 @@
 #include <mutex>
 #include <atomic>
 #include <optional>
-
+#include <fstream>
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
@@ -53,6 +53,20 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
 }
 
 bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+    std::ofstream priv_file(private_key_path, std::ios::out | std::ios::binary);
+    if (!priv_file.is_open()) {
+        std::cerr << "Error creating private key file: " << private_key_path << std::endl;
+        return false;
+    }
+    priv_file.close(); 
+
+    std::ofstream pub_file(public_key_path, std::ios::out | std::ios::binary);
+    if (!pub_file.is_open()) {
+        std::cerr << "Error creating public key file: " << public_key_path << std::endl;
+        return false;
+    }
+    pub_file.close();
+
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { printOpenSSLErrors(); return false; }
 
@@ -64,7 +78,7 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { std::cerr << "Error creating private key file: " << private_key_path << std::endl; return false; }
+    if (!priv_bio) { std::cerr << "Error creating BIO for private key file: " << private_key_path << std::endl; return false; }
 
     bool success = false;
     if (passphrase.empty()) {
@@ -292,11 +306,15 @@ static std::vector<unsigned char> ecc_encrypt_chunk_logic(
 // --- 並列暗号化 ---
 asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     asio::io_context& worker_context,
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_public_key_path,
+    std::string input_filepath_str,
+    std::string output_filepath_str,
+    std::string recipient_public_key_path_str,
     CompressionAlgorithm algo
 ) {
+    const std::filesystem::path input_filepath(input_filepath_str);
+    const std::filesystem::path output_filepath(output_filepath_str);
+    const std::filesystem::path recipient_public_key_path(recipient_public_key_path_str);
+
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
@@ -463,10 +481,14 @@ static std::vector<unsigned char> ecc_decrypt_chunk_logic(
 // --- 並列復号 ---
 asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
     asio::io_context& worker_context,
-    const std::filesystem::path& input_filepath,
-    const std::filesystem::path& output_filepath,
-    const std::filesystem::path& user_private_key_path
+    std::string input_filepath_str,
+    std::string output_filepath_str,
+    std::string user_private_key_path_str
 ) {
+    const std::filesystem::path input_filepath(input_filepath_str);
+    const std::filesystem::path output_filepath(output_filepath_str);
+    const std::filesystem::path user_private_key_path(user_private_key_path_str);
+    
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
