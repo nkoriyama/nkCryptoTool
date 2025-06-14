@@ -4,6 +4,11 @@
 #include <iostream>
 #include <vector>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <atomic>
+#include <optional>
+#include <functional>
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -16,21 +21,57 @@
 #include <asio/stream_file.hpp>
 #include <asio/write.hpp>
 #include <asio/read.hpp>
-#include <functional>
 
+// PQC署名/検証用の状態管理構造体
 struct nkCryptoToolPQC::SigningState : public std::enable_shared_from_this<SigningState> { asio::stream_file input_file; asio::stream_file output_file; std::vector<unsigned char> file_content; std::function<void(std::error_code)> completion_handler; SigningState(asio::io_context& io) : input_file(io), output_file(io) {} };
 struct nkCryptoToolPQC::VerificationState : public std::enable_shared_from_this<VerificationState> { asio::stream_file input_file; asio::stream_file signature_file; std::vector<unsigned char> file_content; std::vector<unsigned char> signature; std::function<void(std::error_code, bool)> verification_completion_handler; VerificationState(asio::io_context& io) : input_file(io), signature_file(io) {} };
-namespace { std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key() { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr)); if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return nullptr; OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() }; if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) return nullptr; EVP_PKEY* pkey = nullptr; if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return nullptr; return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey); }
-std::vector<unsigned char> ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr)); if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) return {}; size_t secret_len; if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) return {}; std::vector<unsigned char> secret(secret_len); if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) return {}; secret.resize(secret_len); return secret; } }
+
+namespace {
+// ハイブリッド暗号化用のヘルパー関数 (ECDH鍵生成・共有秘密導出)
+std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key() { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr)); if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return nullptr; OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() }; if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) return nullptr; EVP_PKEY* pkey = nullptr; if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return nullptr; return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey); }
+std::vector<unsigned char> ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr)); if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) return {}; size_t secret_len; if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) return {}; std::vector<unsigned char> secret(secret_len); if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) return {}; secret.resize(secret_len); return secret; }
+
+// --- 並列処理用チャンク処理ヘルパー ---
+static std::vector<unsigned char> pqc_encrypt_chunk_logic(
+    const std::vector<unsigned char>& plain_data,
+    EVP_CIPHER_CTX* template_cipher_ctx
+) {
+    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    std::vector<unsigned char> encrypted_data(plain_data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen = 0;
+    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) return {};
+    encrypted_data.resize(outlen);
+    return encrypted_data;
+}
+
+static std::vector<unsigned char> pqc_decrypt_chunk_logic(
+    const std::vector<unsigned char>& encrypted_data,
+    EVP_CIPHER_CTX* template_cipher_ctx
+) {
+    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen = 0;
+    if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
+        return {};
+    }
+    decrypted_data.resize(outlen);
+    return decrypted_data;
+}
+
+} // anonymous namespace
 
 nkCryptoToolPQC::nkCryptoToolPQC() {}
 nkCryptoToolPQC::~nkCryptoToolPQC() {}
 
+// --- 鍵パス取得 ---
 std::filesystem::path nkCryptoToolPQC::getEncryptionPrivateKeyPath() const { return getKeyBaseDirectory() / "private_enc_pqc.key"; }
 std::filesystem::path nkCryptoToolPQC::getSigningPrivateKeyPath() const { return getKeyBaseDirectory() / "private_sign_pqc.key"; }
 std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const { return getKeyBaseDirectory() / "public_enc_pqc.key"; }
 std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_pqc.key"; }
 
+// --- 鍵ペア生成 ---
 bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { printOpenSSLErrors(); return false; }
@@ -65,6 +106,7 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public
     return true;
 }
 
+// --- 通常の暗号化・復号（ハイブリッド実装へのラッパー） ---
 void nkCryptoToolPQC::encryptFile(asio::io_context& io, const std::filesystem::path& in, const std::filesystem::path& out, const std::filesystem::path& pub_key, CompressionAlgorithm algo, std::function<void(std::error_code)> handler) {
     encryptFileHybrid(io, in, out, pub_key, "", algo, handler);
 }
@@ -73,6 +115,7 @@ void nkCryptoToolPQC::decryptFile(asio::io_context& io, const std::filesystem::p
     decryptFileHybrid(io, in, out, priv_key, "", handler);
 }
 
+// --- ハイブリッド暗号化・復号 ---
 void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_mlkem_public_key_path, const std::filesystem::path& recipient_ecdh_public_key_path, CompressionAlgorithm algo, std::function<void(std::error_code)> completion_handler) {
     auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) { if (!ec) std::cout << "\nEncryption to '" << output_filepath.string() << "' completed." << std::endl; else std::cerr << "\nEncryption failed: " << ec.message() << std::endl; completion_handler(ec); };
     bool is_hybrid = !recipient_ecdh_public_key_path.empty();
@@ -183,6 +226,7 @@ void nkCryptoToolPQC::decryptFileHybrid( asio::io_context& io_context, const std
     startDecryptionPipeline(state, ciphertext_size);
 }
 
+// --- PQC署名・検証 ---
 void nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string&, std::function<void(std::error_code)> completion_handler){
     auto state = std::make_shared<SigningState>(io_context);
     state->completion_handler = [completion_handler](const std::error_code& ec) { if (!ec) std::cout << "\nFile signed successfully." << std::endl; completion_handler(ec); };
@@ -228,23 +272,354 @@ void nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::f
     });
 }
 
+//================================================================================
+// 並列暗号化・復号の実装 (PQC-only)
+//================================================================================
+
 asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
-    asio::io_context&,
-    std::string,
-    std::string,
-    std::string,
-    CompressionAlgorithm
+    asio::io_context& worker_context,
+    std::string input_filepath_str,
+    std::string output_filepath_str,
+    std::string recipient_public_key_path_str,
+    CompressionAlgorithm algo
 ) {
-    std::cerr << "PQC parallel encryption is not yet implemented." << std::endl;
+    if (algo != CompressionAlgorithm::NONE) {
+        throw std::runtime_error("Compression is not supported in parallel mode.");
+    }
+
+    const std::filesystem::path input_filepath(input_filepath_str);
+    const std::filesystem::path output_filepath(output_filepath_str);
+    const std::filesystem::path recipient_mlkem_public_key_path(recipient_public_key_path_str);
+
+    auto executor = co_await asio::this_coro::executor;
+    auto writer_strand = asio::make_strand(executor);
+
+    asio::stream_file input_file(executor);
+    asio::stream_file output_file(executor);
+    std::error_code ec;
+    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if(ec) { throw std::system_error(ec, "Failed to open input file"); }
+    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if(ec) { throw std::system_error(ec, "Failed to open output file"); }
+
+    uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
+    if(ec) { throw std::system_error(ec, "Failed to get file size"); }
+
+    // --- PQC 暗号化セットアップ ---
+    auto recipient_mlkem_public_key = loadPublicKey(recipient_mlkem_public_key_path);
+    if (!recipient_mlkem_public_key) { throw std::runtime_error("Failed to load recipient ML-KEM public key."); }
+
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
+    if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to init PQC encapsulation."); }
+    
+    size_t secret_len_mlkem = 0, enc_len_mlkem = 0;
+    if (EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &enc_len_mlkem, nullptr, &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to get PQC encapsulation lengths."); }
+    
+    std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+    std::vector<unsigned char> encapsulated_key_mlkem(enc_len_mlkem);
+    if (EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_mlkem.data(), &enc_len_mlkem, secret_mlkem.data(), &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to perform PQC encapsulation."); }
+    
+    std::vector<unsigned char> salt(16), iv(GCM_IV_LEN); 
+    RAND_bytes(salt.data(), salt.size()); 
+    RAND_bytes(iv.data(), iv.size());
+    std::vector<unsigned char> encryption_key = hkdfDerive(secret_mlkem, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+    if (encryption_key.empty()) { throw std::runtime_error("Failed to derive encryption key."); }
+    
+    std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+    EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+
+    // --- ヘッダーとメタデータの書き込み ---
+    FileHeader header; 
+    memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
+    header.version = 1; 
+    header.compression_algo = algo; 
+    header.reserved = 0; // PQC-only
+    co_await asio::async_write(output_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
+
+    uint32_t len;
+    len = encapsulated_key_mlkem.size(); 
+    co_await asio::async_write(output_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable);
+    co_await asio::async_write(output_file, asio::buffer(encapsulated_key_mlkem), asio::use_awaitable);
+    
+    len = salt.size(); 
+    co_await asio::async_write(output_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable);
+    co_await asio::async_write(output_file, asio::buffer(salt), asio::use_awaitable);
+    
+    len = iv.size(); 
+    co_await asio::async_write(output_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable);
+    co_await asio::async_write(output_file, asio::buffer(iv), asio::use_awaitable);
+    
+    // --- 並列処理ループ ---
+    const size_t READ_CHUNK_SIZE = 1 * 1024 * 1024; // 1MB
+    auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
+    auto map_mutex = std::make_shared<std::mutex>();
+    auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
+    auto tasks_in_flight = std::make_shared<std::atomic<uint64_t>>(0);
+    auto first_exception = std::make_shared<std::optional<std::exception_ptr>>();
+    
+    uint64_t read_sequence = 0;
+    uintmax_t bytes_processed_so_far = 0; 
+
+    for (;; read_sequence++) {
+        if (*first_exception) break; 
+        std::vector<unsigned char> buffer(READ_CHUNK_SIZE);
+        auto [read_ec, bytes_read] = co_await input_file.async_read_some(asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
+        
+        if(read_ec && read_ec != asio::error::eof) {
+            *first_exception = std::make_exception_ptr(std::system_error(read_ec));
+            break;
+        }
+        if (bytes_read > 0) { bytes_processed_so_far += bytes_read; }
+        if (bytes_read == 0) break;
+        buffer.resize(bytes_read);
+        
+        (*tasks_in_flight)++;
+
+        asio::post(worker_context, [this, seq_id = read_sequence, data = std::move(buffer), template_ctx, completed_chunks, map_mutex, writer_strand, tasks_in_flight, first_exception, &output_file, next_sequence_to_write]() mutable {
+            try {
+                if (*first_exception) { (*tasks_in_flight)--; return; }
+                auto encrypted_data = pqc_encrypt_chunk_logic(data, template_ctx.get());
+                if(encrypted_data.empty() && !data.empty()) throw std::runtime_error("Chunk encryption failed");
+
+                std::scoped_lock lock(*map_mutex);
+                (*completed_chunks)[seq_id] = std::move(encrypted_data);
+            } catch(...) {
+                std::scoped_lock lock(*map_mutex);
+                if(!*first_exception) *first_exception = std::current_exception();
+            }
+            
+            (*tasks_in_flight)--;
+
+            asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
+                if(*first_exception) {
+                    return;
+                }
+                std::scoped_lock lock(*map_mutex);
+                for (;;) {
+                    auto it = completed_chunks->find(next_sequence_to_write->load());
+                    if (it == completed_chunks->end()) {
+                        break;
+                    }
+                    
+                    auto data_to_write = std::move(it->second);
+                    completed_chunks->erase(it);
+                    
+                    (*tasks_in_flight)++;
+                    asio::co_spawn(writer_strand,
+                        asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
+                        [tasks_in_flight, first_exception, map_mutex](std::exception_ptr p, std::size_t) { 
+                            if(p && !*first_exception) {
+                                std::scoped_lock lock(*map_mutex);
+                                *first_exception = p;
+                            }
+                            (*tasks_in_flight)--; 
+                        }
+                    );
+                    (*next_sequence_to_write)++;
+                }
+            });
+        });
+        if (total_input_size > 0) printProgress(static_cast<double>(bytes_processed_so_far) / total_input_size); 
+    }
+
+    while (*tasks_in_flight > 0) {
+        co_await asio::steady_timer(executor, std::chrono::milliseconds(20)).async_wait(asio::use_awaitable);
+    }
+    
+    if(*first_exception) {
+        std::rethrow_exception(first_exception->value());
+    }
+    
+    // --- 暗号化の最終処理 ---
+    std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
+    int final_len = 0;
+    if (EVP_EncryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
+        printOpenSSLErrors(); throw std::runtime_error("Failed to finalize encryption.");
+    }
+    if (final_len > 0) {
+        co_await asio::async_write(output_file, asio::buffer(final_block.data(), final_len), asio::use_awaitable);
+    }
+
+    std::vector<unsigned char> tag(GCM_TAG_LEN);
+    if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
+        printOpenSSLErrors(); throw std::runtime_error("Failed to get GCM tag.");
+    }
+    co_await asio::async_write(output_file, asio::buffer(tag), asio::use_awaitable);
+    
+    printProgress(1.0);
+    std::cout << "\nParallel PQC encryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
 
 asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
-    asio::io_context&,
-    std::string,
-    std::string,
-    std::string
+    asio::io_context& worker_context,
+    std::string input_filepath_str,
+    std::string output_filepath_str,
+    std::string user_private_key_path_str
 ) {
-    std::cerr << "PQC parallel decryption is not yet implemented." << std::endl;
+    const std::filesystem::path input_filepath(input_filepath_str);
+    const std::filesystem::path output_filepath(output_filepath_str);
+    const std::filesystem::path recipient_mlkem_private_key_path(user_private_key_path_str);
+    
+    auto executor = co_await asio::this_coro::executor;
+    auto writer_strand = asio::make_strand(executor);
+
+    asio::stream_file input_file(executor);
+    asio::stream_file output_file(executor);
+    std::error_code ec;
+    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+    if(ec) { throw std::system_error(ec, "Failed to open input file"); }
+    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+    if(ec) { throw std::system_error(ec, "Failed to open output file"); }
+
+    uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
+    if(ec) { throw std::system_error(ec, "Failed to get file size"); }
+
+    // --- ヘッダーとメタデータの読み込み ---
+    FileHeader header;
+    co_await asio::async_read(input_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
+    if(memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) {
+        throw std::runtime_error("Invalid file header.");
+    }
+    if(header.reserved != 0) {
+        throw std::runtime_error("This parallel function only supports PQC-only files, not hybrid files.");
+    }
+    if(header.compression_algo != CompressionAlgorithm::NONE) {
+        throw std::runtime_error("Compression is not supported in parallel decryption mode.");
+    }
+
+    uint32_t len;
+    std::vector<unsigned char> encapsulated_key_mlkem, salt, iv;
+    co_await asio::async_read(input_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable); encapsulated_key_mlkem.resize(len);
+    co_await asio::async_read(input_file, asio::buffer(encapsulated_key_mlkem), asio::use_awaitable);
+    
+    co_await asio::async_read(input_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable); salt.resize(len);
+    co_await asio::async_read(input_file, asio::buffer(salt), asio::use_awaitable);
+
+    co_await asio::async_read(input_file, asio::buffer(&len, sizeof(len)), asio::use_awaitable); iv.resize(len);
+    co_await asio::async_read(input_file, asio::buffer(iv), asio::use_awaitable);
+
+    // --- PQC 復号セットアップ ---
+    auto recipient_mlkem_private_key = loadPrivateKey(recipient_mlkem_private_key_path, "ML-KEM private key");
+    if (!recipient_mlkem_private_key) { throw std::runtime_error("Failed to load user ML-KEM private key."); }
+
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
+    if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to init PQC decapsulation."); }
+    
+    size_t secret_len_mlkem = 0;
+    if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to get PQC decapsulation secret length."); }
+    
+    std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+    if (EVP_PKEY_decapsulate(kem_ctx.get(), secret_mlkem.data(), &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Decapsulation failed. The private key may be incorrect or the data corrupted."); }
+    
+    std::vector<unsigned char> decryption_key = hkdfDerive(secret_mlkem, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+    if (decryption_key.empty()) { throw std::runtime_error("Failed to derive decryption key."); }
+    
+    std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+    EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
+
+    // --- 並列処理ループ ---
+    const size_t READ_CHUNK_SIZE = 1 * 1024 * 1024 + GCM_TAG_LEN; // 1MB + slack
+    auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
+    auto map_mutex = std::make_shared<std::mutex>();
+    auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
+    auto tasks_in_flight = std::make_shared<std::atomic<uint64_t>>(0);
+    auto first_exception = std::make_shared<std::optional<std::exception_ptr>>();
+    
+    uint64_t read_sequence = 0;
+    
+    uintmax_t header_size = sizeof(FileHeader) + sizeof(uint32_t) + encapsulated_key_mlkem.size() + sizeof(uint32_t) + salt.size() + sizeof(uint32_t) + iv.size();
+    uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
+    uintmax_t bytes_read_so_far = 0; 
+    
+    while(bytes_read_so_far < ciphertext_size) {
+        if(*first_exception) break;
+        size_t to_read = std::min((uintmax_t)READ_CHUNK_SIZE, ciphertext_size - bytes_read_so_far);
+        std::vector<unsigned char> buffer(to_read);
+        auto [read_ec, bytes_read] = co_await asio::async_read(input_file, asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
+        
+        if(read_ec && read_ec != asio::error::eof) {
+            *first_exception = std::make_exception_ptr(std::system_error(read_ec));
+            break;
+        }
+        if (bytes_read > 0) { bytes_read_so_far += bytes_read; }
+        if (bytes_read == 0) break;
+        buffer.resize(bytes_read);
+        
+        (*tasks_in_flight)++;
+
+        asio::post(worker_context, [this, seq_id = read_sequence, data = std::move(buffer), template_ctx, completed_chunks, map_mutex, writer_strand, tasks_in_flight, first_exception, &output_file, next_sequence_to_write]() mutable {
+            try {
+                if(*first_exception) { (*tasks_in_flight)--; return; }
+                auto decrypted_data = pqc_decrypt_chunk_logic(data, template_ctx.get());
+                if(decrypted_data.empty() && !data.empty()) throw std::runtime_error("Chunk decryption failed");
+                
+                std::scoped_lock lock(*map_mutex);
+                (*completed_chunks)[seq_id] = std::move(decrypted_data);
+            } catch (...) {
+                std::scoped_lock lock(*map_mutex);
+                if(!*first_exception) *first_exception = std::current_exception();
+            }
+
+            (*tasks_in_flight)--;
+            
+            asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
+                if(*first_exception) { return; }
+                std::scoped_lock lock(*map_mutex);
+                for (;;) {
+                    auto it = completed_chunks->find(next_sequence_to_write->load());
+                    if (it == completed_chunks->end()) break;
+                    
+                    auto data_to_write = std::move(it->second);
+                    completed_chunks->erase(it);
+                    
+                    (*tasks_in_flight)++;
+                    asio::co_spawn(writer_strand,
+                        asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
+                        [tasks_in_flight, first_exception, map_mutex](std::exception_ptr p, std::size_t) { 
+                            if(p && !*first_exception) {
+                                std::scoped_lock lock(*map_mutex);
+                                *first_exception = p;
+                            }
+                            (*tasks_in_flight)--; 
+                        }
+                    );
+                    (*next_sequence_to_write)++;
+                }
+            });
+        });
+        read_sequence++;
+        if (ciphertext_size > 0) printProgress(static_cast<double>(bytes_read_so_far) / ciphertext_size);
+    }
+    
+    while (*tasks_in_flight > 0) {
+        co_await asio::steady_timer(executor, std::chrono::milliseconds(20)).async_wait(asio::use_awaitable);
+    }
+    
+    if(*first_exception) {
+        std::rethrow_exception(first_exception->value());
+    }
+
+    // --- 復号の最終処理（GCMタグ検証） ---
+    std::vector<unsigned char> tag(GCM_TAG_LEN);
+    co_await asio::async_read(input_file, asio::buffer(tag), asio::use_awaitable);
+    
+    if(EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
+        throw std::runtime_error("Failed to set GCM tag.");
+    }
+
+    std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
+    int final_len = 0;
+    if (EVP_DecryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
+        printOpenSSLErrors();
+        throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with.");
+    }
+    
+    if(final_len > 0) {
+        co_await asio::async_write(output_file, asio::buffer(final_block.data(), final_len), asio::use_awaitable);
+    }
+
+    printProgress(1.0);
+    std::cout << "\nParallel PQC decryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
