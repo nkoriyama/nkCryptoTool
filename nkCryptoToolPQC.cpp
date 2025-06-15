@@ -18,13 +18,26 @@
 #include <openssl/ec.h>
 #include <asio.hpp>
 #include <asio/buffer.hpp>
-#include <asio/stream_file.hpp>
 #include <asio/write.hpp>
 #include <asio/read.hpp>
 
 // PQC署名/検証用の状態管理構造体
-struct nkCryptoToolPQC::SigningState : public std::enable_shared_from_this<SigningState> { asio::stream_file input_file; asio::stream_file output_file; std::vector<unsigned char> file_content; std::function<void(std::error_code)> completion_handler; SigningState(asio::io_context& io) : input_file(io), output_file(io) {} };
-struct nkCryptoToolPQC::VerificationState : public std::enable_shared_from_this<VerificationState> { asio::stream_file input_file; asio::stream_file signature_file; std::vector<unsigned char> file_content; std::vector<unsigned char> signature; std::function<void(std::error_code, bool)> verification_completion_handler; VerificationState(asio::io_context& io) : input_file(io), signature_file(io) {} };
+struct nkCryptoToolPQC::SigningState : public std::enable_shared_from_this<SigningState> {
+    async_file_t input_file;
+    async_file_t output_file;
+    std::vector<unsigned char> file_content;
+    std::function<void(std::error_code)> completion_handler;
+    SigningState(asio::io_context& io) : input_file(io), output_file(io) {}
+};
+
+struct nkCryptoToolPQC::VerificationState : public std::enable_shared_from_this<VerificationState> {
+    async_file_t input_file;
+    async_file_t signature_file;
+    std::vector<unsigned char> file_content;
+    std::vector<unsigned char> signature;
+    std::function<void(std::error_code, bool)> verification_completion_handler;
+    VerificationState(asio::io_context& io) : input_file(io), signature_file(io) {}
+};
 
 namespace {
 // ハイブリッド暗号化用のヘルパー関数 (ECDH鍵生成・共有秘密導出)
@@ -150,8 +163,23 @@ void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std
     if (encryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error));
     std::error_code ec;
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) return wrapped_handler(ec);
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec); if(ec) return wrapped_handler(ec);
-    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec); if(ec) return wrapped_handler(ec);
+
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
+    if(ec) return wrapped_handler(ec);
+
+#ifdef _WIN32
+    state->output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
+    if(ec) return wrapped_handler(ec);
+
     FileHeader header; memcpy(header.magic, MAGIC, sizeof(MAGIC)); header.version = 1; header.compression_algo = algo; header.reserved = is_hybrid ? 1 : 0;
     asio::write(state->output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) return wrapped_handler(ec);
     uint32_t len;
@@ -175,8 +203,22 @@ void nkCryptoToolPQC::decryptFileHybrid( asio::io_context& io_context, const std
     auto state = std::make_shared<AsyncStateBase>(io_context);
     state->completion_handler = wrapped_handler;
     std::error_code ec;
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec); if(ec) return wrapped_handler(ec);
-    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec); if(ec) return wrapped_handler(ec);
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
+    if(ec) return wrapped_handler(ec);
+
+#ifdef _WIN32
+    state->output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
+    if(ec) return wrapped_handler(ec);
+
     FileHeader header; asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec);
     if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
     state->compression_algo = header.compression_algo;
@@ -233,8 +275,23 @@ void nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesyst
     auto private_key = loadPrivateKey(signing_private_key_path, "PQC signing private key");
     if (!private_key) return completion_handler(std::make_error_code(std::errc::invalid_argument));
     std::error_code ec;
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec); if (ec) return completion_handler(ec);
-    state->output_file.open(signature_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec); if (ec) return completion_handler(ec);
+
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
+    if (ec) return completion_handler(ec);
+    
+#ifdef _WIN32
+    state->output_file.open(signature_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(signature_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
+    if (ec) return completion_handler(ec);
+
     state->file_content.resize(std::filesystem::file_size(input_filepath, ec)); if (ec) return completion_handler(ec);
     asio::async_read(state->input_file, asio::buffer(state->file_content), [this, state, pkey = std::move(private_key)](const asio::error_code& read_ec, size_t) mutable {
         if (read_ec) return state->completion_handler(read_ec);
@@ -255,12 +312,28 @@ void nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::f
     auto public_key = loadPublicKey(signing_public_key_path);
     if (!public_key) return completion_handler(std::make_error_code(std::errc::invalid_argument), false);
     std::error_code ec;
-    state->signature_file.open(signature_filepath.string(), asio::stream_file::read_only, ec); if (ec) return completion_handler(ec, false);
+
+#ifdef _WIN32
+    state->signature_file.open(signature_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_sig = ::open(signature_filepath.string().c_str(), O_RDONLY);
+    if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
+#endif
+    if (ec) return completion_handler(ec, false);
+
     state->signature.resize(std::filesystem::file_size(signature_filepath, ec)); if (ec) return completion_handler(ec, false);
     asio::async_read(state->signature_file, asio::buffer(state->signature), [this, state, input_filepath, pkey = std::move(public_key)](const asio::error_code& read_sig_ec, size_t) mutable {
         if (read_sig_ec) { state->verification_completion_handler(read_sig_ec, false); return; }
         std::error_code read_input_ec;
-        state->input_file.open(input_filepath.string(), asio::stream_file::read_only, read_input_ec); if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
+        
+#ifdef _WIN32
+        state->input_file.open(input_filepath.string(), async_file_t::read_only, read_input_ec);
+#else
+        int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+        if (fd_in == -1) { read_input_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, read_input_ec); }
+#endif
+        if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
+        
         state->file_content.resize(std::filesystem::file_size(input_filepath, read_input_ec)); if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
         asio::async_read(state->input_file, asio::buffer(state->file_content), [this, state, pub_key = std::move(pkey)](const asio::error_code& final_read_ec, size_t) mutable {
             if (final_read_ec && final_read_ec != asio::error::eof) { state->verification_completion_handler(final_read_ec, false); return; }
@@ -294,12 +367,23 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
-    asio::stream_file input_file(executor);
-    asio::stream_file output_file(executor);
+    async_file_t input_file(executor);
+    async_file_t output_file(executor);
     std::error_code ec;
-    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+#ifdef _WIN32
+    input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open input file"); }
-    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open output file"); }
 
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
@@ -462,12 +546,23 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
-    asio::stream_file input_file(executor);
-    asio::stream_file output_file(executor);
+    async_file_t input_file(executor);
+    async_file_t output_file(executor);
     std::error_code ec;
-    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+#ifdef _WIN32
+    input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open input file"); }
-    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open output file"); }
 
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);

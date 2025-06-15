@@ -18,7 +18,6 @@
 #include <openssl/bio.h>
 #include <asio.hpp>
 #include <asio/buffer.hpp>
-#include <asio/stream_file.hpp>
 #include <asio/write.hpp>
 #include <asio/read.hpp>
 #include <functional>
@@ -32,7 +31,7 @@ struct nkCryptoToolECC::SigningState : public nkCryptoToolBase::AsyncStateBase, 
 };
 struct nkCryptoToolECC::VerificationState : public nkCryptoToolBase::AsyncStateBase, public std::enable_shared_from_this<VerificationState> {
     std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx;
-    asio::stream_file signature_file;
+    async_file_t signature_file;
     std::vector<unsigned char> signature;
     uintmax_t total_input_size;
     std::function<void(std::error_code, bool)> verification_completion_handler;
@@ -143,9 +142,21 @@ void nkCryptoToolECC::encryptFile(
     std::error_code ec;
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
     if (ec) return wrapped_handler(ec);
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
     if (ec) return wrapped_handler(ec);
-    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    state->output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
     if (ec) return wrapped_handler(ec);
 
     FileHeader header;
@@ -188,8 +199,22 @@ void nkCryptoToolECC::decryptFile(
     if (!user_private_key) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
     
     std::error_code ec; 
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec); if (ec) return wrapped_handler(ec); 
-    state->output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec); if (ec) return wrapped_handler(ec); 
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
+    if (ec) return wrapped_handler(ec); 
+    
+#ifdef _WIN32
+    state->output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
+    if (ec) return wrapped_handler(ec); 
+
     FileHeader header; asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec); if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) { return wrapped_handler(std::make_error_code(std::errc::invalid_argument)); } 
     state->compression_algo = header.compression_algo; uint32_t key_len = 0, iv_len = 0; asio::read(state->input_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec || key_len > 2048) return wrapped_handler(ec ? ec : std::make_error_code(std::errc::invalid_argument)); 
     std::vector<char> eph_pub_key_buf(key_len); asio::read(state->input_file, asio::buffer(eph_pub_key_buf), ec); if(ec) return wrapped_handler(ec); 
@@ -220,10 +245,23 @@ void nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesyst
     std::error_code ec;
     state->total_input_size = std::filesystem::file_size(input_filepath, ec);
     if(ec) return completion_handler(ec);
-    state->input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+
+#ifdef _WIN32
+    state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
+#endif
     if(ec) return completion_handler(ec);
-    state->output_file.open(signature_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    state->output_file.open(signature_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(signature_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
+#endif
     if(ec) return completion_handler(ec);
+
     state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolECC::handleFileReadForSigning, this, state, std::placeholders::_1, std::placeholders::_2));
 }
 
@@ -256,8 +294,15 @@ void nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::f
     const EVP_MD* digest = EVP_get_digestbyname("SHA256");
     EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, digest, nullptr, public_key.get());
     std::error_code ec;
-    state->signature_file.open(signature_filepath.string(), asio::stream_file::read_only, ec);
+
+#ifdef _WIN32
+    state->signature_file.open(signature_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_sig = ::open(signature_filepath.string().c_str(), O_RDONLY);
+    if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
+#endif
     if (ec) { completion_handler(ec, false); return; }
+
     state->signature.resize(std::filesystem::file_size(signature_filepath, ec));
     if (ec) { completion_handler(ec, false); return; }
     asio::async_read(state->signature_file, asio::buffer(state->signature), [this, state, input_filepath, pub_key = std::move(public_key)](const asio::error_code& read_sig_ec, size_t) mutable {
@@ -265,8 +310,15 @@ void nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::f
         std::error_code open_ec;
         state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
         if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
-        state->input_file.open(input_filepath.string(), asio::stream_file::read_only, open_ec);
+
+#ifdef _WIN32
+        state->input_file.open(input_filepath.string(), async_file_t::read_only, open_ec);
+#else
+        int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+        if (fd_in == -1) { open_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, open_ec); }
+#endif
         if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
+
         state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolECC::handleFileReadForVerification, this, state, std::placeholders::_1, std::placeholders::_2));
     });
 }
@@ -318,12 +370,24 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
-    asio::stream_file input_file(executor);
-    asio::stream_file output_file(executor);
+    async_file_t input_file(executor);
+    async_file_t output_file(executor);
     std::error_code ec;
-    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+
+#ifdef _WIN32
+    input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open input file"); }
-    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open output file"); }
 
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
@@ -492,12 +556,24 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
     auto executor = co_await asio::this_coro::executor;
     auto writer_strand = asio::make_strand(executor);
 
-    asio::stream_file input_file(executor);
-    asio::stream_file output_file(executor);
+    async_file_t input_file(executor);
+    async_file_t output_file(executor);
     std::error_code ec;
-    input_file.open(input_filepath.string(), asio::stream_file::read_only, ec);
+
+#ifdef _WIN32
+    input_file.open(input_filepath.string(), async_file_t::read_only, ec);
+#else
+    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
+    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open input file"); }
-    output_file.open(output_filepath.string(), asio::stream_file::write_only | asio::stream_file::create | asio::stream_file::truncate, ec);
+
+#ifdef _WIN32
+    output_file.open(output_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+    int fd_out = ::open(output_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
     if(ec) { throw std::system_error(ec, "Failed to open output file"); }
 
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);

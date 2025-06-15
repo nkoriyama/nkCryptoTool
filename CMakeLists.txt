@@ -19,25 +19,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(asio)
 
-# --- 依存関係の取得: LZ4 (ソース取得のみ) ---
-FetchContent_Declare(
-  lz4
-  GIT_REPOSITORY https://github.com/lz4/lz4.git
-  GIT_TAG        v1.9.4 # 安定したバージョンタグを指定
-)
-# Populateを使い、ソースコードのダウンロードのみ行います。
-FetchContent_Populate(lz4)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PC_LZ4 REQUIRED liblz4)
 
-# --- LZ4のソースから静的ライブラリを作成 ---
-add_library(lz4_lib STATIC
-    "${lz4_SOURCE_DIR}/lib/lz4.c"
-    "${lz4_SOURCE_DIR}/lib/lz4frame.c"
-    "${lz4_SOURCE_DIR}/lib/lz4hc.c"
-)
-target_include_directories(lz4_lib PUBLIC
-    "${lz4_SOURCE_DIR}/lib"
-)
-# --- 依存関係の定義ここまで ---
+find_package(Threads REQUIRED)
 
 # OpenSSLライブラリを見つけます。
 find_package(OpenSSL REQUIRED)
@@ -56,14 +41,17 @@ add_executable(nkCryptoTool
 
 # インクルードディレクトリを追加します。
 target_include_directories(nkCryptoTool PRIVATE
-    "${asio_SOURCE_DIR}/asio/include"
+  ${PROJECT_SOURCE_DIR}
+  ${PC_LZ4_INCLUDE_DIRS}
+  ${asio_SOURCE_DIR}/asio/include
 )
 
 # 実行可能ファイルにライブラリをリンクします。
 target_link_libraries(nkCryptoTool PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
-    lz4_lib  # 作成した静的ライブラリターゲットをリンク
+  ${PC_LZ4_LIBRARIES}
+  Threads::Threads
 )
 
 # Windows固有のライブラリを追加でリンクします。

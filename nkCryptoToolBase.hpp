@@ -12,11 +12,22 @@
 #include <memory>
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
-#include <asio/stream_file.hpp>
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
 #include <lz4.h>
+
+#ifdef _WIN32
+#include <asio/stream_file.hpp>
+// Windowsではstream_fileをそのまま使う
+using async_file_t = asio::stream_file;
+#else // For Linux/macOS
+#include <asio/posix/stream_descriptor.hpp>
+#include <fcntl.h> // For open()
+#include <unistd.h> // For close()
+// Linux/macOSではposix::stream_descriptorを使う
+using async_file_t = asio::posix::stream_descriptor;
+#endif
 
 namespace asio { class io_context; }
 
@@ -61,8 +72,8 @@ protected:
                                           const std::string& digest_algo);
     
     struct AsyncStateBase {
-        asio::stream_file input_file;
-        asio::stream_file output_file;
+        async_file_t input_file;
+        async_file_t output_file;
         std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx;
         std::vector<unsigned char> input_buffer;
         std::vector<unsigned char> output_buffer;
