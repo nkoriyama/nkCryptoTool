@@ -10,6 +10,7 @@
 #include <functional>
 #include <system_error>
 #include <memory>
+#include <map>
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/buffer.hpp>
@@ -131,6 +132,24 @@ public:
         std::string output_filepath,
         std::string user_private_key_path
     ) = 0;
+
+    // --- ★ 新しいパイプライン処理インターフェース ---
+    virtual void encryptFileWithPipeline(
+        asio::io_context& io_context,
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths,
+        std::function<void(std::error_code)> completion_handler
+    ) = 0;
+
+    virtual void decryptFileWithPipeline(
+        asio::io_context& io_context,
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths,
+        std::function<void(std::error_code)> completion_handler
+    ) = 0;
+
 
 private:
     std::filesystem::path key_base_directory;

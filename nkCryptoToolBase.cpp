@@ -51,6 +51,7 @@ nkCryptoToolBase::AsyncStateBase::~AsyncStateBase() {
     }
 }
 
+// ★★★ 修正点: 引数を const参照渡し に変更
 void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
     key_base_directory = dir;
     try {
@@ -85,6 +86,7 @@ void nkCryptoToolBase::printProgress(double percentage) {
     std::cout.flush();
 }
 
+// ★★★ 修正点: 引数を const参照渡し に変更
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
@@ -96,6 +98,7 @@ std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(cons
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
+// ★★★ 修正点: 引数を const参照渡し に変更
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {

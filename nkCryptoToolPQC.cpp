@@ -715,3 +715,15 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     std::cout << "\nParallel PQC decryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
+// nkCryptoToolPQC.cpp の末尾に追加
+#include "PipelineManager.hpp"
+
+void nkCryptoToolPQC::encryptFileWithPipeline(asio::io_context&, const std::string&, const std::string&, const std::map<std::string, std::string>&, std::function<void(std::error_code)> handler) {
+    std::cerr << "Pipeline mode is not implemented for PQC/Hybrid yet." << std::endl;
+    handler(std::make_error_code(std::errc::not_supported));
+}
+
+void nkCryptoToolPQC::decryptFileWithPipeline(asio::io_context&, const std::string&, const std::string&, const std::map<std::string, std::string>&, std::function<void(std::error_code)> handler) {
+    std::cerr << "Pipeline mode is not implemented for PQC/Hybrid yet." << std::endl;
+    handler(std::make_error_code(std::errc::not_supported));
+}

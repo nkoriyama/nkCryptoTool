@@ -709,3 +709,292 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
     std::cout << "\nParallel decryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
+
+// ===============================================================================
+// ★ パイプライン処理の実装 (このセクションをファイル末尾に追加)
+// ===============================================================================
+
+// 暗号化/復号ステージで利用するスレッドセーフなチャンク処理ロジック
+static std::vector<char> process_chunk(const std::vector<char>& input_data, EVP_CIPHER_CTX* template_ctx, bool is_encrypt) {
+    if (input_data.empty()) return {};
+
+    // 各スレッドでEVP_CIPHER_CTXのコピーを作成して利用する
+    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_ctx)) {
+        throw std::runtime_error("Failed to copy EVP_CIPHER_CTX");
+    }
+
+    std::vector<unsigned char> processed_data(input_data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen = 0;
+    
+    if (is_encrypt) {
+        if (EVP_EncryptUpdate(ctx.get(), processed_data.data(), &outlen, reinterpret_cast<const unsigned char*>(input_data.data()), input_data.size()) <= 0) {
+            throw std::runtime_error("EVP_EncryptUpdate failed");
+        }
+    } else {
+        if (EVP_DecryptUpdate(ctx.get(), processed_data.data(), &outlen, reinterpret_cast<const unsigned char*>(input_data.data()), input_data.size()) <= 0) {
+            throw std::runtime_error("EVP_DecryptUpdate failed");
+        }
+    }
+    processed_data.resize(outlen);
+
+    // vector<char> にキャストして返す
+    std::vector<char> result;
+    result.assign(processed_data.begin(), processed_data.end());
+    return result;
+}
+
+
+void nkCryptoToolECC::encryptFileWithPipeline(
+    asio::io_context& io_context,
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths,
+    std::function<void(std::error_code)> completion_handler
+) {
+    auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) {
+        if (!ec) std::cout << "\nPipeline encryption to '" << output_filepath << "' completed." << std::endl;
+        else std::cerr << "\nPipeline encryption failed: " << ec.message() << std::endl;
+        completion_handler(ec);
+    };
+
+    try {
+        // --- 1. 暗号化の初期設定 ---
+        auto recipient_public_key = loadPublicKey(key_paths.at("recipient-pubkey"));
+        if (!recipient_public_key) throw std::runtime_error("Failed to load recipient public key.");
+
+        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key;
+        {
+            std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx_eph(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
+            if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { throw std::runtime_error("Failed to init ephemeral keygen."); }
+            OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
+            if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { throw std::runtime_error("Failed to set ephemeral key params."); }
+            EVP_PKEY* eph_pkey_raw = nullptr;
+            if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { throw std::runtime_error("Failed to generate ephemeral key."); }
+            ephemeral_private_key.reset(eph_pkey_raw);
+        }
+
+        std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
+        std::vector<unsigned char> iv(GCM_IV_LEN);
+        RAND_bytes(iv.data(), GCM_IV_LEN);
+        std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256");
+        if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key.");
+
+        // ★★★ 修正点1: `std::make_shared` を `std::shared_ptr` コンストラクタ呼び出しに変更
+        auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+        EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+
+        // --- 2. 出力ファイルを開き、ヘッダーを書き込む ---
+        std::error_code ec;
+        async_file_t output_file(io_context);
+#ifdef _WIN32
+        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to open output file for header writing");
+
+        FileHeader header;
+        memcpy(header.magic, MAGIC, sizeof(MAGIC));
+        header.version = 1;
+        header.compression_algo = CompressionAlgorithm::NONE; // Pipeline mode doesn't support compression
+        header.reserved = 0;
+        asio::write(output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec);
+
+        std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
+        PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get());
+        BUF_MEM *bio_buf;
+        BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
+        uint32_t key_len = bio_buf->length;
+        uint32_t iv_len = iv.size();
+        asio::write(output_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(bio_buf->data, key_len), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(iv), ec); if(ec) throw std::system_error(ec);
+        
+        uintmax_t header_size = output_file.size(ec); if(ec) throw std::system_error(ec);
+        output_file.close(ec); // 一旦閉じる
+
+        // --- 3. PipelineManager のセットアップと実行 ---
+        auto manager = std::make_shared<PipelineManager>(io_context);
+        
+        // ステージの定義
+        // ★★★ 修正点2: ラムダのキャプチャリストに `template_ctx` を追加
+        manager->add_stage([template_ctx](const std::vector<char>& data) {
+            return process_chunk(data, template_ctx.get(), true);
+        });
+
+        // 最終処理の定義
+        // ★★★ 修正点3: ラムダのキャプチャリストに `template_ctx` を追加
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, output_filepath]() -> asio::awaitable<void> {
+            // Finalize encryption
+            std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
+            int final_len = 0;
+            if (EVP_EncryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
+                printOpenSSLErrors();
+                throw std::runtime_error("Failed to finalize encryption.");
+            }
+
+            // Get GCM tag
+            std::vector<unsigned char> tag(GCM_TAG_LEN);
+            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
+                printOpenSSLErrors();
+                throw std::runtime_error("Failed to get GCM tag.");
+            }
+
+            // Append final block and tag
+            async_file_t out_final(io_context);
+            std::error_code final_ec;
+#ifdef _WIN32
+            out_final.open(output_filepath, async_file_t::append | async_file_t::write_only, final_ec);
+#else
+            int fd = ::open(output_filepath.c_str(), O_WRONLY | O_APPEND);
+            if (fd == -1) { final_ec.assign(errno, std::system_category()); } else { out_final.assign(fd, final_ec); }
+#endif
+            if(final_ec) throw std::system_error(final_ec, "Failed to open output for finalization");
+
+            if (final_len > 0) {
+                co_await asio::async_write(out_final, asio::buffer(final_block.data(), final_len), asio::use_awaitable);
+            }
+            co_await asio::async_write(out_final, asio::buffer(tag), asio::use_awaitable);
+            printProgress(1.0);
+        };
+        
+        uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
+        manager->run(input_filepath, output_filepath, 0, total_input_size, wrapped_handler, std::move(finalizer));
+
+    } catch (const std::exception& e) {
+        wrapped_handler(std::make_error_code(std::errc::io_error));
+    }
+}
+
+
+void nkCryptoToolECC::decryptFileWithPipeline(
+    asio::io_context& io_context,
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths,
+    std::function<void(std::error_code)> completion_handler
+) {
+    auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) {
+        if (!ec) std::cout << "\nPipeline decryption to '" << output_filepath << "' completed." << std::endl;
+        else std::cerr << "\nPipeline decryption failed: " << ec.message() << std::endl;
+        completion_handler(ec);
+    };
+
+    try {
+        // --- 1. 復号の初期設定 ---
+        std::error_code ec;
+        async_file_t input_file(io_context);
+#ifdef _WIN32
+        input_file.open(input_filepath, async_file_t::read_only, ec);
+#else
+        int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
+        if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to open input file for header reading");
+        
+        // ヘッダー読み込み
+        FileHeader header; asio::read(input_file, asio::buffer(&header, sizeof(header)), ec); 
+        if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) throw std::runtime_error("Invalid file header");
+        if (header.compression_algo != CompressionAlgorithm::NONE) throw std::runtime_error("Pipeline mode does not support compression");
+
+        uint32_t key_len = 0, iv_len = 0; 
+        asio::read(input_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec || key_len > 2048) throw std::runtime_error("Invalid key length");
+        std::vector<char> eph_pub_key_buf(key_len); asio::read(input_file, asio::buffer(eph_pub_key_buf), ec); if(ec) throw std::runtime_error("Failed to read ephemeral key");
+        asio::read(input_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec || iv_len != GCM_IV_LEN) throw std::runtime_error("Invalid IV length");
+        std::vector<unsigned char> iv(iv_len); asio::read(input_file, asio::buffer(iv), ec); if(ec) throw std::runtime_error("Failed to read IV");
+        
+        uintmax_t header_size = input_file.seek(0, asio::file_base::seek_cur, ec); if(ec) throw std::system_error(ec);
+        input_file.close(ec);
+
+        auto user_private_key = loadPrivateKey(key_paths.at("user-privkey"), "ECC private key");
+        if (!user_private_key) throw std::runtime_error("Failed to load user private key.");
+
+        std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(eph_pub_key_buf.data(), key_len)); 
+        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); if(!eph_pub_key) throw std::runtime_error("Failed to parse ephemeral public key");
+        
+        std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); 
+        std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256"); if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
+        
+        // ★★★ 修正点1: `std::make_shared` を `std::shared_ptr` コンストラクタ呼び出しに変更
+        auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+        EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
+
+        // --- 2. 出力ファイルを新規作成 ---
+        async_file_t output_file(io_context);
+#ifdef _WIN32
+        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to create output file");
+        output_file.close(ec);
+
+        // --- 3. PipelineManager のセットアップと実行 ---
+        auto manager = std::make_shared<PipelineManager>(io_context);
+
+        // ★★★ 修正点2: ラムダのキャプチャリストに `template_ctx` を追加
+        manager->add_stage([template_ctx](const std::vector<char>& data) {
+            return process_chunk(data, template_ctx.get(), false);
+        });
+
+        // ★★★ 修正点3: ラムダのキャプチャリストに `template_ctx` を追加
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, input_filepath, output_filepath]() -> asio::awaitable<void> {
+            async_file_t in_final(io_context);
+            async_file_t out_final(io_context);
+            std::error_code final_ec;
+            
+            // 入力ファイルを開き、末尾からタグを読み込む
+#ifdef _WIN32
+            in_final.open(input_filepath, async_file_t::read_only, final_ec);
+#else
+            int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
+            if (fd_in == -1) { final_ec.assign(errno, std::system_category()); } else { in_final.assign(fd_in, final_ec); }
+#endif
+            if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
+
+            uintmax_t file_size = in_final.size(final_ec);
+            in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            std::vector<unsigned char> tag(GCM_TAG_LEN);
+            co_await asio::async_read(in_final, asio::buffer(tag), asio::use_awaitable);
+
+            // タグをセット
+            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
+                 throw std::runtime_error("Failed to set GCM tag.");
+            }
+
+            // 最終ブロックを復号（ここでタグが検証される）
+            std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
+            int final_len = 0;
+            if (EVP_DecryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
+                printOpenSSLErrors();
+                throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with.");
+            }
+
+            // 最終ブロックを書き込む
+#ifdef _WIN32
+            out_final.open(output_filepath, async_file_t::append | async_file_t::write_only, final_ec);
+#else
+            int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_APPEND);
+            if (fd_out == -1) { final_ec.assign(errno, std::system_category()); } else { out_final.assign(fd_out, final_ec); }
+#endif
+            if(final_ec) throw std::system_error(final_ec, "Failed to open output for finalization");
+            
+            if (final_len > 0) {
+                 co_await asio::async_write(out_final, asio::buffer(final_block.data(), final_len), asio::use_awaitable);
+            }
+            printProgress(1.0);
+        };
+
+        uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
+        uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
+        
+        manager->run(input_filepath, output_filepath, header_size, ciphertext_size, wrapped_handler, std::move(finalizer));
+
+    } catch (const std::exception& e) {
+        wrapped_handler(std::make_error_code(std::errc::io_error));
+    }
+}

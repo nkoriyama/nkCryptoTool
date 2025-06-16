@@ -4,10 +4,10 @@
 #define NKCRYPTOTOOL_ECC_HPP
 
 #include "nkCryptoToolBase.hpp"
+#include "PipelineManager.hpp" // ★ PipelineManagerをインクルード
 #include <openssl/ec.h>
 #include <openssl/rand.h>
 #include <asio/awaitable.hpp>
-
 
 class nkCryptoToolECC : public nkCryptoToolBase {
 private:
@@ -54,6 +54,23 @@ public:
         std::string input_filepath,
         std::string output_filepath,
         std::string user_private_key_path
+    ) override;
+
+    // --- ★ 新しいパイプライン処理インターフェースの実装宣言 ---
+    void encryptFileWithPipeline(
+        asio::io_context& io_context,
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths,
+        std::function<void(std::error_code)> completion_handler
+    ) override;
+
+    void decryptFileWithPipeline(
+        asio::io_context& io_context,
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths,
+        std::function<void(std::error_code)> completion_handler
     ) override;
 };
 
