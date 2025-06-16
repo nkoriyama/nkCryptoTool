@@ -169,6 +169,8 @@ run_encryption_scenario(pqc    OFF ON  OFF)
 run_encryption_scenario(ecc    OFF ON  OFF)
 
 # --- ★ Run Pipeline Encryption Scenarios (compression/parallel are not supported) ---
+run_encryption_scenario(pqc    OFF OFF ON)
+run_encryption_scenario(hybrid OFF OFF ON)
 run_encryption_scenario(ecc    OFF OFF ON)
 
 # --- Run Signing Scenarios ---

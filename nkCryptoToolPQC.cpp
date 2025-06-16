@@ -1,6 +1,7 @@
 // nkCryptoToolPQC.cpp
 
 #include "nkCryptoToolPQC.hpp"
+#include "PipelineManager.hpp"
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -44,7 +45,7 @@ namespace {
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key() { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr)); if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return nullptr; OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() }; if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) return nullptr; EVP_PKEY* pkey = nullptr; if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return nullptr; return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey); }
 std::vector<unsigned char> ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) { std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr)); if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) return {}; size_t secret_len; if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) return {}; std::vector<unsigned char> secret(secret_len); if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) return {}; secret.resize(secret_len); return secret; }
 
-// --- 並列処理用チャンク処理ヘルパー ---
+// --- 並列/パイプライン処理用チャンク処理ヘルパー ---
 static std::vector<unsigned char> pqc_encrypt_chunk_logic(
     const std::vector<unsigned char>& plain_data,
     EVP_CIPHER_CTX* template_cipher_ctx
@@ -71,6 +72,26 @@ static std::vector<unsigned char> pqc_decrypt_chunk_logic(
     }
     decrypted_data.resize(outlen);
     return decrypted_data;
+}
+
+static std::vector<char> pqc_process_chunk(const std::vector<char>& input_data, EVP_CIPHER_CTX* template_ctx, bool is_encrypt) {
+    if (input_data.empty()) return {};
+
+    std::vector<unsigned char> input_uc(input_data.begin(), input_data.end());
+    std::vector<unsigned char> processed_data_uc;
+
+    if (is_encrypt) {
+        processed_data_uc = pqc_encrypt_chunk_logic(input_uc, template_ctx);
+    } else {
+        processed_data_uc = pqc_decrypt_chunk_logic(input_uc, template_ctx);
+    }
+    
+    if (processed_data_uc.empty() && !input_data.empty()){
+        throw std::runtime_error("Chunk processing failed");
+    }
+
+    std::vector<char> result(processed_data_uc.begin(), processed_data_uc.end());
+    return result;
 }
 
 } // anonymous namespace
@@ -715,15 +736,245 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     std::cout << "\nParallel PQC decryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
-// nkCryptoToolPQC.cpp の末尾に追加
-#include "PipelineManager.hpp"
 
-void nkCryptoToolPQC::encryptFileWithPipeline(asio::io_context&, const std::string&, const std::string&, const std::map<std::string, std::string>&, std::function<void(std::error_code)> handler) {
-    std::cerr << "Pipeline mode is not implemented for PQC/Hybrid yet." << std::endl;
-    handler(std::make_error_code(std::errc::not_supported));
+// --- パイプライン処理の実装 ---
+void nkCryptoToolPQC::encryptFileWithPipeline(
+    asio::io_context& io_context,
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths,
+    std::function<void(std::error_code)> completion_handler
+) {
+    try {
+        bool is_hybrid = key_paths.count("recipient-ecdh-pubkey");
+        
+        auto manager = std::make_shared<PipelineManager>(io_context);
+        auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
+            if (!ec) std::cout << "\nPipeline encryption to '" << output_filepath << "' completed." << std::endl;
+            else std::cerr << "\nPipeline encryption failed: " << ec.message() << std::endl;
+            completion_handler(ec);
+        };
+
+        // --- 鍵導出 ---
+        std::vector<unsigned char> combined_secret; 
+        std::vector<unsigned char> encapsulated_key_mlkem; 
+        std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
+        
+        auto recipient_mlkem_public_key = loadPublicKey(key_paths.at("recipient-mlkem-pubkey"));
+        if (!recipient_mlkem_public_key) throw std::runtime_error("Failed to load recipient ML-KEM public key.");
+
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
+        if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate_init failed."); }
+        size_t secret_len_mlkem = 0, enc_len_mlkem = 0;
+        if (EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &enc_len_mlkem, nullptr, &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate get length failed."); }
+        std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+        encapsulated_key_mlkem.resize(enc_len_mlkem);
+        if (EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_mlkem.data(), &enc_len_mlkem, secret_mlkem.data(), &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate failed."); }
+        combined_secret = secret_mlkem;
+
+        if (is_hybrid) {
+            auto recipient_ecdh_public_key = loadPublicKey(key_paths.at("recipient-ecdh-pubkey"));
+            if (!recipient_ecdh_public_key) throw std::runtime_error("Failed to load recipient ECDH public key.");
+            auto ephemeral_ecdh_key = generate_ephemeral_ec_key();
+            if (!ephemeral_ecdh_key) { printOpenSSLErrors(); throw std::runtime_error("Failed to generate ephemeral ECDH key."); }
+            std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(ephemeral_ecdh_key.get(), recipient_ecdh_public_key.get());
+            if (secret_ecdh.empty()) { printOpenSSLErrors(); throw std::runtime_error("ECDH shared secret generation failed."); }
+            
+            std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
+            if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_ecdh_key.get())) { printOpenSSLErrors(); throw std::runtime_error("Failed to write ephemeral ECDH key to BIO."); }
+            BUF_MEM *bio_buf; BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
+            ephemeral_ecdh_pubkey_bytes.assign(bio_buf->data, bio_buf->data + bio_buf->length);
+            combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
+        }
+
+        std::vector<unsigned char> salt(16), iv(GCM_IV_LEN); 
+        RAND_bytes(salt.data(), salt.size()); 
+        RAND_bytes(iv.data(), iv.size());
+        std::vector<unsigned char> encryption_key = hkdfDerive(combined_secret, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+        if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key with HKDF.");
+
+        auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+        EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+
+        // --- ファイル書き込み ---
+        std::error_code ec;
+        async_file_t output_file(io_context);
+#ifdef _WIN32
+        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to open output file for header writing");
+
+        FileHeader header; 
+        memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
+        header.version = 1; 
+        header.compression_algo = CompressionAlgorithm::NONE; 
+        header.reserved = is_hybrid ? 1 : 0;
+        asio::write(output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec);
+        
+        uint32_t len;
+        len = encapsulated_key_mlkem.size(); asio::write(output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(encapsulated_key_mlkem), ec); if(ec) throw std::system_error(ec);
+        if (is_hybrid) {
+            len = ephemeral_ecdh_pubkey_bytes.size(); asio::write(output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec);
+            asio::write(output_file, asio::buffer(ephemeral_ecdh_pubkey_bytes), ec); if(ec) throw std::system_error(ec);
+        }
+        len = salt.size(); asio::write(output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(salt), ec); if(ec) throw std::system_error(ec);
+        len = iv.size(); asio::write(output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(iv), ec); if(ec) throw std::system_error(ec);
+
+        // --- パイプライン実行 ---
+        manager->add_stage([template_ctx](const std::vector<char>& data) {
+            return pqc_process_chunk(data, template_ctx.get(), true);
+        });
+
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx](async_file_t& out_final) -> asio::awaitable<void> {
+            auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
+            auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
+            int final_len = 0;
+            if (EVP_EncryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to finalize encryption."); }
+            final_block->resize(final_len);
+            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to get GCM tag."); }
+            if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
+            co_await asio::async_write(out_final, asio::buffer(*tag), asio::use_awaitable);
+            printProgress(1.0);
+        };
+        
+        uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
+        manager->run(input_filepath, std::move(output_file), 0, total_input_size, wrapped_handler, std::move(finalizer));
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nPipeline encryption setup failed: " << e.what() << std::endl;
+        completion_handler(std::make_error_code(std::errc::io_error));
+    }
 }
 
-void nkCryptoToolPQC::decryptFileWithPipeline(asio::io_context&, const std::string&, const std::string&, const std::map<std::string, std::string>&, std::function<void(std::error_code)> handler) {
-    std::cerr << "Pipeline mode is not implemented for PQC/Hybrid yet." << std::endl;
-    handler(std::make_error_code(std::errc::not_supported));
+void nkCryptoToolPQC::decryptFileWithPipeline(
+    asio::io_context& io_context,
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths,
+    std::function<void(std::error_code)> completion_handler
+) {
+    try {
+        auto manager = std::make_shared<PipelineManager>(io_context);
+        auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
+            if (!ec) std::cout << "\nPipeline decryption to '" << output_filepath << "' completed." << std::endl;
+            else std::cerr << "\nPipeline decryption failed: " << ec.message() << std::endl;
+            completion_handler(ec);
+        };
+
+        // --- ファイルヘッダー読み込みと鍵導出 ---
+        std::error_code ec;
+        async_file_t input_file(io_context);
+#ifdef _WIN32
+        input_file.open(input_filepath, async_file_t::read_only, ec);
+#else
+        int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
+        if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to open input file for header reading");
+        
+        FileHeader header; asio::read(input_file, asio::buffer(&header, sizeof(header)), ec); 
+        if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) { input_file.close(); throw std::runtime_error("Invalid file header"); }
+        bool is_hybrid = header.reserved == 1;
+        if (is_hybrid && !key_paths.count("recipient-ecdh-privkey")) { input_file.close(); throw std::runtime_error("Hybrid file requires ECDH private key."); }
+
+        uint32_t len;
+        std::vector<unsigned char> encapsulated_key_mlkem, ephemeral_ecdh_pubkey_bytes, salt, iv;
+        asio::read(input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ml-kem key length");} encapsulated_key_mlkem.resize(len);
+        asio::read(input_file, asio::buffer(encapsulated_key_mlkem), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ml-kem key");}
+        if(is_hybrid) {
+            asio::read(input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ecdh key length");} ephemeral_ecdh_pubkey_bytes.resize(len);
+            asio::read(input_file, asio::buffer(ephemeral_ecdh_pubkey_bytes), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ecdh key");}
+        }
+        asio::read(input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read salt length");} salt.resize(len);
+        asio::read(input_file, asio::buffer(salt), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read salt");}
+        asio::read(input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read iv length");} iv.resize(len);
+        asio::read(input_file, asio::buffer(iv), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read iv");}
+        
+        uintmax_t header_size = input_file.seek(0, asio::file_base::seek_cur, ec); if(ec) {input_file.close(); throw std::system_error(ec);}
+        input_file.close(ec);
+
+        std::vector<unsigned char> combined_secret;
+        auto recipient_mlkem_private_key = loadPrivateKey(key_paths.at("recipient-mlkem-privkey"), "ML-KEM private key");
+        if (!recipient_mlkem_private_key) throw std::runtime_error("Failed to load user ML-KEM private key.");
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
+        if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_decapsulate_init failed."); }
+        size_t secret_len_mlkem = 0;
+        if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_decapsulate get length failed."); }
+        std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+        if (EVP_PKEY_decapsulate(kem_ctx.get(), secret_mlkem.data(), &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Decapsulation failed. The private key may be incorrect or the data corrupted."); }
+        combined_secret = secret_mlkem;
+        
+        if(is_hybrid) {
+            auto recipient_ecdh_private_key = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
+            if (!recipient_ecdh_private_key) throw std::runtime_error("Failed to load user ECDH private key.");
+            std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
+            std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
+            if(!ephemeral_pub_key) { printOpenSSLErrors(); throw std::runtime_error("Failed to parse ephemeral ECDH key."); }
+            std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(recipient_ecdh_private_key.get(), ephemeral_pub_key.get());
+            if (secret_ecdh.empty()) { printOpenSSLErrors(); throw std::runtime_error("ECDH shared secret generation failed."); }
+            combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
+        }
+
+        std::vector<unsigned char> decryption_key = hkdfDerive(combined_secret, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+        if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
+        
+        auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
+        EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
+
+        // --- パイプライン実行 ---
+        async_file_t output_file(io_context);
+#ifdef _WIN32
+        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+#else
+        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
+#endif
+        if (ec) throw std::system_error(ec, "Failed to create output file");
+
+        manager->add_stage([template_ctx](const std::vector<char>& data) {
+            return pqc_process_chunk(data, template_ctx.get(), false);
+        });
+
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, input_filepath](async_file_t& out_final) -> asio::awaitable<void> {
+            auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
+            auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
+            int final_len = 0;
+            
+            async_file_t in_final(io_context);
+            std::error_code final_ec;
+#ifdef _WIN32
+            in_final.open(input_filepath, async_file_t::read_only, final_ec);
+#else
+            int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
+            if (fd_in == -1) { final_ec.assign(errno, std::system_category()); } else { in_final.assign(fd_in, final_ec); }
+#endif
+            if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
+
+            uintmax_t file_size = in_final.size(final_ec);
+            in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            co_await asio::async_read(in_final, asio::buffer(*tag), asio::use_awaitable);
+
+            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("Failed to set GCM tag."); }
+            if (EVP_DecryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with."); }
+            final_block->resize(final_len);
+            
+            if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
+            printProgress(1.0);
+        };
+
+        uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
+        uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
+        
+        manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, wrapped_handler, std::move(finalizer));
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nPipeline decryption setup failed: " << e.what() << std::endl;
+        completion_handler(std::make_error_code(std::errc::io_error));
+    }
 }
