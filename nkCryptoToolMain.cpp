@@ -115,9 +115,10 @@ void display_usage() {
               << "                      If not provided, or empty, you will be prompted.\n\n"
               << "Encryption:\n"
               << "  --encrypt           Encrypt input file.\n"
-              << "  --parallel          Use parallel processing for encryption/decryption ('ecc' or 'pqc' mode).\n"
+              << "  --parallel          Use coroutine-based parallel processing ('ecc' or 'pqc' mode).\n"
+              << "  --pipeline          Use pipeline-based parallel processing ('ecc' mode only for now).\n"
               << "  -o, --output-file <path>   Output file path.\n"
-              << "  --compress <algo>   Compress with 'lz4' before encryption. (Optional, not available in parallel mode)\n"
+              << "  --compress <algo>   Compress with 'lz4' before encryption. (Not available in parallel/pipeline mode)\n"
               << "  --recipient-pubkey <path>      Recipient's public key (for ecc/pqc).\n"
               << "  --recipient-mlkem-pubkey <path> Recipient's ML-KEM public key (for hybrid).\n"
               << "  --recipient-ecdh-pubkey <path>  Recipient's ECDH public key (for hybrid).\n\n"
@@ -155,10 +156,11 @@ int main(int argc, char* argv[]) {
     options["output-file"] = "";
     options["signature"] = "";
     flags["parallel"] = false;
+    flags["pipeline"] = false;
 
-    // コマンドライン引数の定義
     enum { OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT, OPT_SIGN, OPT_VERIFY, OPT_RECIPIENT_PUBKEY, OPT_USER_PRIVKEY, OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY, OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY, OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE, OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_COMPRESS, OPT_PARALLEL };
-    struct option long_options[] = {
+    
+    static struct option long_options[] = {
         {"mode", required_argument, nullptr, 'm'},
         {"passphrase", required_argument, nullptr, 'p'},
         {"output-file", required_argument, nullptr, 'o'},
@@ -170,6 +172,7 @@ int main(int argc, char* argv[]) {
         {"sign", no_argument, nullptr, OPT_SIGN},
         {"verify", no_argument, nullptr, OPT_VERIFY},
         {"parallel", no_argument, nullptr, OPT_PARALLEL},
+        {"pipeline", no_argument, nullptr, 'P'}, 
         {"compress", required_argument, nullptr, OPT_COMPRESS},
         {"recipient-pubkey", required_argument, nullptr, OPT_RECIPIENT_PUBKEY},
         {"user-privkey", required_argument, nullptr, OPT_USER_PRIVKEY},
@@ -189,7 +192,7 @@ int main(int argc, char* argv[]) {
 
     // コマンドライン引数のパース
     int opt;
-    while ((opt = getopt_long(argc, argv, "m:p:o:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "m:p:o:hP", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'p': passphrase_from_args = optarg; passphrase_was_provided = true; break;
             case 'm': options["mode"] = optarg; break;
@@ -202,6 +205,7 @@ int main(int argc, char* argv[]) {
             case OPT_SIGN: flags["sign"] = true; break;
             case OPT_VERIFY: flags["verify"] = true; break;
             case OPT_PARALLEL: flags["parallel"] = true; break;
+            case 'P': flags["pipeline"] = true; break; 
             case OPT_COMPRESS: options["compress"] = optarg; break;
             case OPT_RECIPIENT_PUBKEY: options["recipient-pubkey"] = optarg; break;
             case OPT_USER_PRIVKEY: options["user-privkey"] = optarg; break;
@@ -220,108 +224,102 @@ int main(int argc, char* argv[]) {
 
     for (int i = optind; i < argc; ++i) { non_option_args.push_back(argv[i]); }
     
-    // 非同期処理用のI/Oコンテキストとワーカースレッドプールを用意
-    asio::io_context main_io_context;
-    asio::io_context worker_context;
-    std::vector<std::thread> threads;
-    auto work_guard = asio::make_work_guard(worker_context.get_executor());
-    const auto num_threads = std::max(1u, std::thread::hardware_concurrency());
-    for (unsigned i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&]() { worker_context.run(); });
+    // 引数検証
+    bool needs_input_file = flags["encrypt"] || flags["decrypt"] || flags["sign"] || flags["verify"];
+    bool is_key_gen = flags["gen-enc-key"] || flags["gen-sign-key"];
+
+    if (flags["parallel"] && flags["pipeline"]) {
+        std::cerr << "Error: --parallel and --pipeline cannot be used at the same time." << std::endl;
+        return 1;
+    }
+    if ((flags["parallel"] || flags["pipeline"]) && options["compress"] != "none") {
+        std::cerr << "Error: Compression is not supported in parallel or pipeline mode." << std::endl;
+        return 1;
+    }
+    if (options["compress"] != "none" && options["compress"] != "lz4") {
+        std::cerr << "Error: Invalid argument for --compress. Use 'lz4' or omit the flag entirely." << std::endl;
+        return 1;
+    }
+    if (needs_input_file) {
+        if (non_option_args.empty()) {
+            std::cerr << "Error: Input file must be specified for this operation." << std::endl; return 1;
+        }
+        if (non_option_args.size() > 1) {
+            std::cerr << "Error: Too many input files specified. Please provide only one." << std::endl; return 1;
+        }
+    } else if (!is_key_gen && argc <= 1) {
+        display_usage();
+        return 0;
+    }
+    if ((flags["encrypt"] || flags["decrypt"]) && options["output-file"].empty()) {
+        std::cerr << "Error: --output-file must be specified for encryption/decryption." << std::endl; return 1;
+    }
+    if (flags["sign"] && options["signature"].empty()) {
+        std::cerr << "Error: --signature file path must be specified for signing." << std::endl; return 1;
+    }
+    if (flags["verify"] && options["signature"].empty()) {
+        std::cerr << "Error: --signature file path must be specified for verification." << std::endl; return 1;
+    }
+    if (options["mode"] == "hybrid") {
+        if (flags["encrypt"] && (options["recipient-mlkem-pubkey"].empty() || options["recipient-ecdh-pubkey"].empty())) {
+            std::cerr << "Error: For hybrid encryption, both --recipient-mlkem-pubkey and --recipient-ecdh-pubkey are required." << std::endl; return 1;
+        }
+        if (flags["decrypt"] && (options["recipient-mlkem-privkey"].empty() || options["recipient-ecdh-privkey"].empty())) {
+            std::cerr << "Error: For hybrid decryption, both --recipient-mlkem-privkey and --recipient-ecdh-privkey are required." << std::endl; return 1;
+        }
+         if (flags["pipeline"]) {
+            std::cerr << "Error: --pipeline option is not supported for 'hybrid' mode yet." << std::endl;
+            return 1;
+        }
     }
 
-    // --- 引数検証とメインロジック ---
-    // gotoを使用することで、エラー発生時に確実にクリーンアップ処理（スレッドのjoinなど）を実行する
-    if (true) { 
-        bool needs_input_file = flags["encrypt"] || flags["decrypt"] || flags["sign"] || flags["verify"];
-        bool is_key_gen = flags["gen-enc-key"] || flags["gen-sign-key"];
-
-        if (options["compress"] != "none" && options["compress"] != "lz4") {
-            std::cerr << "Error: Invalid argument for --compress. Use 'lz4' or omit the flag entirely." << std::endl;
-            return_code = 1; goto cleanup;
-        }
-
-        if (needs_input_file) {
-            if (non_option_args.empty()) {
-                std::cerr << "Error: Input file must be specified for this operation." << std::endl; return_code = 1; goto cleanup;
-            }
-            if (non_option_args.size() > 1) {
-                std::cerr << "Error: Too many input files specified. Please provide only one." << std::endl; return_code = 1; goto cleanup;
-            }
-        } else if (!is_key_gen && argc > 1) {
-            std::cerr << "Error: No valid operation specified (e.g., --encrypt, --gen-enc-key)." << std::endl;
-            display_usage();
-            return_code = 1; goto cleanup;
-        }
-
-        if ((flags["encrypt"] || flags["decrypt"]) && options["output-file"].empty()) {
-            std::cerr << "Error: --output-file must be specified for encryption/decryption." << std::endl; return_code = 1; goto cleanup;
-        }
-        if (flags["sign"] && options["signature"].empty()) {
-            std::cerr << "Error: --signature file path must be specified for signing." << std::endl; return_code = 1; goto cleanup;
-        }
-        if (flags["verify"] && options["signature"].empty()) {
-            std::cerr << "Error: --signature file path must be specified for verification." << std::endl; return_code = 1; goto cleanup;
-        }
-        if (options["mode"] == "hybrid") {
-            if (flags["encrypt"] && (options["recipient-mlkem-pubkey"].empty() || options["recipient-ecdh-pubkey"].empty())) {
-                std::cerr << "Error: For hybrid encryption, both --recipient-mlkem-pubkey and --recipient-ecdh-pubkey are required." << std::endl; return_code = 1; goto cleanup;
-            }
-            if (flags["decrypt"] && (options["recipient-mlkem-privkey"].empty() || options["recipient-ecdh-privkey"].empty())) {
-                std::cerr << "Error: For hybrid decryption, both --recipient-mlkem-privkey and --recipient-ecdh-privkey are required." << std::endl; return_code = 1; goto cleanup;
-            }
-        }
-    
-        // パス関連のオプションを絶対パスに変換
-        std::vector<std::string> path_option_keys = {
-            "output-file", "recipient-pubkey", "user-privkey", "recipient-mlkem-pubkey",
-            "recipient-ecdh-pubkey", "recipient-mlkem-privkey", "recipient-ecdh-privkey",
-            "signing-privkey", "signing-pubkey", "signature"
-        };
-        for(const auto& key : path_option_keys) {
-            if (options.count(key) && !options.at(key).empty()) {
-                try {
-                    options[key] = std::filesystem::absolute(options.at(key)).string();
-                } catch (const std::filesystem::filesystem_error& e) {
-                    std::cerr << "Error resolving path for --" << key << " '" << options.at(key) << "': " << e.what() << std::endl;
-                    return_code = 1; goto cleanup;
-                }
-            }
-        }
-    
-        // 入力ファイルを絶対パスに変換
-        std::filesystem::path input_filepath;
-        if (!non_option_args.empty()) {
+    // パス関連のオプションを絶対パスに変換
+    std::vector<std::string> path_option_keys = {
+        "output-file", "recipient-pubkey", "user-privkey", "recipient-mlkem-pubkey",
+        "recipient-ecdh-pubkey", "recipient-mlkem-privkey", "recipient-ecdh-privkey",
+        "signing-privkey", "signing-pubkey", "signature"
+    };
+    for(const auto& key : path_option_keys) {
+        if (options.count(key) && !options.at(key).empty()) {
             try {
-                input_filepath = std::filesystem::absolute(non_option_args[0]);
+                options[key] = std::filesystem::absolute(options.at(key)).string();
             } catch (const std::filesystem::filesystem_error& e) {
-                std::cerr << "Error resolving input file path '" << non_option_args[0] << "': " << e.what() << std::endl;
-                return_code = 1; goto cleanup;
+                std::cerr << "Error resolving path for --" << key << " '" << options.at(key) << "': " << e.what() << std::endl;
+                return 1;
             }
         }
-
-        // モードに応じて暗号化ハンドラを生成
-        std::unique_ptr<nkCryptoToolBase> crypto_handler;
-        if (options["mode"] == "ecc") { crypto_handler = std::make_unique<nkCryptoToolECC>(); } 
-        else if (options["mode"] == "pqc" || options["mode"] == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); if (options["mode"] == "pqc") options["digest-algo"] = "SHA3-256"; } 
-        else { std::cerr << "Error: Invalid mode '" << options["mode"] << "'." << std::endl; return_code = 1; goto cleanup; }
-
-        if (options.count("key-dir")) {
-            try {
-                crypto_handler->setKeyBaseDirectory(std::filesystem::absolute(options["key-dir"]));
-            } catch (const std::filesystem::filesystem_error& e) {
-                std::cerr << "Error resolving path for --key-dir '" << options["key-dir"] << "': " << e.what() << std::endl;
-                return_code = 1; goto cleanup;
-            }
-        }
+    }
     
-        bool op_started = false;
+    // 入力ファイルを絶対パスに変換
+    std::filesystem::path input_filepath;
+    if (!non_option_args.empty()) {
+        try {
+            input_filepath = std::filesystem::absolute(non_option_args[0]);
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "Error resolving input file path '" << non_option_args[0] << "': " << e.what() << std::endl;
+            return 1;
+        }
+    }
 
-        // --- 鍵生成処理 ---
+    // モードに応じて暗号化ハンドラを生成
+    std::unique_ptr<nkCryptoToolBase> crypto_handler;
+    if (options["mode"] == "ecc") { crypto_handler = std::make_unique<nkCryptoToolECC>(); } 
+    else if (options["mode"] == "pqc" || options["mode"] == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); if (options["mode"] == "pqc") options["digest-algo"] = "SHA3-256"; } 
+    else { std::cerr << "Error: Invalid mode '" << options["mode"] << "'." << std::endl; return 1; }
+
+    if (options.count("key-dir")) {
+        try {
+            crypto_handler->setKeyBaseDirectory(std::filesystem::absolute(options["key-dir"]));
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "Error resolving path for --key-dir '" << options["key-dir"] << "': " << e.what() << std::endl;
+            return 1;
+        }
+    }
+
+    // --- 処理の実行 ---
+    try {
         if (flags["gen-enc-key"] || flags["gen-sign-key"]) {
-            op_started = true;
             bool success = false;
-            
             if (flags["gen-enc-key"] && options["mode"] == "hybrid") {
                 std::string mlkem_passphrase, ecdh_passphrase;
                 if (passphrase_was_provided) {
@@ -340,108 +338,81 @@ int main(int argc, char* argv[]) {
                     success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory()/"public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory()/"private_enc_hybrid_ecdh.key", ecdh_passphrase);
                 }
             } else {
-                std::string passphrase_to_use;
-                if (!passphrase_was_provided) {
-                    const char* key_type = flags["gen-enc-key"] ? "encryption" : "signing";
-                    std::string prompt = "Enter passphrase to encrypt " + std::string(key_type) + " private key (press Enter to save unencrypted): ";
-                    passphrase_to_use = get_and_verify_passphrase(prompt);
-                } else {
-                    passphrase_to_use = passphrase_from_args;
-                }
+                std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase to encrypt " + std::string(flags["gen-enc-key"] ? "encryption" : "signing") + " private key (press Enter to save unencrypted): ");
                 if (flags["gen-enc-key"]) {
                     success = crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use);
                 } else {
                     success = crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use);
                 }
             }
-
             if (success) { std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl; } 
             else { std::cerr << "Error: Key pair generation failed." << std::endl; return_code = 1; }
         }
-        // --- 暗号化処理 ---
-        else if (flags["encrypt"]) {
-            op_started = true;
-            auto algo = nkCryptoToolBase::CompressionAlgorithm::NONE;
-            if (options["compress"] == "lz4") algo = nkCryptoToolBase::CompressionAlgorithm::LZ4;
-            
-            if (flags["parallel"] && (options["mode"] == "ecc" || options["mode"] == "pqc")) {
-                if (algo != nkCryptoToolBase::CompressionAlgorithm::NONE) {
-                    std::cerr << "Error: Compression is not supported in parallel mode." << std::endl;
-                    return_code = 1; goto cleanup;
-                }
-                std::cout << "Starting parallel " << options["mode"] << " encryption..." << std::endl;
-                
-                asio::co_spawn(main_io_context, 
-                    crypto_handler->encryptFileParallel(
-                        worker_context, 
-                        input_filepath.string(), 
-                        options["output-file"], 
-                        options["recipient-pubkey"], 
-                        algo
-                    ), 
-                    [&](std::exception_ptr p) {
-                        if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel encryption failed: " << e.what() << std::endl; return_code = 1; } }
-                    }
-                );
-            } 
-            else {
-                if (flags["parallel"]) { std::cerr << "Warning: Parallel processing is only supported for 'ecc' and 'pqc' modes." << std::endl; }
-                if (options["mode"] == "hybrid") { crypto_handler->encryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); } 
-                else { crypto_handler->encryptFile(main_io_context, input_filepath, options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); }
+        else if (flags["parallel"] && (flags["encrypt"] || flags["decrypt"])) {
+            // 並列処理 (--parallel) のロジック
+            asio::io_context main_io_context;
+            asio::io_context worker_context;
+            auto work_guard = asio::make_work_guard(worker_context.get_executor());
+            std::vector<std::thread> threads;
+            const auto num_threads = std::max(1u, std::thread::hardware_concurrency());
+            for (unsigned i = 0; i < num_threads; ++i) {
+                threads.emplace_back([&]() { worker_context.run(); });
             }
-        } 
-        // --- 復号処理 ---
-        else if (flags["decrypt"]) {
-            op_started = true;
-            if (flags["parallel"] && (options["mode"] == "ecc" || options["mode"] == "pqc")) {
-                std::cout << "Starting parallel " << options["mode"] << " decryption..." << std::endl;
-                asio::co_spawn(main_io_context, 
-                    crypto_handler->decryptFileParallel(
-                        worker_context, 
-                        input_filepath.string(), 
-                        options["output-file"], 
-                        options["user-privkey"]
-                    ), 
-                    [&](std::exception_ptr p) {
-                        if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel decryption failed: " << e.what() << std::endl; return_code = 1; } }
-                    }
-                );
-            }
-            else {
-                if (flags["parallel"]) { std::cerr << "Warning: Parallel processing is only supported for 'ecc' and 'pqc' modes." << std::endl; }
-                if (options["mode"] == "hybrid") { crypto_handler->decryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); } 
-                else { crypto_handler->decryptFile(main_io_context, input_filepath, options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; }); }
-            }
-        } 
-        // --- 署名処理 ---
-        else if (flags["sign"]) {
-            op_started = true;
-            crypto_handler->signFile(main_io_context, input_filepath, options["signature"], options["signing-privkey"], options["digest-algo"], [&](std::error_code ec){ if(ec) return_code = 1; });
-        } 
-        // --- 検証処理 ---
-        else if (flags["verify"]) {
-            op_started = true;
-            crypto_handler->verifySignature(main_io_context, input_filepath, options["signature"], options["signing-pubkey"],
-                [&](std::error_code ec, bool result){ if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; } else if (result) { std::cout << "\nSignature verified successfully." << std::endl; } else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;} });
-        } 
-        // --- 有効な操作が指定されなかった場合 ---
-        else {
-            if (argc <= 1) { display_usage(); }
-        }
-        
-        if (op_started) {
-            try { main_io_context.run(); } catch (const std::exception& e) { std::cerr << "An unexpected error occurred: " << e.what() << std::endl; return_code = 1; }
-        }
-    }
 
-cleanup:
-    // クリーンアップ
-    work_guard.reset(); // allow worker_context.run() to exit
-    worker_context.stop();
-    for(auto& t : threads) {
-        if (t.joinable()) {
-            t.join();
+            if(flags["encrypt"]) {
+                if (options["mode"] == "hybrid") { throw std::runtime_error("--parallel is not supported for 'hybrid' mode."); }
+                std::cout << "Starting parallel " << options["mode"] << " encryption..." << std::endl;
+                // ★★★ 修正点: `CompressionAlgorithm` に `nkCryptoToolBase::` を追加
+                asio::co_spawn(main_io_context, crypto_handler->encryptFileParallel(worker_context, input_filepath.string(), options["output-file"], options["recipient-pubkey"], nkCryptoToolBase::CompressionAlgorithm::NONE), 
+                    [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel encryption failed: " << e.what() << std::endl; return_code = 1; } } });
+            } else { // decrypt
+                if (options["mode"] == "hybrid") { throw std::runtime_error("--parallel is not supported for 'hybrid' mode."); }
+                std::cout << "Starting parallel " << options["mode"] << " decryption..." << std::endl;
+                asio::co_spawn(main_io_context, crypto_handler->decryptFileParallel(worker_context, input_filepath.string(), options["output-file"], options["user-privkey"]), 
+                    [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel decryption failed: " << e.what() << std::endl; return_code = 1; } } });
+            }
+            main_io_context.run();
+            work_guard.reset(); 
+            worker_context.stop();
+            for(auto& t : threads) { if (t.joinable()) { t.join(); } }
         }
+        else if (needs_input_file) {
+            // 通常処理とパイプライン処理のロジック
+            asio::io_context main_io_context;
+            if (flags["encrypt"]) {
+                if (flags["pipeline"]) {
+                    if (options["mode"] == "hybrid" || options["mode"] == "pqc") { throw std::runtime_error("--pipeline is only supported for 'ecc' mode currently."); }
+                    std::cout << "Starting pipeline " << options["mode"] << " encryption..." << std::endl;
+                    std::map<std::string, std::string> key_paths;
+                    key_paths["recipient-pubkey"] = options["recipient-pubkey"];
+                    crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), options["output-file"], key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                } else {
+                    auto algo = options["compress"] == "lz4" ? nkCryptoToolBase::CompressionAlgorithm::LZ4 : nkCryptoToolBase::CompressionAlgorithm::NONE;
+                    if (options["mode"] == "hybrid") { crypto_handler->encryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); } 
+                    else { crypto_handler->encryptFile(main_io_context, input_filepath, options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); }
+                }
+            } else if (flags["decrypt"]) {
+                if (flags["pipeline"]) {
+                    if (options["mode"] == "hybrid" || options["mode"] == "pqc") { throw std::runtime_error("--pipeline is only supported for 'ecc' mode currently."); }
+                    std::cout << "Starting pipeline " << options["mode"] << " decryption..." << std::endl;
+                    std::map<std::string, std::string> key_paths;
+                    key_paths["user-privkey"] = options["user-privkey"];
+                    crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), options["output-file"], key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                } else {
+                    if (options["mode"] == "hybrid") { crypto_handler->decryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); } 
+                    else { crypto_handler->decryptFile(main_io_context, input_filepath, options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; }); }
+                }
+            } else if (flags["sign"]) {
+                crypto_handler->signFile(main_io_context, input_filepath, options["signature"], options["signing-privkey"], options["digest-algo"], [&](std::error_code ec){ if(ec) return_code = 1; });
+            } else if (flags["verify"]) {
+                crypto_handler->verifySignature(main_io_context, input_filepath, options["signature"], options["signing-pubkey"],
+                    [&](std::error_code ec, bool result){ if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; } else if (result) { std::cout << "\nSignature verified successfully." << std::endl; } else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;} });
+            }
+            main_io_context.run();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "An unexpected error occurred: " << e.what() << std::endl;
+        return_code = 1;
     }
 
     OSSL_PROVIDER_unload(nullptr);

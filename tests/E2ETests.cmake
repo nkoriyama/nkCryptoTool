@@ -10,8 +10,9 @@
 #   MODE:         The crypto mode (ecc, pqc, hybrid)
 #   USE_COMPRESS: BOOL true to enable lz4 compression, false otherwise
 #   USE_PARALLEL: BOOL true to enable parallel processing, false otherwise
+#   USE_PIPELINE: BOOL true to enable pipeline processing, false otherwise
 #
-function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL)
+function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL USE_PIPELINE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
@@ -22,6 +23,9 @@ function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL)
     elseif(USE_PARALLEL)
         set(SCENARIO_VARIANT " (in parallel)")
         set(SCENARIO_SUFFIX "_parallel")
+    elseif(USE_PIPELINE)
+        set(SCENARIO_VARIANT " (in pipeline)")
+        set(SCENARIO_SUFFIX "_pipeline")
     else()
         set(SCENARIO_VARIANT "")
         set(SCENARIO_SUFFIX "")
@@ -42,9 +46,9 @@ function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL)
     message(STATUS "  -> Generating ${MODE} keys...")
     # For hybrid mode, we generate both key types. Other modes generate their specific key.
     if("${MODE}" STREQUAL "hybrid")
-         execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+        execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
     else()
-         execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+        execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
     endif()
 
     if(NOT res EQUAL 0)
@@ -62,6 +66,11 @@ function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL)
     if(USE_PARALLEL)
         list(APPEND ENCRYPT_ARGS --parallel)
         list(APPEND DECRYPT_ARGS --parallel)
+    endif()
+    
+    if(USE_PIPELINE)
+        list(APPEND ENCRYPT_ARGS --pipeline)
+        list(APPEND DECRYPT_ARGS --pipeline)
     endif()
 
     if("${MODE}" STREQUAL "hybrid")
@@ -146,18 +155,21 @@ endfunction()
 # ===================================================================
 
 # --- Run Standard Encryption Scenarios (without compression) ---
-run_encryption_scenario(hybrid OFF OFF)
-run_encryption_scenario(pqc    OFF OFF)
-run_encryption_scenario(ecc    OFF OFF)
+run_encryption_scenario(hybrid OFF OFF OFF)
+run_encryption_scenario(pqc    OFF OFF OFF)
+run_encryption_scenario(ecc    OFF OFF OFF)
 
 # --- Run Encryption Scenarios (WITH compression) ---
-run_encryption_scenario(hybrid ON  OFF)
-run_encryption_scenario(pqc    ON  OFF)
-run_encryption_scenario(ecc    ON  OFF)
+run_encryption_scenario(hybrid ON  OFF OFF)
+run_encryption_scenario(pqc    ON  OFF OFF)
+run_encryption_scenario(ecc    ON  OFF OFF)
 
 # --- Run Parallel Encryption Scenarios (compression is not supported) ---
-run_encryption_scenario(pqc    OFF ON)
-run_encryption_scenario(ecc    OFF ON)
+run_encryption_scenario(pqc    OFF ON  OFF)
+run_encryption_scenario(ecc    OFF ON  OFF)
+
+# --- ★ Run Pipeline Encryption Scenarios (compression/parallel are not supported) ---
+run_encryption_scenario(ecc    OFF OFF ON)
 
 # --- Run Signing Scenarios ---
 run_signing_scenario(pqc)
