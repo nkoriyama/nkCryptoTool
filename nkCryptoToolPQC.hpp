@@ -30,7 +30,6 @@ public:
     std::filesystem::path getEncryptionPublicKeyPath() const override;
     std::filesystem::path getSigningPublicKeyPath() const override;
 
-    // --- 並列処理インターフェース：引数を string に変更 ---
     asio::awaitable<void> encryptFileParallel(
         asio::io_context& worker_context,
         std::string input_filepath,
@@ -45,8 +44,24 @@ public:
         std::string output_filepath,
         std::string user_private_key_path
     ) override;
+    
+    // ★★★ 追加: Hybridモード用の並列処理インターフェース ★★★
+    asio::awaitable<void> encryptFileParallelHybrid(
+        asio::io_context& worker_context,
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string recipient_mlkem_public_key_path,
+        std::string recipient_ecdh_public_key_path
+    );
 
-    // --- ★ 新しいパイプライン処理インターフェースの実装宣言 ---
+    asio::awaitable<void> decryptFileParallelHybrid(
+        asio::io_context& worker_context,
+        std::string input_filepath,
+        std::string output_filepath,
+        std::string recipient_mlkem_private_key_path,
+        std::string recipient_ecdh_private_key_path
+    );
+
     void encryptFileWithPipeline(
         asio::io_context& io_context,
         const std::string& input_filepath,
