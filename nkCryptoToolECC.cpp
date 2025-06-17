@@ -889,7 +889,18 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         asio::read(input_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec || iv_len != GCM_IV_LEN) {input_file.close(); throw std::runtime_error("Invalid IV length");}
         std::vector<unsigned char> iv(iv_len); asio::read(input_file, asio::buffer(iv), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read IV");}
         
-        uintmax_t header_size = input_file.seek(0, asio::file_base::seek_cur, ec); if(ec) {input_file.close(); throw std::system_error(ec);}
+        uintmax_t header_size = 0;
+#ifdef _WIN32
+        header_size = input_file.seek(0, asio::file_base::seek_cur, ec);
+#else
+        off_t pos = ::lseek(input_file.native_handle(), 0, SEEK_CUR);
+        if (pos == (off_t)-1) {
+            ec.assign(errno, std::system_category());
+        } else {
+            header_size = pos;
+        }
+#endif
+        if(ec) {input_file.close(); throw std::system_error(ec);}
         input_file.close(ec); // Close the handle used for reading the header
 
         auto user_private_key = loadPrivateKey(key_paths.at("user-privkey"), "ECC private key");
@@ -932,9 +943,30 @@ void nkCryptoToolECC::decryptFileWithPipeline(
 #endif
             if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
 
+#ifdef _WIN32
             uintmax_t file_size = in_final.size(final_ec);
-            in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            if (!final_ec) {
+                in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            }
+#else
+            struct stat stat_buf;
+            uintmax_t file_size = 0;
+            if (::fstat(in_final.native_handle(), &stat_buf) != -1) {
+                file_size = stat_buf.st_size;
+            } else {
+                final_ec.assign(errno, std::system_category());
+            }
+
+            if (!final_ec) {
+                if (::lseek(in_final.native_handle(), file_size - GCM_TAG_LEN, SEEK_SET) == -1) {
+                    final_ec.assign(errno, std::system_category());
+                }
+            }
+#endif
+            if(final_ec) { in_final.close(); throw std::system_error(final_ec, "Failed to get size or seek input for finalization"); }
+
             co_await asio::async_read(in_final, asio::buffer(*tag), asio::use_awaitable);
+            in_final.close();
 
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag->data()) <= 0) {
                  throw std::runtime_error("Failed to set GCM tag.");

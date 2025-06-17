@@ -1,3 +1,5 @@
+// PipelineManager.hpp
+
 #ifndef PIPELINEMANAGER_HPP
 #define PIPELINEMANAGER_HPP
 
@@ -27,6 +29,7 @@ using async_file_t = asio::stream_file;
 #include <asio/posix/stream_descriptor.hpp>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h> // For fstat()
 using async_file_t = asio::posix::stream_descriptor;
 #endif
 
@@ -104,7 +107,13 @@ public:
         }
         log_message("Input file opened.");
 
+#ifdef _WIN32
         input_file_.seek(read_offset, asio::file_base::seek_set, ec);
+#else
+        if (::lseek(input_file_.native_handle(), read_offset, SEEK_SET) == -1) {
+            ec.assign(errno, std::system_category());
+        }
+#endif
         if(ec) {
              log_message("Failed to seek input file: " + ec.message());
              call_completion_handler(ec); return;
@@ -138,7 +147,7 @@ private:
     }
 
     void read_next_chunk() {
-        if (total_read_ >= total_to_read_) {
+        if (total_to_read_ > 0 && total_read_ >= total_to_read_) {
             log_message("Finished reading all data. Total read: " + std::to_string(total_read_));
             std::unique_lock<std::mutex> lock(shared_state_mutex_);
             reading_complete_ = true;
@@ -147,13 +156,18 @@ private:
         }
 
         size_t to_read_now = std::min(static_cast<size_t>(CHUNK_SIZE), static_cast<size_t>(total_to_read_ - total_read_));
-        if (to_read_now == 0) { // Handle zero-size files
-             log_message("Finished reading zero-size data.");
+        if (total_to_read_ > 0 && to_read_now == 0) { // Check if we have a defined size and we're done
+             log_message("Finished reading specified size.");
             std::unique_lock<std::mutex> lock(shared_state_mutex_);
             reading_complete_ = true;
             cv_task_.notify_all();
             return;
         }
+        // If read_size was 0 initially, we read until EOF, so just use CHUNK_SIZE
+        if (total_to_read_ == 0) {
+            to_read_now = CHUNK_SIZE;
+        }
+
 
         auto chunk = std::make_shared<std::vector<char>>(to_read_now);
         
@@ -176,10 +190,10 @@ private:
                     self->cv_task_.notify_one();
                 }
 
-                if (!ec && (self->total_to_read_ == 0 || self->total_read_ < self->total_to_read_)) {
+                if (!ec) {
                     self->read_next_chunk();
-                } else {
-                    log_message("Final read. Error code: " + (ec ? ec.message() : "none") + ", Total read: " + std::to_string(self->total_read_));
+                } else { // EOF
+                    log_message("Final read (EOF). Total read: " + std::to_string(self->total_read_));
                     std::unique_lock<std::mutex> lock(self->shared_state_mutex_);
                     self->reading_complete_ = true;
                     self->cv_task_.notify_all();
@@ -223,7 +237,6 @@ private:
         log_message("Worker thread " + std::to_string(thread_id) + " finished.");
     }
     
-    // ★★★ 修正点: co_spawnの完了ハンドラでselfをキャプチャ
     void start_writer() {
         asio::co_spawn(io_context_, writer_coroutine(), [self = shared_from_this()](std::exception_ptr p) {
             if (p) {
