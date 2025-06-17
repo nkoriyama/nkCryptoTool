@@ -1,98 +1,135 @@
-# nkCryptoTool を始めよう
+# **nkCryptoTool を始めよう**
 
-1. はじめに：nkCryptoToolって何？nkCryptoTool は、あなたのデジタルな情報を「秘密に守る」ことや、「本物であることを証明する」ことができるツールです。秘密に守る（暗号化・復号）: 大切なメッセージやファイルを、特定の人しか読めないように変換し（暗号化）、後で元の情報に戻す（復号）ことができます。本物であることを証明する（デジタル署名・検証）: ファイルが途中で誰かに改ざんされていないか確認したり、そのファイルが「あなたが作ったものだ」という証明を付けたりできます。このツールは、最新の暗号技術である「ECC（楕円曲線暗号）」や、将来の量子コンピューターにも強いとされる「PQC（耐量子計算機暗号）」に対応しています。
-2. まずは動かしてみよう！ここでは、最も簡単な方法で nkCryptoTool を動かしてみましょう。
+### **1\. はじめに：nkCryptoToolって何？**
 
-ステップ1:
-環境を準備しよう (Docker推奨)一番簡単な方法は、Docker を使うことです。Docker がインストールされていれば、複雑な設定なしにすぐに始められます。Docker Desktop をインストール:お使いのOS（Windows, macOS, Linux）に合わせて、Docker Desktop の公式サイト からダウンロードしてインストールしてください。Docker コンテナを起動（例：Ubuntu環境）:ターミナル（コマンドプロンプトやPowerShell）を開き、以下のコマンドを実行します。
-docker run -it ubuntu:latest /bin/bash
-これにより、Ubuntu環境が起動し、その中でコマンドを実行できるようになります。
+nkCryptoTool は、あなたのデジタルな情報を「秘密に守る」ことや、「本物であることを証明する」ことができるツールです。
 
-ステップ2:
-ツールをダウンロード＆ビルドしようDockerコンテナ内（またはご自身の開発環境）で、以下のコマンドを実行します。
+* **秘密に守る（暗号化・復号）**: 大切なメッセージやファイルを、特定の人しか読めないように変換し（暗号化）、後で元の情報に戻す（復号）ことができます。  
+* **本物であることを証明する（デジタル署名・検証）**: ファイルが途中で誰かに改ざんされていないか確認したり、そのファイルが「あなたが作ったものだ」という証明を付けたりできます。
 
-## 必要なツールのインストール (Ubuntuの場合)
+このツールは、最新の暗号技術である「ECC（楕円曲線暗号）」や、将来の量子コンピューターにも強いとされる「PQC（耐量子計算機暗号）」に対応しています。
 
-```bash
-apt update && apt install -y git cmake build-essential libssl-dev
-```
+### **2\. まずは動かしてみよう！**
 
-## nkCryptoToolをダウンロード
+ここでは、最も簡単な方法で nkCryptoTool を動かしてみましょう。
 
-git clone https://github.com/nkoriyama/nkCryptToool
-cd nkCryptoTool
+#### **ステップ1: 環境を準備しよう (Docker推奨)**
 
-```bash
-git clone https://github.com/nkoriyama/nkCryptToool
-cd nkCryptoTool
-```
+一番簡単な方法は、Docker を使うことです。Docker がインストールされていれば、複雑な設定なしにすぐに始められます。
 
-## ビルドディレクトリを作成し、ビルド
+* Docker Desktop をインストール:  
+  お使いのOS（Windows, macOS, Linux）に合わせて、Docker Desktop の公式サイト からダウンロードしてインストールしてください。  
+* Docker コンテナを起動（例：Ubuntu環境）:  
+  ターミナル（コマンドプロンプトやPowerShell）を開き、以下のコマンドを実行します。  
+  docker run \-it ubuntu:latest /bin/bash
 
-```bash
-mkdir build
-cd build
-cmake .. -DOPENSSL_ROOT_DIR="Openssl installed dir"
-make
-```
+  これにより、Ubuntu環境が起動し、その中でコマンドを実行できるようになります。
+
+#### **ステップ2: ツールをダウンロード＆ビルドしよう**
+
+Dockerコンテナ内（またはご自身の開発環境）で、以下のコマンドを実行します。
+
+##### **必要なツールのインストール (Ubuntuの場合)**
+
+apt update && apt install \-y git cmake build-essential ninja-build libssl-dev
+
+##### **nkCryptoToolをダウンロード**
+
+git clone https://github.com/nkoriyama/nkCryptToool  
+cd nkCryptToool
+
+##### **ビルドディレクトリを作成し、ビルド**
+
+mkdir build  
+cd build  
+cmake \-G "Ninja" ..  
+cmake \--build .
 
 ビルドが成功すると、./bin ディレクトリの中に nkCryptoTool という実行ファイルが作成されます。
 
-ステップ3:
-最初の暗号化・復号を体験しよう！（ECCモードで）
+#### **ステップ3: 最初の暗号化・復号を体験しよう！（ECCモードで）**
+
 ここでは、最も一般的な「ECC（楕円曲線暗号）」を使って、ファイルの暗号化と復号を試します。
-鍵ペアを生成:暗号化と復号に必要な「秘密鍵」と「公開鍵」のペアを作成します。
 
-```bash
-nkCryptoTool --mode ecc --gen-enc-key
-```
+##### **鍵ペアを生成:**
 
-実行するとパスフレーズの入力を求められます。今回は練習なので、何も入力せずに Enter キーを2回押してください。成功すると、keys ディレクトリに public_enc_ecc.key と private_enc_ecc.key が作成されます。暗号化したいメッセージをファイルに保存:適当なテキストエディタで original.txt というファイルを作成し、中に何か秘密のメッセージを書き込んで保存してください。（例: echo "こんにちは、世界！これは秘密のメッセージです。" > original.txt）
-メッセージを暗号化する:original.txt を暗号化し、encrypted.bin というファイルに出力します。--recipient-public-key には、相手の（今回は自分自身の）公開鍵を指定します。
+暗号化と復号に必要な「秘密鍵」と「公開鍵」のペアを作成します。
 
-```bash
-nkCryptoTool --mode ecc --encrypt --recipient-pubkey  keys/public_enc_ecc.key -o encrypted.bin  original.txt
+./bin/nkCryptoTool \--mode ecc \--gen-enc-key
 
-```
+実行するとパスフレーズの入力を求められます。今回は練習なので、何も入力せずに Enter キーを2回押してください。成功すると、keys ディレクトリに public\_enc\_ecc.key と private\_enc\_ecc.key が作成されます。
 
-成功すると、「File encrypted successfully to encrypted.bin」のようなメッセージが表示されます。
-メッセージを復号する:暗号化された encrypted.bin を復号し、decrypted.txt というファイルに出力します。--user-private-key には自分の秘密鍵を、--sender-public-key には暗号化した人の公開鍵（今回は自分自身の公開鍵）を指定します。
+##### **暗号化したいメッセージをファイルに保存:**
 
-```bash
-nkCryptoTool--mode ecc --decrypt --user-privkey ..\keys\private_enc_ecc.key  --sender-pubkey ..\keys\public_enc_ecc.key -odecrypted.txt encrypted_ecc.bin
+適当なテキストエディタで original.txt というファイルを作成し、中に何か秘密のメッセージを書き込んで保存してください。  
+（例: echo "こんにちは、世界！これは秘密のメッセージです。" \> original.txt）
 
-```
+##### **メッセージを暗号化する:**
 
-実行するとパスフレーズの入力を求められますが、鍵生成時にパスフレーズを設定していない場合は何も入力せずに Enter キーを押してください。成功すると、「File decrypted successfully to decrypted.txt」のようなメッセージが表示されます。decrypted.txt の中身を確認し、元のメッセージが読めることを確認してください。
+original.txt を暗号化し、encrypted.bin というファイルに出力します。--recipient-pubkey には、相手の（今回は自分自身の）公開鍵を指定します。
 
-ステップ4:
-最初の署名・検証を体験しよう！（ECCモードで）
+./bin/nkCryptoTool \--mode ecc \--encrypt \--recipient-pubkey keys/public\_enc\_ecc.key \-o encrypted.bin original.txt
 
-次に、ファイルが改ざんされていないことを確認する「デジタル署名」を試します。署名鍵ペアを生成:署名と検証に必要な鍵ペアを作成します。
+成功すると、「Encryption to '...encrypted.bin' completed.」のようなメッセージが表示されます。
 
-```bash
-nkCryptoTool --mode ecc --gen-sign-key
-```
+##### **メッセージを復号する:**
 
-パスフレーズは何も入力せずに Enter キーを2回押してください。keys ディレクトリに public_sign_ecc.key と private_sign_ecc.key が作成されます。
+暗号化された encrypted.bin を復号し、decrypted.txt というファイルに出力します。--user-privkey には自分の秘密鍵を指定します。
 
-### ファイルを署名する:
+./bin/nkCryptoTool \--mode ecc \--decrypt \--user-privkey keys/private\_enc\_ecc.key \-o decrypted.txt encrypted.bin
+
+実行するとパスフレーズの入力を求められますが、鍵生成時にパスフレーズを設定していない場合は何も入力せずに Enter キーを押してください。成功すると、「Decryption to '...decrypted.txt' completed.」のようなメッセージが表示されます。decrypted.txt の中身を確認し、元のメッセージが読めることを確認してください。
+
+### **【応用】パイプライン処理で高速化しよう！**
+
+nkCryptoToolの最も強力な機能の一つが、--pipelineオプションによる高速化です。CPUでの計算とディスクの読み書きを並行して行うことで、特に**ギガバイト単位の大きなファイルを扱う際に、処理時間を劇的に短縮できます。**
+
+先ほどの暗号化・復号コマンドに \--pipeline を追加してみましょう。
+
+##### **高速に暗号化する:**
+
+./bin/nkCryptoTool \--mode ecc \--encrypt \--pipeline \--recipient-pubkey keys/public\_enc\_ecc.key \-o encrypted\_pipeline.bin original.txt
+
+##### **高速に復号する:**
+
+./bin/nkCryptoTool \--mode ecc \--decrypt \--pipeline \--user-privkey keys/private\_enc\_ecc.key \-o decrypted\_pipeline.txt encrypted\_pipeline.bin
+
+小さなファイルでは速度の違いは体感しにくいですが、DVDやBlu-rayのISOファイルのような巨大なファイルを扱う際に、その真価を発揮します。
+
+#### **ステップ4: 最初の署名・検証を体験しよう！（ECCモードで）**
+
+次に、ファイルが改ざんされていないことを確認する「デジタル署名」を試します。
+
+##### **署名鍵ペアを生成:**
+
+署名と検証に必要な鍵ペアを作成します。
+
+./bin/nkCryptoTool \--mode ecc \--gen-sign-key
+
+パスフレーズは何も入力せずに Enter キーを2回押してください。keys ディレクトリに public\_sign\_ecc.key と private\_sign\_ecc.key が作成されます。
+
+##### **ファイルを署名する:**
 
 original.txt にデジタル署名を行います。署名データは original.sig に出力されます。
 
-```bash
-nkCryptoTool --mode ecc --sign original.txt --signature  original.sig --signing-privkey ..\keys\private_sign_ecc.key
-```
+./bin/nkCryptoTool \--mode ecc \--sign original.txt \--signature original.sig \--signing-privkey keys/private\_sign\_ecc.key
 
-パスフレーズは何も入力せずに Enter キーを押してください。成功すると、「File signed successfully. Signature saved to original.sig」のようなメッセージが表示されます。
+パスフレーズは何も入力せずに Enter キーを押してください。成功すると、「File signed successfully.」のようなメッセージが表示されます。
 
-### 署名を検証する:original.txt と original.sig、そして署名者の公開鍵を使って署名を検証します
+##### **署名を検証する:**
 
-```bash
-nkCryptoTool --mode ecc --verify original.txt --signature original.sig --signing-pubkey ..\keys\public_sign_ecc.key
-```
+original.txt と original.sig、そして署名者の公開鍵を使って署名を検証します。
+
+./bin/nkCryptoTool \--mode ecc \--verify original.txt \--signature original.sig \--signing-pubkey keys/public\_sign\_ecc.key
 
 成功すると、「Signature verified successfully.」のようなメッセージが表示されます。もし original.txt の中身を少しでも変更してから検証すると、検証が失敗することを確認できます。
 
-3.もう少し深く知りたい方へ
-おめでとうございます！これで nkCryptoTool の基本的な使い方を体験できました。PQC（耐量子計算機暗号） を試したい方もっと詳しいコマンドオプションや、各アルゴリズムの動作原理を知りたい方開発環境のセットアップについてより詳細な情報が必要な方は、README.md を参照してください。
+### **3\. もう少し深く知りたい方へ**
+
+おめでとうございます！これで nkCryptoTool の基本的な使い方を体験できました。
+
+* PQC（耐量子計算機暗号） を試したい方  
+* もっと詳しいコマンドオプションや、各アルゴリズムの動作原理を知りたい方  
+* 開発環境のセットアップについてより詳細な情報が必要な方
+
+これらについては、メインの [**README.md**](http://docs.google.com/README.md) を参照してください。

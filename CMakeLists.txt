@@ -1,6 +1,26 @@
+
 # CMakeの最小バージョンを指定します。FetchContentを安定して使用するため3.11以上を推奨します。
 cmake_minimum_required(VERSION 3.11)
 
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build." FORCE)
+    # set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
+endif()
+
+# 最適化フラグを追加
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nkCryptoTool PRIVATE
+        -O3                # 最大最適化
+        -march=native      # CPU固有の命令セット（AES-NI、AVX2など）
+        -mtune=native      # CPUアーキテクチャに最適化
+        -flto              # リンク時最適化（Link Time Optimization）
+        -funroll-loops     # ループ展開（AES-256-GCMに有効）
+    )
+    # デバッグ用にRelWithDebInfoで-gを有効
+    if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        target_compile_options(nkCryptoTool PRIVATE -g)
+    endif()
+endif()
 # プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
 

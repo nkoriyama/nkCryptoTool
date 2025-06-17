@@ -38,10 +38,12 @@ namespace {
     std::mutex g_log_mutex;
     void log_message(const std::string& msg) {
         std::lock_guard<std::mutex> lock(g_log_mutex);
+#if defined (DETAIL_LOG)
         std::stringstream ss;
         ss << "[TID:" << std::this_thread::get_id() << "] " << msg << "\n";
         std::cout << ss.str();
         std::cout.flush(); // Ensure logs are visible immediately
+#endif
     }
 }
 
