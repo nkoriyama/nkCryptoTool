@@ -438,6 +438,8 @@ This application redistributes several runtime DLLs required for execution on Wi
 | liblz4.dll             | BSD 2-Clause License        |
 | libcrypto-3-x64.dll    | Apache License 2.0 |
 
+* These libraries are licensed under the LGPL v3 with the GCC Runtime Library Exception, which allows them to be linked with proprietary applications. See the included license texts for full details.
+
 ### Compliance Notes
 
 - All LGPL-licensed DLLs are dynamically linked, and their replacement by the user is permitted.
