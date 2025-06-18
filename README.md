@@ -380,3 +380,32 @@ sequenceDiagram
     else 検証失敗  
         Verifier\_nkcryptotool--\>\>Verifier: 署名検証失敗通知\<br\>(ファイルは改ざんされたか、署名が不正です)  
     end  
+
+## License
+
+This software is licensed under the GNU Lesser General Public License v3.0.
+See the LICENSE.txt file for details.
+
+## 📄 License Information for Redistributed DLLs
+
+This application redistributes several runtime DLLs required for execution on Windows systems. These DLLs are provided under permissive licenses:
+
+### Included DLLs and Licenses
+
+| DLL Name                | License            |
+|------------------------|--------------------|
+| libgcc_s_seh-1.dll     | LGPL v3            |
+| libwinpthread-1.dll    | LGPL v3            |
+| libstdc++-6.dll        | LGPL v3            |
+| liblz4.dll             | BSD License        |
+| libcrypto-3-x64.dll    | Apache License 2.0 |
+
+### Compliance Notes
+
+- LGPL-licensed DLLs are dynamically linked and can be replaced by the user.
+- License texts are included in the `LICENSES/` directory.
+- No modifications have been made to the original libraries.
+- Source code for these libraries is available from their respective upstream repositories.
+
+For more details, see the `LICENSES/` folder included in the distribution package.
+

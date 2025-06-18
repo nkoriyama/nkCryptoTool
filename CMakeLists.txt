@@ -106,3 +106,38 @@ add_test(
         -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+
+# MinGW DLLのコピーとインストール設定
+if(MINGW)
+    # MinGWのDLLパス（環境に応じて変更してください）
+    set(MINGW_DLL_DIR "C:/msys64/mingw64/bin")
+
+    # 必要なDLLのリスト
+    set(MINGW_DLLS
+        libgcc_s_seh-1.dll
+        libwinpthread-1.dll
+        libstdc++-6.dll
+        liblz4.dll
+        libcrypto-3-x64.dll
+    )
+
+    # DLLをビルド後にコピー
+    foreach(dll ${MINGW_DLLS})
+        add_custom_command(TARGET nkCryptoTool POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MINGW_DLL_DIR}/${dll}"
+            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${dll}"
+        )
+    endforeach()
+
+    # DLLをインストール対象に追加
+    foreach(dll ${MINGW_DLLS})
+        install(FILES "${MINGW_DLL_DIR}/${dll}" DESTINATION bin)
+    endforeach()
+endif()
+
+include(InstallRequiredSystemLibraries)
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_NAME "nkCryptoTool")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+include(CPack)
