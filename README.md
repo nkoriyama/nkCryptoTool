@@ -1,8 +1,8 @@
 # **nkCryptoTool**
 
-**nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽に実行できるツールです。**
+**nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽にセキュアに実行できるツールです。**
 
-* **データの暗号化・復号**: 秘密の情報を安全にやり取りできます。  
+* **データの暗号化・復号**: 秘密の情報を安全にやり取りできます。 RFC 9180に準拠したハイブリッド公開鍵暗号化にも対応しています。  
 * **デジタル署名・検証**: ファイルの改ざんを検出し、作成者を証明できます。  
 * **ECC (楕円曲線暗号)** および **PQC (耐量子計算機暗号)**、さらに両者を組み合わせた**ハイブリッド暗号**に対応。  
 * **安定したストリーミング処理**: Asioライブラリの非同期I/Oにより、メモリ使用量を抑えつつ、ギガバイト単位の巨大なファイルも安定して暗号化・復号できます。 (PQCの署名・検証はOpenSSLの制限によりストリーミングに非対応)  
@@ -131,12 +131,12 @@ nkcryptotool \--mode hybrid \--gen-enc-key
 
 ### **暗号化 (Hybrid ECC+PQC \+ AES-256-GCM)**
 
-指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は PQC KEM (Key Encapsulation Mechanism)とECDHとの組み合わせによって導出され、AES-256-GCM で暗号化されます。  
+指定した受信者の公開鍵を使用してデータを暗号化します。共通鍵は PQC KEM (Key Encapsulation Mechanism)とECDHとの組み合わせによって導出（この方式はRFC 9180に準拠）され、AES-256-GCM で暗号化されます。
 nkCryptoTool \--mode hybrid \--encrypt \--recipient-mlkem-pubkey public\_enc\_hybrid\_mlkem.key \--recipient-ecdh-pubkey public\_enc\_hybrid\_ecdh.key \-o encrypted\_hybrid.bin plain.txt
 
 ### **復号 (Hybrid ECC+PQC \+ AES-256-GCM)**
 
-自身のPQC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）とECC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）から共通鍵を導出し、AES-256-GCM でデータを復号・認証します。  
+自身のPQC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）とECC暗号化秘密鍵（パスフレーズ保護されている場合はパスフレーズ入力が必要）から共通鍵を導出この方式はRFC 9180に準拠）し、AES-256-GCM でデータを復号・認証します。  
 nkCryptoTool \--mode hybrid \--decrypt \--recipient-mlkem-privkey private\_enc\_hybrid\_mlkem.key \--recipient-ecdh-privkey private\_enc\_hybrid\_ecdh.key \-o decrypted\_hybrid.txt encrypted\_hybrid.bin
 
 ### **その他のオプション**
