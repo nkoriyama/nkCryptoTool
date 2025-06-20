@@ -3,8 +3,7 @@
  * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
  * This file is part of nkCryptoTool.
- * 
- * nkCryptoTool is free software: you can redistribute it and/or modify
+ * * nkCryptoTool is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
@@ -54,22 +53,17 @@ nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)
       output_file(io_context),
       cipher_ctx(EVP_CIPHER_CTX_new()),
       input_buffer(CHUNK_SIZE),
-      output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH),
+      output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH), // 暗号化時のバッファはブロックサイズ分余分に確保
       tag(GCM_TAG_LEN),
       bytes_read(0),
-      total_bytes_processed(0),
-      expected_frame_size(0) {
-    compression_buffer.resize(LZ4_compressBound(CHUNK_SIZE));
+      total_bytes_processed(0) {
+    // 圧縮関連の初期化を削除
 }
 
 nkCryptoToolBase::AsyncStateBase::~AsyncStateBase() {
-    if (compression_algo == CompressionAlgorithm::LZ4) {
-        if (compression_stream) LZ4_freeStream(static_cast<LZ4_stream_t*>(compression_stream));
-        if (decompression_stream) LZ4_freeStreamDecode(static_cast<LZ4_streamDecode_t*>(decompression_stream));
-    }
+    // 圧縮関連のクリーンアップを削除
 }
 
-// ★★★ 修正点: 引数を const参照渡し に変更
 void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
     key_base_directory = dir;
     try {
@@ -104,7 +98,6 @@ void nkCryptoToolBase::printProgress(double percentage) {
     std::cout.flush();
 }
 
-// ★★★ 修正点: 引数を const参照渡し に変更
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
@@ -116,7 +109,6 @@ std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(cons
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-// ★★★ 修正点: 引数を const参照渡し に変更
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
@@ -150,6 +142,8 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
     return derived_key;
 }
 
+// --- 暗号化パイプライン（シンプル版） ---
+
 void nkCryptoToolBase::startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size) {
     state->total_bytes_processed = 0;
     state->input_file.async_read_some(
@@ -164,28 +158,9 @@ void nkCryptoToolBase::handleReadForEncryption(std::shared_ptr<AsyncStateBase> s
     }
     if (ec) { state->completion_handler(ec); return; }
 
+    // 圧縮ロジックを削除し、直接暗号化処理へ
     const unsigned char* data_to_encrypt = state->input_buffer.data();
     int len_to_encrypt = bytes_transferred;
-
-    if (state->compression_algo == CompressionAlgorithm::LZ4) {
-        const int compressed_len = LZ4_compress_fast_continue(static_cast<LZ4_stream_t*>(state->compression_stream),
-            reinterpret_cast<const char*>(state->input_buffer.data()), reinterpret_cast<char*>(state->compression_buffer.data()),
-            bytes_transferred, state->compression_buffer.size(), 1);
-        if (compressed_len <= 0) {
-            state->completion_handler(std::make_error_code(std::errc::io_error));
-            return;
-        }
-        uint32_t frame_len = compressed_len;
-        state->compression_frame_buffer.assign(sizeof(frame_len), 0);
-        memcpy(state->compression_frame_buffer.data(), &frame_len, sizeof(frame_len));
-        state->compression_frame_buffer.insert(
-            state->compression_frame_buffer.end(),
-            state->compression_buffer.data(),
-            state->compression_buffer.data() + compressed_len
-        );
-        data_to_encrypt = state->compression_frame_buffer.data();
-        len_to_encrypt = state->compression_frame_buffer.size();
-    }
 
     int outlen = 0;
     if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, data_to_encrypt, len_to_encrypt) <= 0) {
@@ -231,47 +206,7 @@ void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> 
     state->completion_handler(ec);
 }
 
-void nkCryptoToolBase::processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading) {
-    while(true) {
-        if (state->expected_frame_size == 0) {
-            if (state->decryption_buffer.size() < sizeof(uint32_t)) {
-                break;
-            }
-            memcpy(&state->expected_frame_size, state->decryption_buffer.data(), sizeof(uint32_t));
-            state->decryption_buffer.erase(state->decryption_buffer.begin(), state->decryption_buffer.begin() + sizeof(uint32_t));
-        }
-
-        if (state->decryption_buffer.size() < state->expected_frame_size) {
-            break;
-        }
-
-        int decompressed_bytes = LZ4_decompress_safe_continue(
-            static_cast<LZ4_streamDecode_t*>(state->decompression_stream),
-            reinterpret_cast<const char*>(state->decryption_buffer.data()),
-            reinterpret_cast<char*>(state->compression_buffer.data()),
-            state->expected_frame_size,
-            state->compression_buffer.size());
-
-        if (decompressed_bytes <= 0) {
-            state->completion_handler(std::make_error_code(std::errc::io_error));
-            return;
-        }
-
-        std::error_code write_ec;
-        asio::write(state->output_file, asio::buffer(state->compression_buffer.data(), decompressed_bytes), write_ec);
-        if (write_ec) {
-            state->completion_handler(write_ec);
-            return;
-        }
-
-        state->decryption_buffer.erase(state->decryption_buffer.begin(), state->decryption_buffer.begin() + state->expected_frame_size);
-        state->expected_frame_size = 0;
-    }
-
-    if (!finished_reading) {
-        handleWriteForDecryption(state, total_ciphertext_size, {}, 0);
-    }
-}
+// --- 復号パイプライン（シンプル版） ---
 
 void nkCryptoToolBase::startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size) {
     state->total_bytes_processed = 0;
@@ -304,15 +239,12 @@ void nkCryptoToolBase::handleReadForDecryption(std::shared_ptr<AsyncStateBase> s
 
     state->total_bytes_processed += bytes_transferred;
 
+    // 伸長ロジックを削除し、直接書き込み
     if (outlen > 0) {
-        if (state->compression_algo == CompressionAlgorithm::LZ4) {
-            state->decryption_buffer.insert(state->decryption_buffer.end(), state->output_buffer.data(), state->output_buffer.data() + outlen);
-            processDecryptionBuffer(state, total_ciphertext_size, false);
-        } else {
-            asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
-                std::bind(&nkCryptoToolBase::handleWriteForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
-        }
+        asio::async_write(state->output_file, asio::buffer(state->output_buffer.data(), outlen),
+            std::bind(&nkCryptoToolBase::handleWriteForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
     } else {
+        // データが出力されなかった場合でも、次の読み込みをトリガー
         handleWriteForDecryption(state, total_ciphertext_size, {}, 0);
     }
 }
@@ -335,39 +267,35 @@ void nkCryptoToolBase::handleWriteForDecryption(std::shared_ptr<AsyncStateBase> 
 
 void nkCryptoToolBase::finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
     std::error_code ec;
+    // GCMタグをファイルから読み込む
     asio::read(state->input_file, asio::buffer(state->tag), ec);
     if (ec && ec != asio::error::eof) {
         state->completion_handler(ec); return;
     }
+    // ファイル終端に達してもタグ長に満たない場合はエラー
     if (ec == asio::error::eof && state->tag.size() < GCM_TAG_LEN) {
         state->completion_handler(std::make_error_code(std::errc::message_size)); return;
     }
     
+    // 読み込んだタグをコンテキストに設定
     if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
         state->completion_handler(std::make_error_code(std::errc::operation_not_permitted));
         return;
     }
 
+    // 最終ブロックの復号とタグの検証
     int outlen = 0;
     if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+        // タグが一致しない場合、この関数が失敗する
+        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::operation_not_permitted));
         return;
     }
 
-    if (state->compression_algo == CompressionAlgorithm::LZ4) {
-        if (outlen > 0) {
-            state->decryption_buffer.insert(state->decryption_buffer.end(), state->output_buffer.data(), state->output_buffer.data() + outlen);
-        }
-        processDecryptionBuffer(state, 0, true);
-        if (!state->decryption_buffer.empty() || state->expected_frame_size != 0) {
-            state->completion_handler(std::make_error_code(std::errc::io_error));
-            return;
-        }
-    } else {
-        if (outlen > 0) {
-            asio::write(state->output_file, asio::buffer(state->output_buffer.data(), outlen), ec);
-            if (ec) { state->completion_handler(ec); return; }
-        }
+    // 最終ブロックがあれば書き込む
+    if (outlen > 0) {
+        asio::write(state->output_file, asio::buffer(state->output_buffer.data(), outlen), ec);
+        if (ec) { state->completion_handler(ec); return; }
     }
 
     printProgress(1.0);

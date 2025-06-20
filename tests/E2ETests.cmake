@@ -8,19 +8,15 @@
 #
 # Arguments:
 #   MODE:         The crypto mode (ecc, pqc, hybrid)
-#   USE_COMPRESS: BOOL true to enable lz4 compression, false otherwise
 #   USE_PARALLEL: BOOL true to enable parallel processing, false otherwise
 #   USE_PIPELINE: BOOL true to enable pipeline processing, false otherwise
 #
-function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL USE_PIPELINE)
+function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
     # --- Determine scenario name and suffix based on options ---
-    if(USE_COMPRESS)
-        set(SCENARIO_VARIANT " (with LZ4 compression)")
-        set(SCENARIO_SUFFIX "_compressed")
-    elseif(USE_PARALLEL)
+    if(USE_PARALLEL)
         set(SCENARIO_VARIANT " (in parallel)")
         set(SCENARIO_SUFFIX "_parallel")
     elseif(USE_PIPELINE)
@@ -58,10 +54,6 @@ function(run_encryption_scenario MODE USE_COMPRESS USE_PARALLEL USE_PIPELINE)
     # --- Build command arguments ---
     set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
     set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}")
-
-    if(USE_COMPRESS)
-        list(APPEND ENCRYPT_ARGS --compress lz4)
-    endif()
 
     if(USE_PARALLEL)
         list(APPEND ENCRYPT_ARGS --parallel)
@@ -154,25 +146,20 @@ endfunction()
 # --- Main script execution: Call all scenarios
 # ===================================================================
 
-# --- Run Standard Encryption Scenarios (without compression) ---
-run_encryption_scenario(hybrid OFF OFF OFF)
-run_encryption_scenario(pqc    OFF OFF OFF)
-run_encryption_scenario(ecc    OFF OFF OFF)
+# --- Run Standard Encryption Scenarios ---
+run_encryption_scenario(hybrid OFF OFF)
+run_encryption_scenario(pqc    OFF OFF)
+run_encryption_scenario(ecc    OFF OFF)
 
-# --- Run Encryption Scenarios (WITH compression) ---
-run_encryption_scenario(hybrid ON  OFF OFF)
-run_encryption_scenario(pqc    ON  OFF OFF)
-run_encryption_scenario(ecc    ON  OFF OFF)
+# --- Run Parallel Encryption Scenarios ---
+run_encryption_scenario(hybrid ON  OFF)
+run_encryption_scenario(pqc    ON  OFF)
+run_encryption_scenario(ecc    ON  OFF)
 
-# --- Run Parallel Encryption Scenarios (compression is not supported) ---
-run_encryption_scenario(hybrid OFF ON  OFF)
-run_encryption_scenario(pqc    OFF ON  OFF)
-run_encryption_scenario(ecc    OFF ON  OFF)
-
-# --- Run Pipeline Encryption Scenarios (compression/parallel are not supported) ---
-run_encryption_scenario(pqc    OFF OFF ON)
-run_encryption_scenario(hybrid OFF OFF ON)
-run_encryption_scenario(ecc    OFF OFF ON)
+# --- Run Pipeline Encryption Scenarios ---
+run_encryption_scenario(pqc    OFF ON)
+run_encryption_scenario(hybrid OFF ON)
+run_encryption_scenario(ecc    OFF ON)
 
 # --- Run Signing Scenarios ---
 run_signing_scenario(pqc)

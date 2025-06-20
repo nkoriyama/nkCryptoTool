@@ -136,7 +136,6 @@ void display_usage() {
               << "  --parallel          Use coroutine-based parallel processing.\n"
               << "  --pipeline          Use pipeline-based parallel processing.\n"
               << "  -o, --output-file <path>   Output file path.\n"
-              << "  --compress <algo>   Compress with 'lz4' before encryption. (Not available in parallel/pipeline mode)\n"
               << "  --recipient-pubkey <path>      Recipient's public key (for ecc/pqc).\n"
               << "  --recipient-mlkem-pubkey <path> Recipient's ML-KEM public key (for hybrid).\n"
               << "  --recipient-ecdh-pubkey <path>  Recipient's ECDH public key (for hybrid).\n\n"
@@ -170,13 +169,19 @@ int main(int argc, char* argv[]) {
     // デフォルト値の設定
     options["mode"] = "ecc";
     options["digest-algo"] = "SHA256";
-    options["compress"] = "none";
     options["output-file"] = "";
     options["signature"] = "";
     flags["parallel"] = false;
     flags["pipeline"] = false;
 
-    enum { OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT, OPT_SIGN, OPT_VERIFY, OPT_RECIPIENT_PUBKEY, OPT_USER_PRIVKEY, OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY, OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY, OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE, OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_COMPRESS, OPT_PARALLEL, OPT_PIPELINE };
+    enum { 
+        OPT_GEN_ENC_KEY = 256, OPT_GEN_SIGN_KEY, OPT_ENCRYPT, OPT_DECRYPT, 
+        OPT_SIGN, OPT_VERIFY, OPT_RECIPIENT_PUBKEY, OPT_USER_PRIVKEY, 
+        OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY, 
+        OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY, 
+        OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE, 
+        OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_PARALLEL, OPT_PIPELINE 
+    };
     
     static struct option long_options[] = {
         {"mode", required_argument, nullptr, 'm'},
@@ -191,7 +196,6 @@ int main(int argc, char* argv[]) {
         {"verify", no_argument, nullptr, OPT_VERIFY},
         {"parallel", no_argument, nullptr, OPT_PARALLEL},
         {"pipeline", no_argument, nullptr, OPT_PIPELINE}, 
-        {"compress", required_argument, nullptr, OPT_COMPRESS},
         {"recipient-pubkey", required_argument, nullptr, OPT_RECIPIENT_PUBKEY},
         {"user-privkey", required_argument, nullptr, OPT_USER_PRIVKEY},
         {"recipient-mlkem-pubkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PUBKEY},
@@ -223,8 +227,7 @@ int main(int argc, char* argv[]) {
             case OPT_SIGN: flags["sign"] = true; break;
             case OPT_VERIFY: flags["verify"] = true; break;
             case OPT_PARALLEL: flags["parallel"] = true; break;
-            case OPT_PIPELINE: flags["pipeline"] = true; break; 
-            case OPT_COMPRESS: options["compress"] = optarg; break;
+            case OPT_PIPELINE: flags["pipeline"] = true; break;
             case OPT_RECIPIENT_PUBKEY: options["recipient-pubkey"] = optarg; break;
             case OPT_USER_PRIVKEY: options["user-privkey"] = optarg; break;
             case OPT_RECIPIENT_MLKEM_PUBKEY: options["recipient-mlkem-pubkey"] = optarg; break;
@@ -248,14 +251,6 @@ int main(int argc, char* argv[]) {
 
     if (flags["parallel"] && flags["pipeline"]) {
         std::cerr << "Error: --parallel and --pipeline cannot be used at the same time." << std::endl;
-        return 1;
-    }
-    if ((flags["parallel"] || flags["pipeline"]) && options["compress"] != "none") {
-        std::cerr << "Error: Compression is not supported in parallel or pipeline mode." << std::endl;
-        return 1;
-    }
-    if (options["compress"] != "none" && options["compress"] != "lz4") {
-        std::cerr << "Error: Invalid argument for --compress. Use 'lz4' or omit the flag entirely." << std::endl;
         return 1;
     }
     if (needs_input_file) {
@@ -369,7 +364,6 @@ int main(int argc, char* argv[]) {
             std::vector<std::thread> threads;
             const auto num_threads = std::max(1u, std::thread::hardware_concurrency());
             for (unsigned i = 0; i < num_threads; ++i) {
-                // ★★★ 修正点: ワーカースレッドの実行をtry-catchで囲む ★★★
                 threads.emplace_back([&]() {
                     try {
                         worker_context.run();
@@ -397,8 +391,7 @@ int main(int argc, char* argv[]) {
                         worker_context, 
                         input_filepath.string(), 
                         options["output-file"], 
-                        options["recipient-pubkey"], 
-                        nkCryptoToolBase::CompressionAlgorithm::NONE), 
+                        options["recipient-pubkey"]), 
                         [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel encryption failed: " << e.what() << std::endl; return_code = 1; } } });
                 }
             } else { // decrypt
@@ -427,7 +420,6 @@ int main(int argc, char* argv[]) {
             for(auto& t : threads) { if (t.joinable()) { t.join(); } }
         }
         else if (needs_input_file) {
-            // 通常処理とパイプライン処理のロジック
             asio::io_context main_io_context;
             if (flags["encrypt"]) {
                 if (flags["pipeline"]) {
@@ -437,16 +429,18 @@ int main(int argc, char* argv[]) {
                         key_paths["recipient-mlkem-pubkey"] = options["recipient-mlkem-pubkey"];
                         key_paths["recipient-ecdh-pubkey"] = options["recipient-ecdh-pubkey"];
                     } else if (options["mode"] == "pqc") {
-                        key_paths["recipient-mlkem-pubkey"] = options["recipient-pubkey"];
+                        key_paths["recipient-pubkey"] = options["recipient-pubkey"];
                     } else { // ecc
                         key_paths["recipient-pubkey"] = options["recipient-pubkey"];
                     }
                     crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), options["output-file"], key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
 
                 } else {
-                    auto algo = options["compress"] == "lz4" ? nkCryptoToolBase::CompressionAlgorithm::LZ4 : nkCryptoToolBase::CompressionAlgorithm::NONE;
-                    if (options["mode"] == "hybrid") { crypto_handler->encryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); } 
-                    else { crypto_handler->encryptFile(main_io_context, input_filepath, options["output-file"], options["recipient-pubkey"], algo, [&](std::error_code ec){ if(ec) return_code = 1; }); }
+                    if (options["mode"] == "hybrid") { 
+                        crypto_handler->encryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-pubkey"], options["recipient-ecdh-pubkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); 
+                    } else { 
+                        crypto_handler->encryptFile(main_io_context, input_filepath, options["output-file"], options["recipient-pubkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); 
+                    }
                 }
             } else if (flags["decrypt"]) {
                 if (flags["pipeline"]) {
@@ -456,14 +450,17 @@ int main(int argc, char* argv[]) {
                         key_paths["recipient-mlkem-privkey"] = options["recipient-mlkem-privkey"];
                         key_paths["recipient-ecdh-privkey"] = options["recipient-ecdh-privkey"];
                     } else if (options["mode"] == "pqc") {
-                        key_paths["recipient-mlkem-privkey"] = options["user-privkey"];
+                        key_paths["user-privkey"] = options["user-privkey"];
                     } else { // ecc
                         key_paths["user-privkey"] = options["user-privkey"];
                     }
                     crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), options["output-file"], key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
                 } else {
-                    if (options["mode"] == "hybrid") { crypto_handler->decryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); } 
-                    else { crypto_handler->decryptFile(main_io_context, input_filepath, options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; }); }
+                    if (options["mode"] == "hybrid") { 
+                        crypto_handler->decryptFileHybrid(main_io_context, input_filepath, options["output-file"], options["recipient-mlkem-privkey"], options["recipient-ecdh-privkey"], [&](std::error_code ec){ if(ec) return_code = 1; }); 
+                    } else { 
+                        crypto_handler->decryptFile(main_io_context, input_filepath, options["output-file"], options["user-privkey"], "", [&](std::error_code ec){ if(ec) return_code = 1; }); 
+                    }
                 }
             } else if (flags["sign"]) {
                 crypto_handler->signFile(main_io_context, input_filepath, options["signature"], options["signing-privkey"], options["digest-algo"], [&](std::error_code ec){ if(ec) return_code = 1; });

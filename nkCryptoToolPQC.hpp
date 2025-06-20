@@ -35,8 +35,8 @@ public:
     bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
-    void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) override;
-    void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) override;
+    void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) override;
+    void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) override;
     void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) override;
     void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) override;
 
@@ -52,8 +52,7 @@ public:
         asio::io_context& worker_context,
         std::string input_filepath,
         std::string output_filepath,
-        std::string recipient_public_key_path,
-        CompressionAlgorithm algo
+        std::string recipient_public_key_path
     ) override;
 
     asio::awaitable<void> decryptFileParallel(
@@ -63,7 +62,7 @@ public:
         std::string user_private_key_path
     ) override;
     
-    // ★★★ 追加: Hybridモード用の並列処理インターフェース ★★★
+    // Hybridモード用の並列処理インターフェース
     asio::awaitable<void> encryptFileParallelHybrid(
         asio::io_context& worker_context,
         std::string input_filepath,

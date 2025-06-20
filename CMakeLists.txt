@@ -1,4 +1,3 @@
-
 # CMakeの最小バージョンを指定します。FetchContentを安定して使用するため3.11以上を推奨します。
 cmake_minimum_required(VERSION 3.11)
 
@@ -39,11 +38,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(asio)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PC_LZ4 REQUIRED liblz4)
+# --- 依存関係の取得: PkgConfig ---
+# find_package(PkgConfig REQUIRED)
 
+# --- 依存関係の取得: Threads ---
 find_package(Threads REQUIRED)
 
+# --- 依存関係の取得: OpenSSL ---
 # OpenSSLライブラリを見つけます。
 find_package(OpenSSL REQUIRED)
 
@@ -51,7 +52,6 @@ find_package(OpenSSL REQUIRED)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ソースファイルから実行可能ファイルを作成します。
-# Windows環境で不要なgetopt_long.cを削除しました。
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
     nkCryptoToolBase.cpp
@@ -62,7 +62,6 @@ add_executable(nkCryptoTool
 # インクルードディレクトリを追加します。
 target_include_directories(nkCryptoTool PRIVATE
   ${PROJECT_SOURCE_DIR}
-  ${PC_LZ4_INCLUDE_DIRS}
   ${asio_SOURCE_DIR}/asio/include
 )
 
@@ -70,7 +69,6 @@ target_include_directories(nkCryptoTool PRIVATE
 target_link_libraries(nkCryptoTool PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
-  ${PC_LZ4_LIBRARIES}
   Threads::Threads
 )
 
@@ -117,7 +115,6 @@ if(MINGW)
         libgcc_s_seh-1.dll
         libwinpthread-1.dll
         libstdc++-6.dll
-        liblz4.dll
         libcrypto-3-x64.dll
     )
 

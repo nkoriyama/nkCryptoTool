@@ -1,4 +1,4 @@
-// nkCryptoToolBase.hpp (並列処理対応版)
+// nkCryptoToolBase.hpp
 /*
  * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
@@ -34,7 +34,7 @@
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
-#include <lz4.h>
+// #include <lz4.h> // LZ4ヘッダを削除
 
 #ifdef _WIN32
 #include <asio/stream_file.hpp>
@@ -60,11 +60,11 @@ struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
 
 class nkCryptoToolBase {
 public:
-    enum class CompressionAlgorithm : uint8_t {
-        NONE = 0,
-        LZ4  = 1,
-        ZSTD = 2,
-    };
+    // enum class CompressionAlgorithm : uint8_t { // CompressionAlgorithm enumを削除
+    //     NONE = 0,
+    //     LZ4  = 1,
+    //     ZSTD = 2,
+    // };
 
 protected:
     static constexpr int CHUNK_SIZE = 4096;
@@ -76,7 +76,7 @@ protected:
     struct FileHeader {
         char magic[4];
         uint8_t version;
-        CompressionAlgorithm compression_algo;
+        // CompressionAlgorithm compression_algo; // FileHeaderから圧縮関連メンバを削除
         uint16_t reserved;
     };
     #pragma pack(pop)
@@ -100,13 +100,16 @@ protected:
         size_t bytes_read;
         uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
-        CompressionAlgorithm compression_algo = CompressionAlgorithm::NONE;
-        void* compression_stream = nullptr;
-        void* decompression_stream = nullptr;
-        std::vector<unsigned char> compression_buffer;
-        std::vector<unsigned char> compression_frame_buffer;
-        std::vector<unsigned char> decryption_buffer;
-        uint32_t expected_frame_size;
+
+        // --- 圧縮関連のメンバをすべて削除 ---
+        // CompressionAlgorithm compression_algo = CompressionAlgorithm::NONE;
+        // void* compression_stream = nullptr;
+        // void* decompression_stream = nullptr;
+        // std::vector<unsigned char> compression_buffer;
+        // std::vector<unsigned char> compression_frame_buffer;
+        // std::vector<unsigned char> decryption_buffer;
+        // uint32_t expected_frame_size;
+        
         AsyncStateBase(asio::io_context& io_context);
         virtual ~AsyncStateBase();
     };
@@ -130,18 +133,18 @@ public:
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
     virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
 
-    virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
-    virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)>) = 0;
+    // --- 仮想関数のシグネチャからCompressionAlgorithm引数を削除 ---
+    virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
+    virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
     virtual void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
     virtual void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
 
-    // --- 並列処理インターフェース：引数を値渡しに変更 ---
+    // --- 並列処理インターフェース：CompressionAlgorithm引数を削除 ---
     virtual asio::awaitable<void> encryptFileParallel(
         asio::io_context& worker_context,
         std::string input_filepath,
         std::string output_filepath,
-        std::string recipient_public_key_path,
-        CompressionAlgorithm algo
+        std::string recipient_public_key_path
     ) = 0;
 
     virtual asio::awaitable<void> decryptFileParallel(
@@ -151,7 +154,7 @@ public:
         std::string user_private_key_path
     ) = 0;
 
-    // --- ★ 新しいパイプライン処理インターフェース ---
+    // --- パイプライン処理インターフェース ---
     virtual void encryptFileWithPipeline(
         asio::io_context& io_context,
         const std::string& input_filepath,
@@ -174,7 +177,7 @@ private:
     void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
     void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
-    void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading);
+    // void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading); // 不要になるため削除
     void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred);
     void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
     void finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state);

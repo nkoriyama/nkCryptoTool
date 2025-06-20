@@ -56,6 +56,60 @@ struct nkCryptoToolECC::VerificationState : public nkCryptoToolBase::AsyncStateB
     VerificationState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), signature_file(io_context), total_input_size(0) {}
 };
 
+namespace {
+// --- 暗号化ヘルパー ---
+static std::vector<unsigned char> ecc_encrypt_chunk_logic(
+    const std::vector<unsigned char>& plain_data,
+    EVP_CIPHER_CTX* template_cipher_ctx
+) {
+    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    std::vector<unsigned char> encrypted_data(plain_data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen = 0;
+    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) return {};
+    encrypted_data.resize(outlen);
+    return encrypted_data;
+}
+
+// --- 復号ヘルパー ---
+static std::vector<unsigned char> ecc_decrypt_chunk_logic(
+    const std::vector<unsigned char>& encrypted_data,
+    EVP_CIPHER_CTX* template_cipher_ctx
+) {
+    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
+    int outlen = 0;
+    if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
+        // Not an error, final check is with tag.
+    }
+    decrypted_data.resize(outlen);
+    return decrypted_data;
+}
+
+// パイプライン処理用のチャンク処理ヘルパー
+static std::vector<char> process_chunk(const std::vector<char>& input_data, EVP_CIPHER_CTX* template_ctx, bool is_encrypt) {
+    if (input_data.empty()) return {};
+
+    std::vector<unsigned char> input_uc(input_data.begin(), input_data.end());
+    std::vector<unsigned char> processed_data_uc;
+
+    if (is_encrypt) {
+        processed_data_uc = ecc_encrypt_chunk_logic(input_uc, template_ctx);
+    } else {
+        processed_data_uc = ecc_decrypt_chunk_logic(input_uc, template_ctx);
+    }
+    
+    if (is_encrypt && processed_data_uc.empty() && !input_data.empty()){
+        throw std::runtime_error("Chunk encryption processing failed");
+    }
+
+    std::vector<char> result(processed_data_uc.begin(), processed_data_uc.end());
+    return result;
+}
+
+} // anonymous namespace
+
 
 nkCryptoToolECC::nkCryptoToolECC() {}
 nkCryptoToolECC::~nkCryptoToolECC() {}
@@ -129,7 +183,7 @@ std::vector<unsigned char> nkCryptoToolECC::generateSharedSecret(EVP_PKEY* priva
 
 void nkCryptoToolECC::encryptFile(
     asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath,
-    const std::filesystem::path& recipient_public_key_path, CompressionAlgorithm algo, std::function<void(std::error_code)> completion_handler)
+    const std::filesystem::path& recipient_public_key_path, std::function<void(std::error_code)> completion_handler)
 {
     auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) {
         if (!ec) std::cout << "\nEncryption to '" << output_filepath.string() << "' completed." << std::endl;
@@ -139,7 +193,6 @@ void nkCryptoToolECC::encryptFile(
 
     auto state = std::make_shared<AsyncStateBase>(io_context);
     state->completion_handler = wrapped_handler;
-    state->compression_algo = algo;
     auto recipient_public_key = loadPublicKey(recipient_public_key_path);
     if (!recipient_public_key) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
 
@@ -180,7 +233,6 @@ void nkCryptoToolECC::encryptFile(
     FileHeader header;
     memcpy(header.magic, MAGIC, sizeof(MAGIC));
     header.version = 1;
-    header.compression_algo = algo;
     header.reserved = 0;
     asio::write(state->output_file, asio::buffer(&header, sizeof(header)), ec);
     if (ec) return wrapped_handler(ec);
@@ -196,7 +248,6 @@ void nkCryptoToolECC::encryptFile(
     asio::write(state->output_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec) return wrapped_handler(ec);
     asio::write(state->output_file, asio::buffer(iv), ec); if(ec) return wrapped_handler(ec);
 
-    if (state->compression_algo == CompressionAlgorithm::LZ4) { state->compression_stream = LZ4_createStream(); }
     EVP_EncryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
     startEncryptionPipeline(state, total_input_size);
 }
@@ -233,20 +284,44 @@ void nkCryptoToolECC::decryptFile(
 #endif
     if (ec) return wrapped_handler(ec); 
 
-    FileHeader header; asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec); if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) { return wrapped_handler(std::make_error_code(std::errc::invalid_argument)); } 
-    state->compression_algo = header.compression_algo; uint32_t key_len = 0, iv_len = 0; asio::read(state->input_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec || key_len > 2048) return wrapped_handler(ec ? ec : std::make_error_code(std::errc::invalid_argument)); 
-    std::vector<char> eph_pub_key_buf(key_len); asio::read(state->input_file, asio::buffer(eph_pub_key_buf), ec); if(ec) return wrapped_handler(ec); 
-    asio::read(state->input_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec || iv_len != GCM_IV_LEN) return wrapped_handler(ec ? ec : std::make_error_code(std::errc::invalid_argument)); 
-    std::vector<unsigned char> iv(iv_len); asio::read(state->input_file, asio::buffer(iv), ec); if(ec) return wrapped_handler(ec); 
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(eph_pub_key_buf.data(), key_len)); std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); if(!eph_pub_key) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
-    std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256"); if (decryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
-    if (state->compression_algo == CompressionAlgorithm::LZ4) { state->decompression_stream = LZ4_createStreamDecode(); } else if (state->compression_algo != CompressionAlgorithm::NONE) { return wrapped_handler(std::make_error_code(std::errc::not_supported)); } 
+    FileHeader header; 
+    asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec); 
+    if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) { 
+        return wrapped_handler(std::make_error_code(std::errc::invalid_argument)); 
+    } 
+    
+    uint32_t key_len = 0, iv_len = 0; 
+    asio::read(state->input_file, asio::buffer(&key_len, sizeof(key_len)), ec); 
+    if(ec || key_len > 2048) return wrapped_handler(ec ? ec : std::make_error_code(std::errc::invalid_argument)); 
+    
+    std::vector<char> eph_pub_key_buf(key_len); 
+    asio::read(state->input_file, asio::buffer(eph_pub_key_buf), ec); 
+    if(ec) return wrapped_handler(ec); 
+    
+    asio::read(state->input_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); 
+    if(ec || iv_len != GCM_IV_LEN) return wrapped_handler(ec ? ec : std::make_error_code(std::errc::invalid_argument)); 
+    
+    std::vector<unsigned char> iv(iv_len); 
+    asio::read(state->input_file, asio::buffer(iv), ec); 
+    if(ec) return wrapped_handler(ec); 
+    
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(eph_pub_key_buf.data(), key_len)); 
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); 
+    if(!eph_pub_key) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
+    
+    std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); 
+    std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256"); 
+    if (decryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
+    
     EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data()); 
-    uintmax_t total_file_size = std::filesystem::file_size(input_filepath, ec); size_t header_total_size = sizeof(FileHeader) + sizeof(key_len) + key_len + sizeof(iv_len) + iv_len; 
-    uintmax_t ciphertext_size = total_file_size - header_total_size - GCM_TAG_LEN; startDecryptionPipeline(state, ciphertext_size);
+    
+    uintmax_t total_file_size = std::filesystem::file_size(input_filepath, ec); 
+    size_t header_total_size = sizeof(FileHeader) + sizeof(key_len) + key_len + sizeof(iv_len) + iv_len; 
+    uintmax_t ciphertext_size = total_file_size - header_total_size - GCM_TAG_LEN; 
+    startDecryptionPipeline(state, ciphertext_size);
 }
 
-void nkCryptoToolECC::encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, CompressionAlgorithm, std::function<void(std::error_code)> handler){ handler(std::make_error_code(std::errc::not_supported)); }
+void nkCryptoToolECC::encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)> handler){ handler(std::make_error_code(std::errc::not_supported)); }
 void nkCryptoToolECC::decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)> handler){ handler(std::make_error_code(std::errc::not_supported)); }
 
 void nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, std::function<void(std::error_code)> completion_handler){
@@ -359,27 +434,11 @@ void nkCryptoToolECC::finishVerification(std::shared_ptr<VerificationState> stat
 // 並列暗号化・復号の実装
 //================================================================================
 
-// --- 暗号化ヘルパー ---
-static std::vector<unsigned char> ecc_encrypt_chunk_logic(
-    const std::vector<unsigned char>& plain_data,
-    EVP_CIPHER_CTX* template_cipher_ctx
-) {
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
-    std::vector<unsigned char> encrypted_data(plain_data.size() + EVP_MAX_BLOCK_LENGTH);
-    int outlen = 0;
-    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) return {};
-    encrypted_data.resize(outlen);
-    return encrypted_data;
-}
-
-// --- 並列暗号化 ---
 asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     asio::io_context& worker_context,
     std::string input_filepath_str,
     std::string output_filepath_str,
-    std::string recipient_public_key_path_str,
-    CompressionAlgorithm algo
+    std::string recipient_public_key_path_str
 ) {
     const std::filesystem::path input_filepath(input_filepath_str);
     const std::filesystem::path output_filepath(output_filepath_str);
@@ -431,7 +490,10 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
     EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
 
-    FileHeader header; memcpy(header.magic, MAGIC, sizeof(MAGIC)); header.version = 1; header.compression_algo = algo; header.reserved = 0;
+    FileHeader header; 
+    memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
+    header.version = 1; 
+    header.reserved = 0;
     co_await asio::async_write(output_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
 
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
@@ -473,7 +535,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
             try {
                 if (*first_exception) { (*tasks_in_flight)--; return; }
                 auto encrypted_data = ecc_encrypt_chunk_logic(data, template_ctx.get());
-                if(encrypted_data.empty()) throw std::runtime_error("Chunk encryption failed");
+                if(encrypted_data.empty() && !data.empty()) throw std::runtime_error("Chunk encryption failed");
 
                 std::scoped_lock lock(*map_mutex);
                 (*completed_chunks)[seq_id] = std::move(encrypted_data);
@@ -481,11 +543,11 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
                 std::scoped_lock lock(*map_mutex);
                 if(!*first_exception) *first_exception = std::current_exception();
                 (*tasks_in_flight)--;
+                return;
             }
 
             asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
                 if(*first_exception) {
-                    *tasks_in_flight = 0;
                     return;
                 }
                 std::scoped_lock lock(*map_mutex);
@@ -497,8 +559,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
                     
                     auto data_to_write = std::move(it->second);
                     completed_chunks->erase(it);
-                    (*next_sequence_to_write)++;
-
+                    
                     asio::co_spawn(writer_strand,
                         asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
                         [tasks_in_flight, first_exception, map_mutex](std::exception_ptr p, std::size_t) { 
@@ -509,6 +570,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
                             (*tasks_in_flight)--; 
                         }
                     );
+                    (*next_sequence_to_write)++;
                 }
             });
         });
@@ -543,24 +605,6 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     co_return;
 }
 
-// --- 復号ヘルパー ---
-static std::vector<unsigned char> ecc_decrypt_chunk_logic(
-    const std::vector<unsigned char>& encrypted_data,
-    EVP_CIPHER_CTX* template_cipher_ctx
-) {
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
-    std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
-    int outlen = 0;
-    if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
-        return {};
-    }
-    decrypted_data.resize(outlen);
-    return decrypted_data;
-}
-
-
-// --- 並列復号 ---
 asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
     asio::io_context& worker_context,
     std::string input_filepath_str,
@@ -644,6 +688,7 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
     while(bytes_read_so_far < ciphertext_size) {
         if(*first_exception) break;
         size_t to_read = std::min((uintmax_t)READ_CHUNK_SIZE, ciphertext_size - bytes_read_so_far);
+        if (to_read == 0) break;
         std::vector<unsigned char> buffer(to_read);
         auto [read_ec, bytes_read] = co_await asio::async_read(input_file, asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
         
@@ -652,7 +697,10 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
             break;
         }
         if (bytes_read > 0) { bytes_read_so_far += bytes_read; }
-        if (bytes_read == 0) break;
+        if (bytes_read == 0 && bytes_read_so_far < ciphertext_size) {
+            *first_exception = std::make_exception_ptr(std::runtime_error("File ended prematurely."));
+            break;
+        }
         buffer.resize(bytes_read);
         
         (*tasks_in_flight)++;
@@ -661,16 +709,18 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
             try {
                 if(*first_exception) { (*tasks_in_flight)--; return; }
                 auto decrypted_data = ecc_decrypt_chunk_logic(data, template_ctx.get());
+                
                 std::scoped_lock lock(*map_mutex);
                 (*completed_chunks)[seq_id] = std::move(decrypted_data);
             } catch (...) {
                 std::scoped_lock lock(*map_mutex);
                 if(!*first_exception) *first_exception = std::current_exception();
                 (*tasks_in_flight)--;
+                return;
             }
 
             asio::post(writer_strand, [this, completed_chunks, map_mutex, next_sequence_to_write, tasks_in_flight, writer_strand, &output_file, first_exception]() mutable {
-                if(*first_exception) { *tasks_in_flight = 0; return; }
+                if(*first_exception) { return; }
                 std::scoped_lock lock(*map_mutex);
                 for (;;) {
                     auto it = completed_chunks->find(next_sequence_to_write->load());
@@ -678,7 +728,6 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
                     
                     auto data_to_write = std::move(it->second);
                     completed_chunks->erase(it);
-                    (*next_sequence_to_write)++;
 
                     asio::co_spawn(writer_strand,
                         asio::async_write(output_file, asio::buffer(data_to_write), asio::use_awaitable),
@@ -690,6 +739,7 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
                             (*tasks_in_flight)--; 
                         }
                     );
+                    (*next_sequence_to_write)++;
                 }
             });
         });
@@ -731,35 +781,6 @@ asio::awaitable<void> nkCryptoToolECC::decryptFileParallel(
 // ===============================================================================
 // パイプライン処理の実装
 // ===============================================================================
-
-// 暗号化/復号ステージで利用するスレッドセーフなチャンク処理ロジック
-static std::vector<char> process_chunk(const std::vector<char>& input_data, EVP_CIPHER_CTX* template_ctx, bool is_encrypt) {
-    if (input_data.empty()) return {};
-
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_ctx)) {
-        throw std::runtime_error("Failed to copy EVP_CIPHER_CTX");
-    }
-
-    std::vector<unsigned char> processed_data(input_data.size() + EVP_MAX_BLOCK_LENGTH);
-    int outlen = 0;
-    
-    if (is_encrypt) {
-        if (EVP_EncryptUpdate(ctx.get(), processed_data.data(), &outlen, reinterpret_cast<const unsigned char*>(input_data.data()), input_data.size()) <= 0) {
-            throw std::runtime_error("EVP_EncryptUpdate failed");
-        }
-    } else {
-        if (EVP_DecryptUpdate(ctx.get(), processed_data.data(), &outlen, reinterpret_cast<const unsigned char*>(input_data.data()), input_data.size()) <= 0) {
-            throw std::runtime_error("EVP_DecryptUpdate failed");
-        }
-    }
-    processed_data.resize(outlen);
-
-    std::vector<char> result;
-    result.assign(processed_data.begin(), processed_data.end());
-    return result;
-}
-
 
 void nkCryptoToolECC::encryptFileWithPipeline(
     asio::io_context& io_context,
@@ -803,7 +824,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         std::error_code ec;
         async_file_t output_file(io_context);
 #ifdef _WIN32
-        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+        output_file.open(output_filepath.c_str(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
 #else
         int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
@@ -813,7 +834,6 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         FileHeader header;
         memcpy(header.magic, MAGIC, sizeof(MAGIC));
         header.version = 1;
-        header.compression_algo = CompressionAlgorithm::NONE;
         header.reserved = 0;
         asio::write(output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec);
 
@@ -884,7 +904,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         std::error_code ec;
         async_file_t input_file(io_context);
 #ifdef _WIN32
-        input_file.open(input_filepath, async_file_t::read_only, ec);
+        input_file.open(input_filepath.c_str(), async_file_t::read_only, ec);
 #else
         int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
         if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
@@ -896,11 +916,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
             input_file.close();
             throw std::runtime_error("Invalid file header");
         }
-        if (header.compression_algo != CompressionAlgorithm::NONE) {
-            input_file.close();
-            throw std::runtime_error("Pipeline mode does not support compression");
-        }
-
+        
         uint32_t key_len = 0, iv_len = 0; 
         asio::read(input_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec || key_len > 2048) {input_file.close(); throw std::runtime_error("Invalid key length");}
         std::vector<char> eph_pub_key_buf(key_len); asio::read(input_file, asio::buffer(eph_pub_key_buf), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ephemeral key");}
@@ -935,7 +951,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
 
         async_file_t output_file(io_context);
 #ifdef _WIN32
-        output_file.open(output_filepath, async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
+        output_file.open(output_filepath.c_str(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
 #else
         int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }

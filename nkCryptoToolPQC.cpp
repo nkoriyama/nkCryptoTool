@@ -86,7 +86,8 @@ static std::vector<unsigned char> pqc_decrypt_chunk_logic(
     std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
     int outlen = 0;
     if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
-        return {};
+        // This is not necessarily an error, can happen at block boundaries.
+        // The final verification is done by DecryptFinal and the GCM tag.
     }
     decrypted_data.resize(outlen);
     return decrypted_data;
@@ -104,8 +105,8 @@ static std::vector<char> pqc_process_chunk(const std::vector<char>& input_data, 
         processed_data_uc = pqc_decrypt_chunk_logic(input_uc, template_ctx);
     }
     
-    if (processed_data_uc.empty() && !input_data.empty()){
-        throw std::runtime_error("Chunk processing failed");
+    if (is_encrypt && processed_data_uc.empty() && !input_data.empty()){
+        throw std::runtime_error("Chunk encryption processing failed");
     }
 
     std::vector<char> result(processed_data_uc.begin(), processed_data_uc.end());
@@ -159,8 +160,8 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public
 }
 
 // --- 通常の暗号化・復号（ハイブリッド実装へのラッパー） ---
-void nkCryptoToolPQC::encryptFile(asio::io_context& io, const std::filesystem::path& in, const std::filesystem::path& out, const std::filesystem::path& pub_key, CompressionAlgorithm algo, std::function<void(std::error_code)> handler) {
-    encryptFileHybrid(io, in, out, pub_key, "", algo, handler);
+void nkCryptoToolPQC::encryptFile(asio::io_context& io, const std::filesystem::path& in, const std::filesystem::path& out, const std::filesystem::path& pub_key, std::function<void(std::error_code)> handler) {
+    encryptFileHybrid(io, in, out, pub_key, "", handler);
 }
 
 void nkCryptoToolPQC::decryptFile(asio::io_context& io, const std::filesystem::path& in, const std::filesystem::path& out, const std::filesystem::path& priv_key, const std::filesystem::path&, std::function<void(std::error_code)> handler) {
@@ -168,11 +169,11 @@ void nkCryptoToolPQC::decryptFile(asio::io_context& io, const std::filesystem::p
 }
 
 // --- ハイブリッド暗号化・復号 ---
-void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_mlkem_public_key_path, const std::filesystem::path& recipient_ecdh_public_key_path, CompressionAlgorithm algo, std::function<void(std::error_code)> completion_handler) {
+void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& output_filepath, const std::filesystem::path& recipient_mlkem_public_key_path, const std::filesystem::path& recipient_ecdh_public_key_path, std::function<void(std::error_code)> completion_handler) {
     auto wrapped_handler = [output_filepath, completion_handler](const std::error_code& ec) { if (!ec) std::cout << "\nEncryption to '" << output_filepath.string() << "' completed." << std::endl; else std::cerr << "\nEncryption failed: " << ec.message() << std::endl; completion_handler(ec); };
     bool is_hybrid = !recipient_ecdh_public_key_path.empty();
     auto state = std::make_shared<AsyncStateBase>(io_context);
-    state->completion_handler = wrapped_handler; state->compression_algo = algo;
+    state->completion_handler = wrapped_handler;
     std::vector<unsigned char> combined_secret; std::vector<unsigned char> encapsulated_key_mlkem; std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
     auto recipient_mlkem_public_key = loadPublicKey(recipient_mlkem_public_key_path);
     if (!recipient_mlkem_public_key) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
@@ -219,7 +220,10 @@ void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std
 #endif
     if(ec) return wrapped_handler(ec);
 
-    FileHeader header; memcpy(header.magic, MAGIC, sizeof(MAGIC)); header.version = 1; header.compression_algo = algo; header.reserved = is_hybrid ? 1 : 0;
+    FileHeader header; 
+    memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
+    header.version = 1; 
+    header.reserved = is_hybrid ? 1 : 0;
     asio::write(state->output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) return wrapped_handler(ec);
     uint32_t len;
     len = encapsulated_key_mlkem.size(); asio::write(state->output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) return wrapped_handler(ec);
@@ -232,7 +236,7 @@ void nkCryptoToolPQC::encryptFileHybrid( asio::io_context& io_context, const std
     asio::write(state->output_file, asio::buffer(salt), ec); if(ec) return wrapped_handler(ec);
     len = iv.size(); asio::write(state->output_file, asio::buffer(&len, sizeof(len)), ec); if(ec) return wrapped_handler(ec);
     asio::write(state->output_file, asio::buffer(iv), ec); if(ec) return wrapped_handler(ec);
-    if (state->compression_algo == CompressionAlgorithm::LZ4) state->compression_stream = LZ4_createStream();
+
     EVP_EncryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
     startEncryptionPipeline(state, total_input_size);
 }
@@ -258,11 +262,12 @@ void nkCryptoToolPQC::decryptFileHybrid( asio::io_context& io_context, const std
 #endif
     if(ec) return wrapped_handler(ec);
 
-    FileHeader header; asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec);
+    FileHeader header; 
+    asio::read(state->input_file, asio::buffer(&header, sizeof(header)), ec);
     if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
-    state->compression_algo = header.compression_algo;
     bool is_hybrid = header.reserved == 1;
     if (is_hybrid && recipient_ecdh_private_key_path.empty()) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
+    
     uint32_t len;
     std::vector<unsigned char> encapsulated_key_mlkem, ephemeral_ecdh_pubkey_bytes, salt, iv;
     asio::read(state->input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) return wrapped_handler(ec); encapsulated_key_mlkem.resize(len);
@@ -275,6 +280,7 @@ void nkCryptoToolPQC::decryptFileHybrid( asio::io_context& io_context, const std
     asio::read(state->input_file, asio::buffer(salt), ec); if(ec) return wrapped_handler(ec);
     asio::read(state->input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) return wrapped_handler(ec); iv.resize(len);
     asio::read(state->input_file, asio::buffer(iv), ec); if(ec) return wrapped_handler(ec);
+    
     std::vector<unsigned char> combined_secret;
     auto recipient_mlkem_private_key = loadPrivateKey(recipient_mlkem_private_key_path, "ML-KEM private key");
     if (!recipient_mlkem_private_key) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
@@ -295,10 +301,10 @@ void nkCryptoToolPQC::decryptFileHybrid( asio::io_context& io_context, const std
         if (secret_ecdh.empty()) { printOpenSSLErrors(); return wrapped_handler(std::make_error_code(std::errc::io_error)); }
         combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
     }
+    
     std::vector<unsigned char> decryption_key = hkdfDerive(combined_secret, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
     if (decryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error));
-    if (state->compression_algo == CompressionAlgorithm::LZ4) state->decompression_stream = LZ4_createStreamDecode();
-    else if (state->compression_algo != CompressionAlgorithm::NONE) return wrapped_handler(std::make_error_code(std::errc::not_supported));
+
     EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
     uintmax_t total_file_size = std::filesystem::file_size(input_filepath, ec);
     size_t header_total_size = sizeof(FileHeader) + sizeof(uint32_t) + encapsulated_key_mlkem.size() + sizeof(uint32_t) + salt.size() + sizeof(uint32_t) + iv.size();
@@ -392,13 +398,8 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
     asio::io_context& worker_context,
     std::string input_filepath_str,
     std::string output_filepath_str,
-    std::string recipient_public_key_path_str,
-    CompressionAlgorithm algo
+    std::string recipient_public_key_path_str
 ) {
-    if (algo != CompressionAlgorithm::NONE) {
-        throw std::runtime_error("Compression is not supported in parallel mode.");
-    }
-
     const std::filesystem::path input_filepath(input_filepath_str);
     const std::filesystem::path output_filepath(output_filepath_str);
     const std::filesystem::path recipient_mlkem_public_key_path(recipient_public_key_path_str);
@@ -455,7 +456,6 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
     FileHeader header; 
     memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
     header.version = 1; 
-    header.compression_algo = algo; 
     header.reserved = 0; // PQC-only
     co_await asio::async_write(output_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
 
@@ -473,7 +473,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
     co_await asio::async_write(output_file, asio::buffer(iv), asio::use_awaitable);
     
     // --- 並列処理ループ ---
-    const size_t READ_CHUNK_SIZE = 64 * 1024; // 64KB に変更
+    const size_t READ_CHUNK_SIZE = 64 * 1024;
     auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
     auto map_mutex = std::make_shared<std::mutex>();
     auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
@@ -509,7 +509,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
             } catch(...) {
                 std::scoped_lock lock(*map_mutex);
                 if(!*first_exception) *first_exception = std::current_exception();
-                (*tasks_in_flight)--; // 例外発生時のみデクリメント
+                (*tasks_in_flight)--;
                 return;
             }
 
@@ -534,7 +534,7 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallel(
                                 std::scoped_lock lock(*map_mutex);
                                 *first_exception = p;
                             }
-                            (*tasks_in_flight)--; // 書き込み完了後にデクリメント
+                            (*tasks_in_flight)--;
                         }
                     );
                     (*next_sequence_to_write)++;
@@ -615,9 +615,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     if(header.reserved != 0) {
         throw std::runtime_error("This parallel function only supports PQC-only files, not hybrid files.");
     }
-    if(header.compression_algo != CompressionAlgorithm::NONE) {
-        throw std::runtime_error("Compression is not supported in parallel decryption mode.");
-    }
 
     uint32_t len;
     std::vector<unsigned char> encapsulated_key_mlkem, salt, iv;
@@ -648,7 +645,7 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
     EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
 
-    const size_t READ_CHUNK_SIZE = 64 * 1024; // 64KB に変更
+    const size_t READ_CHUNK_SIZE = 64 * 1024;
     auto completed_chunks = std::make_shared<std::map<uint64_t, std::vector<unsigned char>>>();
     auto map_mutex = std::make_shared<std::mutex>();
     auto next_sequence_to_write = std::make_shared<std::atomic<uint64_t>>(0);
@@ -685,7 +682,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
             try {
                 if(*first_exception) { (*tasks_in_flight)--; return; }
                 auto decrypted_data = pqc_decrypt_chunk_logic(data, template_ctx.get());
-                if(decrypted_data.empty() && !data.empty()) throw std::runtime_error("Chunk decryption failed");
                 
                 std::scoped_lock lock(*map_mutex);
                 (*completed_chunks)[seq_id] = std::move(decrypted_data);
@@ -754,8 +750,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallel(
     std::cout << "\nParallel PQC decryption to '" << output_filepath.string() << "' completed." << std::endl;
     co_return;
 }
-
-// ★★★ ここからHybridモードの並列処理実装 ★★★
 
 // 並列ハイブリッド暗号化
 asio::awaitable<void> nkCryptoToolPQC::encryptFileParallelHybrid(
@@ -836,7 +830,6 @@ asio::awaitable<void> nkCryptoToolPQC::encryptFileParallelHybrid(
     FileHeader header; 
     memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
     header.version = 1; 
-    header.compression_algo = CompressionAlgorithm::NONE; 
     header.reserved = 1; // Hybrid-mode
     co_await asio::async_write(output_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
 
@@ -955,7 +948,6 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallelHybrid(
     co_await asio::async_read(input_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
     if(memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) { throw std::runtime_error("Invalid file header."); }
     if(header.reserved != 1) { throw std::runtime_error("This parallel function only supports Hybrid files."); }
-    if(header.compression_algo != CompressionAlgorithm::NONE) { throw std::runtime_error("Compression is not supported in parallel decryption mode."); }
 
     uint32_t len;
     std::vector<unsigned char> encapsulated_key_mlkem, ephemeral_ecdh_pubkey_bytes, salt, iv;
@@ -1022,7 +1014,7 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallelHybrid(
             try {
                 if(*first_exception) { (*tasks_in_flight)--; return; }
                 auto decrypted_data = pqc_decrypt_chunk_logic(data, template_ctx.get());
-                if(decrypted_data.empty() && !data.empty()) throw std::runtime_error("Chunk decryption failed");
+                
                 std::scoped_lock lock(*map_mutex);
                 (*completed_chunks)[seq_id] = std::move(decrypted_data);
             } catch (...) {
@@ -1087,7 +1079,8 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         std::vector<unsigned char> encapsulated_key_mlkem; 
         std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
         
-        auto recipient_mlkem_public_key = loadPublicKey(key_paths.at("recipient-mlkem-pubkey"));
+        const auto& mlkem_pub_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-pubkey" : "recipient-pubkey");
+        auto recipient_mlkem_public_key = loadPublicKey(mlkem_pub_key_path);
         if (!recipient_mlkem_public_key) throw std::runtime_error("Failed to load recipient ML-KEM public key.");
 
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
@@ -1137,7 +1130,6 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         FileHeader header; 
         memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
         header.version = 1; 
-        header.compression_algo = CompressionAlgorithm::NONE; 
         header.reserved = is_hybrid ? 1 : 0;
         asio::write(output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec);
         
@@ -1227,7 +1219,8 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
         input_file.close(ec);
 
         std::vector<unsigned char> combined_secret;
-        auto recipient_mlkem_private_key = loadPrivateKey(key_paths.at("recipient-mlkem-privkey"), "ML-KEM private key");
+        const auto& mlkem_priv_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-privkey" : "user-privkey");
+        auto recipient_mlkem_private_key = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
         if (!recipient_mlkem_private_key) throw std::runtime_error("Failed to load user ML-KEM private key.");
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
         if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_decapsulate_init failed."); }
