@@ -6,22 +6,12 @@ if(NOT CMAKE_BUILD_TYPE)
     # set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-# 最適化フラグを追加
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(nkCryptoTool PRIVATE
-        -O3                # 最大最適化
-        -march=native      # CPU固有の命令セット（AES-NI、AVX2など）
-        -mtune=native      # CPUアーキテクチャに最適化
-        -flto              # リンク時最適化（Link Time Optimization）
-        -funroll-loops     # ループ展開（AES-256-GCMに有効）
-    )
-    # デバッグ用にRelWithDebInfoで-gを有効
-    if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-        target_compile_options(nkCryptoTool PRIVATE -g)
-    endif()
-endif()
 # プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
+
+# 最適化フラグを追加
+# このターゲット固有の最適化フラグは、add_executable の後で設定する必要があります。
+# そのため、このブロックは後ほど移動します。
 
 # C++20標準を使用するように設定します。
 set(CMAKE_CXX_STANDARD 20)
@@ -37,9 +27,6 @@ FetchContent_Declare(
   GIT_TAG        asio-1-28-1 # 安定したバージョンタグを指定
 )
 FetchContent_MakeAvailable(asio)
-
-# --- 依存関係の取得: PkgConfig ---
-# find_package(PkgConfig REQUIRED)
 
 # --- 依存関係の取得: Threads ---
 find_package(Threads REQUIRED)
@@ -59,6 +46,21 @@ add_executable(nkCryptoTool
     nkCryptoToolPQC.cpp
 )
 
+# add_executable の後に最適化フラグを設定します
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nkCryptoTool PRIVATE
+        -O3                # 最大最適化
+        -march=native      # CPU固有の命令セット（AES-NI、AVX2など）
+        -mtune=native      # CPUアーキテクチャに最適化
+        -flto              # リンク時最適化（Link Time Optimization）
+        -funroll-loops     # ループ展開（AES-256-GCMに有効）
+    )
+    # デバッグ用にRelWithDebInfoで-gを有効
+    if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        target_compile_options(nkCryptoTool PRIVATE -g)
+    endif()
+endif()
+
 # インクルードディレクトリを追加します。
 target_include_directories(nkCryptoTool PRIVATE
   ${PROJECT_SOURCE_DIR}
@@ -69,7 +71,7 @@ target_include_directories(nkCryptoTool PRIVATE
 target_link_libraries(nkCryptoTool PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
-  Threads::Threads
+    Threads::Threads
 )
 
 # Windows固有のライブラリを追加でリンクします。
@@ -92,9 +94,6 @@ set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
 file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
 
 # CTestにE2Eテストスクリプトを追加
-# NAME: CTestに表示されるテスト名
-# COMMAND: 実行するコマンド。cmake -P でCMakeスクリプトを実行します。
-# WORKING_DIRECTORY: コマンドの実行ディレクトリ。ビルドディレクトリを指定します。
 add_test(
     NAME nkCryptoTool_E2E_Tests
     COMMAND "${CMAKE_COMMAND}"
@@ -133,8 +132,40 @@ if(MINGW)
     endforeach()
 endif()
 
+# ==============================================================================
+# Packaging Configuration (CPack)
+# ==============================================================================
 include(InstallRequiredSystemLibraries)
 set(CPACK_GENERATOR "ZIP")
 set(CPACK_PACKAGE_NAME "nkCryptoTool")
-set(CPACK_PACKAGE_VERSION "1.0.0")
+
+# --- Gitタグからパッケージバージョンを自動設定 ---
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --tags --dirty=-dirty --always
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_VERSION_STRING
+        RESULT_VARIABLE GIT_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(GIT_RESULT EQUAL 0 AND GIT_VERSION_STRING)
+        # 先頭の "v" または "V" を削除
+        string(REGEX REPLACE "^[vV]" "" GIT_VERSION_STRING "${GIT_VERSION_STRING}")
+        # RPMなどのために、最初のハイフン(-)をドット(.)に置換 (例: 1.2.3-4 -> 1.2.3.4)
+        string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+)-" "\\1." GIT_VERSION_STRING "${GIT_VERSION_STRING}")
+        set(CPACK_PACKAGE_VERSION "${GIT_VERSION_STRING}")
+    else()
+        # Gitコマンドが失敗した場合 (Gitリポジトリでない、タグがないなど)
+        set(CPACK_PACKAGE_VERSION "0.0.0-dev")
+    endif()
+else()
+    # Gitが見つからなかった場合
+    set(CPACK_PACKAGE_VERSION "0.0.0-nogit")
+endif()
+
+message(STATUS "CPack: Package version set to: ${CPACK_PACKAGE_VERSION}")
+# --- Gitバージョン設定ここまで ---
+
 include(CPack)
