@@ -338,16 +338,49 @@ void nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesyst
     if (ec) return completion_handler(ec);
 
     state->file_content.resize(std::filesystem::file_size(input_filepath, ec)); if (ec) return completion_handler(ec);
+    
     asio::async_read(state->input_file, asio::buffer(state->file_content), [this, state, pkey = std::move(private_key)](const asio::error_code& read_ec, size_t) mutable {
-        if (read_ec) return state->completion_handler(read_ec);
+        if (read_ec) {
+            state->completion_handler(read_ec);
+            return;
+        }
+
         std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-        size_t sig_len;
-        if (EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, pkey.get()) <= 0) { printOpenSSLErrors(); return state->completion_handler(std::make_error_code(std::errc::io_error)); }
-        if (EVP_DigestSign(mdctx.get(), nullptr, &sig_len, state->file_content.data(), state->file_content.size()) <= 0) { printOpenSSLErrors(); return state->completion_handler(std::make_error_code(std::errc::io_error)); }
+        if (!mdctx) {
+            printOpenSSLErrors();
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+
+        // 1. Get the maximum possible signature size directly from the key.
+        size_t sig_len = EVP_PKEY_get_size(pkey.get());
+        if (sig_len <= 0) {
+            printOpenSSLErrors();
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
         std::vector<unsigned char> signature(sig_len);
-        if (EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, state->file_content.data(), state->file_content.size()) <= 0) { printOpenSSLErrors(); return state->completion_handler(std::make_error_code(std::errc::io_error)); }
+
+        // 2. Initialize the context. For pure signature algorithms like ML-DSA, the digest type is nullptr.
+        if (EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, pkey.get()) <= 0) {
+            printOpenSSLErrors();
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+
+        // 3. Perform the one-shot signing operation. The actual signature length will be written to sig_len.
+        if (EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, state->file_content.data(), state->file_content.size()) <= 0) {
+            printOpenSSLErrors();
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+
+        // 4. Resize the vector to the actual signature length.
         signature.resize(sig_len);
-        asio::async_write(state->output_file, asio::buffer(signature), [state](const asio::error_code& write_ec, size_t) { state->completion_handler(write_ec); });
+
+        asio::async_write(state->output_file, asio::buffer(signature), [state](const asio::error_code& write_ec, size_t) {
+            state->completion_handler(write_ec);
+        });
     });
 }
 
@@ -1215,7 +1248,18 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
         asio::read(input_file, asio::buffer(&len, sizeof(len)), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read iv length");} iv.resize(len);
         asio::read(input_file, asio::buffer(iv), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read iv");}
         
-        uintmax_t header_size = input_file.seek(0, asio::file_base::seek_cur, ec); if(ec) {input_file.close(); throw std::system_error(ec);}
+        uintmax_t header_size = 0;
+#ifdef _WIN32
+        header_size = input_file.seek(0, asio::file_base::seek_cur, ec);
+#else
+        off_t pos = ::lseek(input_file.native_handle(), 0, SEEK_CUR);
+        if (pos == (off_t)-1) {
+            ec.assign(errno, std::system_category());
+        } else {
+            header_size = pos;
+        }
+#endif
+        if(ec) {input_file.close(); throw std::system_error(ec);}
         input_file.close(ec);
 
         std::vector<unsigned char> combined_secret;
@@ -1276,8 +1320,27 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
 #endif
             if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
 
-            uintmax_t file_size = in_final.size(final_ec);
-            in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            uintmax_t file_size = 0;
+#ifdef _WIN32
+            file_size = in_final.size(final_ec);
+            if (!final_ec) {
+                in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
+            }
+#else
+            struct stat stat_buf;
+            if (::fstat(in_final.native_handle(), &stat_buf) != -1) {
+                file_size = stat_buf.st_size;
+            } else {
+                final_ec.assign(errno, std::system_category());
+            }
+            if (!final_ec) {
+                 if(::lseek(in_final.native_handle(), file_size - GCM_TAG_LEN, SEEK_SET) == -1) {
+                     final_ec.assign(errno, std::system_category());
+                 }
+            }
+#endif
+            if(final_ec) {in_final.close(); throw std::system_error(final_ec, "Failed to seek for finalization");}
+            
             co_await asio::async_read(in_final, asio::buffer(*tag), asio::use_awaitable);
 
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("Failed to set GCM tag."); }
