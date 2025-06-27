@@ -63,10 +63,10 @@ static std::vector<unsigned char> ecc_encrypt_chunk_logic(
     EVP_CIPHER_CTX* template_cipher_ctx
 ) {
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for encryption.");
     std::vector<unsigned char> encrypted_data(plain_data.size() + EVP_MAX_BLOCK_LENGTH);
     int outlen = 0;
-    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) return {};
+    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) throw std::runtime_error("OpenSSL Error: Encryption update failed.");
     encrypted_data.resize(outlen);
     return encrypted_data;
 }
@@ -77,11 +77,14 @@ static std::vector<unsigned char> ecc_decrypt_chunk_logic(
     EVP_CIPHER_CTX* template_cipher_ctx
 ) {
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) return {};
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for decryption.");
     std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
     int outlen = 0;
     if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
         // Not an error, final check is with tag.
+        // OpenSSL's EVP_DecryptUpdate can return 0 for valid data if no full blocks are processed yet,
+        // or if padding is involved. Errors are typically indicated by a return value < 0.
+        // We'll rely on EVP_DecryptFinal_ex for actual authentication tag verification.
     }
     decrypted_data.resize(outlen);
     return decrypted_data;
@@ -139,13 +142,13 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
     pub_file.close();
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { printOpenSSLErrors(); return false; }
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize EC key generation context."); }
 
     OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
-    if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) { printOpenSSLErrors(); return false; }
+    if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to set EC group parameters."); }
 
     EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { printOpenSSLErrors(); return false; }
+    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate EC key pair."); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
@@ -161,22 +164,22 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
                                                 nullptr, nullptr) > 0;
     }
 
-    if (!success) { printOpenSSLErrors(); return false; }
+    if (!success) { throw std::runtime_error("OpenSSL Error: Failed to write private key to file."); }
 
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) { printOpenSSLErrors(); return false; }
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to write public key to file."); }
     return true;
 }
 
 std::vector<unsigned char> nkCryptoToolECC::generateSharedSecret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr));
     if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) {
-        printOpenSSLErrors(); return {};
+        throw std::runtime_error("OpenSSL Error: Failed to initialize shared secret derivation.");
     }
     size_t secret_len;
-    if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) { printOpenSSLErrors(); return {}; }
+    if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get shared secret length."); }
     std::vector<unsigned char> secret(secret_len);
-    if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) { printOpenSSLErrors(); return {}; }
+    if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to derive shared secret."); }
     secret.resize(secret_len);
     return secret;
 }
@@ -197,18 +200,18 @@ void nkCryptoToolECC::encryptFile(
     if (!recipient_public_key) return wrapped_handler(std::make_error_code(std::errc::invalid_argument));
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx_eph(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { return wrapped_handler(std::make_error_code(std::errc::io_error)); }
+    if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to init ephemeral keygen."); }
     OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
-    if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { return wrapped_handler(std::make_error_code(std::errc::io_error)); }
+    if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to set ephemeral key params."); }
     EVP_PKEY* eph_pkey_raw = nullptr;
-    if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { return wrapped_handler(std::make_error_code(std::errc::io_error)); }
+    if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral key."); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key(eph_pkey_raw);
     
     std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
     std::vector<unsigned char> iv(GCM_IV_LEN);
     RAND_bytes(iv.data(), GCM_IV_LEN);
     std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256");
-    if (encryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error));
+    if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key.");
 
     std::error_code ec;
     uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec);
@@ -238,7 +241,7 @@ void nkCryptoToolECC::encryptFile(
     if (ec) return wrapped_handler(ec);
     
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
-    PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get());
+    if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get())) throw std::runtime_error("OpenSSL Error: Failed to write ephemeral public key to BIO.");
     BUF_MEM *bio_buf;
     BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
     uint32_t key_len = bio_buf->length;
@@ -248,7 +251,7 @@ void nkCryptoToolECC::encryptFile(
     asio::write(state->output_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec) return wrapped_handler(ec);
     asio::write(state->output_file, asio::buffer(iv), ec); if(ec) return wrapped_handler(ec);
 
-    EVP_EncryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+    if (EVP_EncryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data()) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize encryption cipher.");
     startEncryptionPipeline(state, total_input_size);
 }
 
@@ -307,13 +310,13 @@ void nkCryptoToolECC::decryptFile(
     
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(eph_pub_key_buf.data(), key_len)); 
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); 
-    if(!eph_pub_key) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
+    if(!eph_pub_key) throw std::runtime_error("OpenSSL Error: Failed to read ephemeral public key from BIO."); 
     
     std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); 
     std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256"); 
-    if (decryption_key.empty()) return wrapped_handler(std::make_error_code(std::errc::io_error)); 
+    if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key."); 
     
-    EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data()); 
+    if (EVP_DecryptInit_ex(state->cipher_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data()) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize decryption cipher."); 
     
     uintmax_t total_file_size = std::filesystem::file_size(input_filepath, ec); 
     size_t header_total_size = sizeof(FileHeader) + sizeof(key_len) + key_len + sizeof(iv_len) + iv_len; 
@@ -333,8 +336,8 @@ void nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesyst
     auto private_key = loadPrivateKey(signing_private_key_path, "ECC signing private key");
     if (!private_key) return completion_handler(std::make_error_code(std::errc::invalid_argument));
     const EVP_MD* digest = EVP_get_digestbyname(digest_algo.c_str());
-    if (!digest) return completion_handler(std::make_error_code(std::errc::invalid_argument));
-    EVP_DigestSignInit(state->md_ctx.get(), nullptr, digest, nullptr, private_key.get());
+    if (!digest) throw std::runtime_error("OpenSSL Error: Unknown digest algorithm.");
+    if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing.");
     std::error_code ec;
     state->total_input_size = std::filesystem::file_size(input_filepath, ec);
     if(ec) return completion_handler(ec);
@@ -474,11 +477,11 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     if (!recipient_public_key) { throw std::runtime_error("Failed to load recipient public key."); }
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx_eph(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to init ephemeral keygen.");}
+    if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to init ephemeral keygen.");}
     OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
-    if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to set ephemeral key params.");}
+    if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to set ephemeral key params.");}
     EVP_PKEY* eph_pkey_raw = nullptr;
-    if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to generate ephemeral key.");}
+    if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral key.");}
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key(eph_pkey_raw);
     
     std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
@@ -488,7 +491,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     if (encryption_key.empty()) { throw std::runtime_error("Failed to derive encryption key."); }
     
     std::shared_ptr<EVP_CIPHER_CTX> template_ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
-    EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+    if (EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize encryption cipher."); }
 
     FileHeader header; 
     memcpy(header.magic, MAGIC, sizeof(MAGIC)); 
@@ -497,7 +500,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     co_await asio::async_write(output_file, asio::buffer(&header, sizeof(header)), asio::use_awaitable);
 
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
-    PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get());
+    if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_private_key.get())) { throw std::runtime_error("OpenSSL Error: Failed to write ephemeral public key to BIO."); }
     BUF_MEM *bio_buf; BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
     uint32_t key_len = bio_buf->length;
     uint32_t iv_len = iv.size();
@@ -519,7 +522,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     for (;; read_sequence++) {
         if (*first_exception) break; 
         std::vector<unsigned char> buffer(READ_CHUNK_SIZE);
-        auto [read_ec, bytes_read] = co_await input_file.async_read_some(asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
+        auto [read_ec, bytes_read] = co_await input_file.async_read_some(asio::buffer(buffer), asio::as_tuple(asio::use_awaitable);
         
         if(read_ec && read_ec != asio::error::eof) {
             *first_exception = std::make_exception_ptr(std::system_error(read_ec));
@@ -588,7 +591,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
     int final_len = 0;
     if (EVP_EncryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) {
-        printOpenSSLErrors(); throw std::runtime_error("Failed to finalize encryption.");
+        throw std::runtime_error("OpenSSL Error: Failed to finalize encryption.");
     }
     if (final_len > 0) {
         co_await asio::async_write(output_file, asio::buffer(final_block.data(), final_len), asio::use_awaitable);
@@ -596,7 +599,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
 
     std::vector<unsigned char> tag(GCM_TAG_LEN);
     if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
-        printOpenSSLErrors(); throw std::runtime_error("Failed to get GCM tag.");
+        throw std::runtime_error("OpenSSL Error: Failed to get GCM tag.");
     }
     co_await asio::async_write(output_file, asio::buffer(tag), asio::use_awaitable);
     

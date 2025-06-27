@@ -76,15 +76,6 @@ void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
 }
 std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
 
-void nkCryptoToolBase::printOpenSSLErrors() {
-    unsigned long err_code;
-    while ((err_code = ERR_get_error())) {
-        char err_buf[256];
-        ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
-        std::cerr << "OpenSSL Error: " << err_buf << std::endl;
-    }
-}
-
 void nkCryptoToolBase::printProgress(double percentage) {
     int barWidth = 50;
     std::cout << "[";
@@ -105,7 +96,7 @@ std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(cons
         return nullptr;
     }
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!pkey) printOpenSSLErrors();
+    if (!pkey) throw std::runtime_error("OpenSSL Error: Failed to read public key.");
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
@@ -116,7 +107,7 @@ std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(con
         return nullptr;
     }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)key_description);
-    if (!pkey) printOpenSSLErrors();
+    if (!pkey) throw std::runtime_error("OpenSSL Error: Failed to read private key.");
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
@@ -124,9 +115,9 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
                                                       const std::string& salt_str, const std::string& info_str,
                                                       const std::string& digest_algo) {
     std::unique_ptr<EVP_KDF, EVP_KDF_Deleter> kdf(EVP_KDF_fetch(nullptr, "HKDF", nullptr));
-    if (!kdf) { printOpenSSLErrors(); return {}; }
+    if (!kdf) { throw std::runtime_error("OpenSSL Error: Failed to fetch HKDF."); }
     std::unique_ptr<EVP_KDF_CTX, EVP_KDF_CTX_Deleter> kctx(EVP_KDF_CTX_new(kdf.get()));
-    if (!kctx) { printOpenSSLErrors(); return {}; }
+    if (!kctx) { throw std::runtime_error("OpenSSL Error: Failed to create HKDF context."); }
     OSSL_PARAM params[5];
     int p = 0;
     params[p++] = OSSL_PARAM_construct_utf8_string("digest", (char*)digest_algo.c_str(), 0);
@@ -136,8 +127,7 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
     params[p] = OSSL_PARAM_construct_end();
     std::vector<unsigned char> derived_key(output_len);
     if (EVP_KDF_derive(kctx.get(), derived_key.data(), output_len, params) <= 0) {
-        printOpenSSLErrors();
-        return {};
+        throw std::runtime_error("OpenSSL Error: Failed to derive key with HKDF.");
     }
     return derived_key;
 }
@@ -164,9 +154,8 @@ void nkCryptoToolBase::handleReadForEncryption(std::shared_ptr<AsyncStateBase> s
 
     int outlen = 0;
     if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, data_to_encrypt, len_to_encrypt) <= 0) {
-        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::io_error));
-        return;
+        throw std::runtime_error("OpenSSL Error: Encryption update failed.");
     }
     
     state->total_bytes_processed += bytes_transferred;
@@ -186,9 +175,8 @@ void nkCryptoToolBase::handleWriteForEncryption(std::shared_ptr<AsyncStateBase> 
 void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
     int outlen = 0;
     if (EVP_EncryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
-        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::io_error));
-        return;
+        throw std::runtime_error("OpenSSL Error: Encryption finalization failed.");
     }
     
     std::error_code ec;
@@ -196,9 +184,8 @@ void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> 
     if (ec) { state->completion_handler(ec); return; }
 
     if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
-        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::io_error));
-        return;
+        throw std::runtime_error("OpenSSL Error: Failed to get GCM tag.");
     }
 
     asio::write(state->output_file, asio::buffer(state->tag), ec);
@@ -232,9 +219,8 @@ void nkCryptoToolBase::handleReadForDecryption(std::shared_ptr<AsyncStateBase> s
     
     int outlen = 0;
     if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), bytes_transferred) <= 0) {
-        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::operation_not_permitted));
-        return;
+        throw std::runtime_error("OpenSSL Error: Decryption update failed.");
     }
 
     state->total_bytes_processed += bytes_transferred;
@@ -287,9 +273,8 @@ void nkCryptoToolBase::finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> 
     int outlen = 0;
     if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
         // タグが一致しない場合、この関数が失敗する
-        printOpenSSLErrors();
         state->completion_handler(std::make_error_code(std::errc::operation_not_permitted));
-        return;
+        throw std::runtime_error("OpenSSL Error: Decryption finalization failed or tag mismatch.");
     }
 
     // 最終ブロックがあれば書き込む
