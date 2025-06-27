@@ -12,6 +12,8 @@
 #   USE_PIPELINE: BOOL true to enable pipeline processing, false otherwise
 #
 function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
+    set(TEST_RESULT 0)
+
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
@@ -48,7 +50,9 @@ function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
     endif()
 
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     # --- Build command arguments ---
@@ -81,21 +85,27 @@ function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
     message(STATUS "  -> Encrypting file...")
     execute_process(COMMAND "${NK_TOOL_EXE}" ${ENCRYPT_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     # --- Decryption ---
     message(STATUS "  -> Decrypting file...")
     execute_process(COMMAND "${NK_TOOL_EXE}" ${DECRYPT_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     # --- Verification ---
     message(STATUS "  -> Verifying file content...")
     execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] Verification failed: Decrypted file does not match original.")
+        message(STATUS "  [FAILED] Verification failed: Decrypted file does not match original.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption${SCENARIO_VARIANT}")
@@ -104,6 +114,8 @@ endfunction()
 
 # --- Scenario Definition: Signing/Verification (remains specific) ---
 function(run_signing_scenario MODE)
+    set(TEST_RESULT 0)
+
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
@@ -120,7 +132,9 @@ function(run_signing_scenario MODE)
     message(STATUS "  -> Generating ${MODE} signing keys...")
     execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} sign key generation failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} sign key generation failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     message(STATUS "  -> Signing file...")
@@ -128,7 +142,9 @@ function(run_signing_scenario MODE)
         COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_${MODE}.key" "${TEST_INPUT_FILE}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
 
     message(STATUS "  -> Verifying signature...")
@@ -136,7 +152,9 @@ function(run_signing_scenario MODE)
         COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_${MODE}.key" "${TEST_INPUT_FILE}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
-        message(FATAL_ERROR "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signature verification failed.")
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signature verification failed.")
+        set(TEST_RESULT 1)
+        return()
     endif()
     message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
 endfunction()
@@ -146,21 +164,54 @@ endfunction()
 # --- Main script execution: Call all scenarios
 # ===================================================================
 
+# This part is now commented out as individual tests will be added from CMakeLists.txt
 # --- Run Standard Encryption Scenarios ---
-run_encryption_scenario(hybrid OFF OFF)
-run_encryption_scenario(pqc    OFF OFF)
-run_encryption_scenario(ecc    OFF OFF)
+# run_encryption_scenario(hybrid OFF OFF)
+# run_encryption_scenario(pqc    OFF OFF)
+# run_encryption_scenario(ecc    OFF OFF)
 
 # --- Run Parallel Encryption Scenarios ---
-run_encryption_scenario(hybrid ON  OFF)
-run_encryption_scenario(pqc    ON  OFF)
-run_encryption_scenario(ecc    ON  OFF)
+# run_encryption_scenario(hybrid ON  OFF)
+# run_encryption_scenario(pqc    ON  OFF)
+# run_encryption_scenario(ecc    ON  OFF)
 
 # --- Run Pipeline Encryption Scenarios ---
-run_encryption_scenario(pqc    OFF ON)
-run_encryption_scenario(hybrid OFF ON)
-run_encryption_scenario(ecc    OFF ON)
+# run_encryption_scenario(pqc    OFF ON)
+# run_encryption_scenario(hybrid OFF ON)
+# run_encryption_scenario(ecc    OFF ON)
 
 # --- Run Signing Scenarios ---
-run_signing_scenario(pqc)
-run_signing_scenario(ecc)
+# run_signing_scenario(pqc)
+# run_signing_scenario(ecc)
+
+# Macro to define an E2E test for CTest
+macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING)
+    add_test(
+        NAME ${TEST_NAME}
+        COMMAND "${CMAKE_COMMAND}"
+            -D NK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
+            -D TEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
+            -D TEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/E2ETestOutput
+            -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
+            -D SCENARIO_MODE=${MODE}
+            -D SCENARIO_PARALLEL=${PARALLEL}
+            -D SCENARIO_PIPELINE=${PIPELINE}
+            -D SCENARIO_SIGNING=${SIGNING}
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+endmacro()
+
+# Logic to execute a specific scenario when called via cmake -P
+if(DEFINED SCENARIO_MODE)
+    if(SCENARIO_SIGNING)
+        run_signing_scenario(${SCENARIO_MODE})
+    else()
+        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL} ${SCENARIO_PIPELINE})
+    endif()
+    # Exit with the test result
+    if(TEST_RESULT EQUAL 0)
+        message(STATUS "Scenario ${SCENARIO_MODE} completed successfully.")
+    else()
+        message(FATAL_ERROR "Scenario ${SCENARIO_MODE} failed.")
+    endif()
+endif()

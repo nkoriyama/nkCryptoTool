@@ -93,16 +93,27 @@ enable_testing()
 set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
 file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
 
-# CTestにE2Eテストスクリプトを追加
-add_test(
-    NAME nkCryptoTool_E2E_Tests
-    COMMAND "${CMAKE_COMMAND}"
-        -D NK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
-        -D TEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
-        -D TEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/E2ETestOutput
-        -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
-    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
+# Include the E2E test definitions
+include("${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake")
+
+# --- Run Standard Encryption Scenarios ---
+add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF)
+add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF)
+add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF)
+
+# --- Run Parallel Encryption Scenarios ---
+add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF)
+add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF)
+add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF)
+
+# --- Run Pipeline Encryption Scenarios ---
+add_e2e_test(E2E_PQC_Pipeline_Encryption    pqc    OFF ON  OFF)
+add_e2e_test(E2E_Hybrid_Pipeline_Encryption hybrid OFF ON  OFF)
+add_e2e_test(E2E_ECC_Pipeline_Encryption    ecc    OFF ON  OFF)
+
+# --- Run Signing Scenarios ---
+add_e2e_test(E2E_PQC_Signing pqc OFF OFF ON)
+add_e2e_test(E2E_ECC_Signing ecc OFF OFF ON)
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)
