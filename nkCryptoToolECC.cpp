@@ -129,15 +129,13 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
 bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     std::ofstream priv_file(private_key_path, std::ios::out | std::ios::binary);
     if (!priv_file.is_open()) {
-        std::cerr << "Error creating private key file: " << private_key_path << std::endl;
-        return false;
+        throw std::runtime_error("Error creating private key file: " + private_key_path.string());
     }
     priv_file.close(); 
 
     std::ofstream pub_file(public_key_path, std::ios::out | std::ios::binary);
     if (!pub_file.is_open()) {
-        std::cerr << "Error creating public key file: " << public_key_path << std::endl;
-        return false;
+        throw std::runtime_error("Error creating public key file: " + public_key_path.string());
     }
     pub_file.close();
 
@@ -152,7 +150,7 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { std::cerr << "Error creating BIO for private key file: " << private_key_path << std::endl; return false; }
+    if (!priv_bio) { throw std::runtime_error("Error creating BIO for private key file: " + private_key_path.string()); }
 
     bool success = false;
     if (passphrase.empty()) {
@@ -522,7 +520,7 @@ asio::awaitable<void> nkCryptoToolECC::encryptFileParallel(
     for (;; read_sequence++) {
         if (*first_exception) break; 
         std::vector<unsigned char> buffer(READ_CHUNK_SIZE);
-        auto [read_ec, bytes_read] = co_await input_file.async_read_some(asio::buffer(buffer), asio::as_tuple(asio::use_awaitable);
+        auto [read_ec, bytes_read] = co_await input_file.async_read_some(asio::buffer(buffer), asio::as_tuple(asio::use_awaitable));
         
         if(read_ec && read_ec != asio::error::eof) {
             *first_exception = std::make_exception_ptr(std::system_error(read_ec));

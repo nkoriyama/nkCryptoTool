@@ -149,7 +149,7 @@ bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& pub
     if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ML-KEM key pair."); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> kem_key(pkey);
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { std::cerr << "Error creating private key file: " << private_key_path << std::endl; return false; }
+    if (!priv_bio) { throw std::runtime_error("Error creating private key file: " + private_key_path.string()); }
     bool success = false;
     if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
     } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
@@ -166,7 +166,7 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public
     if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ML-DSA key pair."); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> dsa_key(pkey);
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { std::cerr << "Error creating private key file: " << private_key_path << std::endl; return false; }
+    if (!priv_bio) { throw std::runtime_error("Error creating private key file: " + private_key_path.string()); }
     bool success = false;
     if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
     } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
@@ -1005,18 +1005,18 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallelHybrid(
     auto recipient_mlkem_private_key = loadPrivateKey(recipient_mlkem_private_key_path, "ML-KEM private key");
     if (!recipient_mlkem_private_key) throw std::runtime_error("Failed to load user ML-KEM private key.");
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
-    if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to init PQC decapsulation."); }
+        if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to init PQC decapsulation."); }
     size_t secret_len_mlkem = 0;
-    if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to get PQC decapsulation secret length."); }
+    if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get PQC decapsulation secret length."); }
     std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
-    if (EVP_PKEY_decapsulate(kem_ctx.get(), secret_mlkem.data(), &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Decapsulation failed. The private key may be incorrect or the data corrupted."); }
+    if (EVP_PKEY_decapsulate(kem_ctx.get(), secret_mlkem.data(), &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) { throw std::runtime_error("Decapsulation failed. The private key may be incorrect or the data corrupted."); }
 
     // 2. ECC (ECDH)
     auto recipient_ecdh_private_key = loadPrivateKey(recipient_ecdh_private_key_path, "ECDH private key");
     if (!recipient_ecdh_private_key) throw std::runtime_error("Failed to load user ECDH private key.");
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
-    if(!ephemeral_pub_key) { printOpenSSLErrors(); throw std::runtime_error("Failed to parse ephemeral ECDH key."); }
+    if(!ephemeral_pub_key) { throw std::runtime_error("OpenSSL Error: Failed to parse ephemeral ECDH key."); }
     std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(recipient_ecdh_private_key.get(), ephemeral_pub_key.get());
     if (secret_ecdh.empty()) { printOpenSSLErrors(); throw std::runtime_error("ECDH shared secret generation failed."); }
 
@@ -1088,7 +1088,7 @@ asio::awaitable<void> nkCryptoToolPQC::decryptFileParallelHybrid(
     if(EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag.data()) <= 0) { throw std::runtime_error("Failed to set GCM tag."); }
     std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
     int final_len = 0;
-    if (EVP_DecryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with."); }
+    if (EVP_DecryptFinal_ex(template_ctx.get(), final_block.data(), &final_len) <= 0) { throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with."); }
     if(final_len > 0) { co_await asio::async_write(output_file, asio::buffer(final_block.data(), final_len), asio::use_awaitable); }
 
     printProgress(1.0);
@@ -1125,24 +1125,24 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         if (!recipient_mlkem_public_key) throw std::runtime_error("Failed to load recipient ML-KEM public key.");
 
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
-        if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate_init failed."); }
+        if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) { throw std::runtime_error("OpenSSL Error: EVP_PKEY_encapsulate_init failed."); }
         size_t secret_len_mlkem = 0, enc_len_mlkem = 0;
-        if (EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &enc_len_mlkem, nullptr, &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate get length failed."); }
+                        if (EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &enc_len_mlkem, nullptr, &secret_len_mlkem) <= 0) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: EVP_PKEY_encapsulate get length failed."); }
         std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
         encapsulated_key_mlkem.resize(enc_len_mlkem);
-        if (EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_mlkem.data(), &enc_len_mlkem, secret_mlkem.data(), &secret_len_mlkem) <= 0) { printOpenSSLErrors(); throw std::runtime_error("EVP_PKEY_encapsulate failed."); }
+        if (EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_mlkem.data(), &enc_len_mlkem, secret_mlkem.data(), &secret_len_mlkem) <= 0) { throw std::runtime_error("OpenSSL Error: EVP_PKEY_encapsulate failed."); }
         combined_secret = secret_mlkem;
 
         if (is_hybrid) {
             auto recipient_ecdh_public_key = loadPublicKey(key_paths.at("recipient-ecdh-pubkey"));
             if (!recipient_ecdh_public_key) throw std::runtime_error("Failed to load recipient ECDH public key.");
             auto ephemeral_ecdh_key = generate_ephemeral_ec_key();
-            if (!ephemeral_ecdh_key) { printOpenSSLErrors(); throw std::runtime_error("Failed to generate ephemeral ECDH key."); }
+            if (!ephemeral_ecdh_key) { throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral ECDH key."); }
             std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(ephemeral_ecdh_key.get(), recipient_ecdh_public_key.get());
-            if (secret_ecdh.empty()) { printOpenSSLErrors(); throw std::runtime_error("ECDH shared secret generation failed."); }
+            if (secret_ecdh.empty()) { throw std::runtime_error("OpenSSL Error: ECDH shared secret generation failed."); }
             
             std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
-            if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_ecdh_key.get())) { printOpenSSLErrors(); throw std::runtime_error("Failed to write ephemeral ECDH key to BIO."); }
+            if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_ecdh_key.get())) { throw std::runtime_error("Failed to write ephemeral ECDH key to BIO."); }
             BUF_MEM *bio_buf; BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
             ephemeral_ecdh_pubkey_bytes.assign(bio_buf->data, bio_buf->data + bio_buf->length);
             combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
@@ -1195,9 +1195,9 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
             auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
             auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
             int final_len = 0;
-            if (EVP_EncryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to finalize encryption."); }
+            if (EVP_EncryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to finalize encryption."); }
             final_block->resize(final_len);
-            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to get GCM tag."); }
+            if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get GCM tag."); }
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
             co_await asio::async_write(out_final, asio::buffer(*tag), asio::use_awaitable);
             printProgress(1.0);
@@ -1352,7 +1352,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
             co_await asio::async_read(in_final, asio::buffer(*tag), asio::use_awaitable);
 
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("Failed to set GCM tag."); }
-            if (EVP_DecryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with."); }
+            if (EVP_DecryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) { throw std::runtime_error("OpenSSL Error: GCM tag verification failed. File may be corrupted or tampered with."); }
             final_block->resize(final_len);
             
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }

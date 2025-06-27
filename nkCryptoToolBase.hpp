@@ -177,8 +177,11 @@ private:
     void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
     void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
     // void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading); // 不要になるため削除
-    void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred);
+    void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
     void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
     void finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state);
+
+    public:
+    static void printOpenSSLErrors();
 };
 #endif // NKCRYPTOTOOLBASE_HPP

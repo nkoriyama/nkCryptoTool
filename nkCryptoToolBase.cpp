@@ -76,6 +76,23 @@ void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
 }
 std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
 
+void nkCryptoToolBase::printOpenSSLErrors() {
+    std::string error_msg;
+    unsigned long err_code;
+    while ((err_code = ERR_get_error())) {
+        char err_buf[256];
+        ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
+        if (!error_msg.empty()) {
+            error_msg += "; ";
+        }
+        error_msg += err_buf;
+    }
+    if (error_msg.empty()) {
+        error_msg = "Unknown OpenSSL error.";
+    }
+    std::cerr << "OpenSSL Error: " << error_msg << std::endl;
+}
+
 void nkCryptoToolBase::printProgress(double percentage) {
     int barWidth = 50;
     std::cout << "[";
@@ -92,22 +109,20 @@ void nkCryptoToolBase::printProgress(double percentage) {
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
-        std::cerr << "Error loading public key: " << public_key_path << std::endl;
-        return nullptr;
+        throw std::runtime_error("Error loading public key: Failed to open file " + public_key_path.string());
     }
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!pkey) throw std::runtime_error("OpenSSL Error: Failed to read public key.");
+    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read public key."); }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
-        std::cerr << "Error loading private key: " << private_key_path << std::endl;
-        return nullptr;
+        throw std::runtime_error("Error loading private key: Failed to open file " + private_key_path.string());
     }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)key_description);
-    if (!pkey) throw std::runtime_error("OpenSSL Error: Failed to read private key.");
+    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read private key."); }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
@@ -190,7 +205,7 @@ void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> 
 
     asio::write(state->output_file, asio::buffer(state->tag), ec);
     printProgress(1.0);
-    state->completion_handler(ec);
+    state->completion_handler({});
 }
 
 // --- 復号パイプライン（シンプル版） ---
