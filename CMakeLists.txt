@@ -97,27 +97,31 @@ file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool 
 include("${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake")
 
 # --- Run Standard Encryption Scenarios ---
-add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF)
-add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF)
-add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF)
+add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF)
 
 # --- Run Parallel Encryption Scenarios ---
-add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF)
-add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF)
-add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF)
+add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF)
+add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF)
+add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF)
 
 # --- Run Pipeline Encryption Scenarios ---
-add_e2e_test(E2E_PQC_Pipeline_Encryption    pqc    OFF ON  OFF OFF)
-add_e2e_test(E2E_Hybrid_Pipeline_Encryption hybrid OFF ON  OFF OFF)
-add_e2e_test(E2E_ECC_Pipeline_Encryption    ecc    OFF ON  OFF OFF)
+add_e2e_test(E2E_PQC_Pipeline_Encryption    pqc    OFF ON  OFF OFF OFF)
+add_e2e_test(E2E_Hybrid_Pipeline_Encryption hybrid OFF ON  OFF OFF OFF)
+add_e2e_test(E2E_ECC_Pipeline_Encryption    ecc    OFF ON  OFF OFF OFF)
 
 # --- Run Signing Scenarios ---
-add_e2e_test(E2E_PQC_Signing pqc OFF OFF ON OFF)
-add_e2e_test(E2E_ECC_Signing ecc OFF OFF ON OFF)
+add_e2e_test(E2E_PQC_Signing pqc OFF OFF ON OFF OFF)
+add_e2e_test(E2E_ECC_Signing ecc OFF OFF ON OFF OFF)
 
 # --- Run Regenerate Public Key Tests ---
-add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF REGENERATE_PUBKEY)
-add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF REGENERATE_PUBKEY)
+add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF ON OFF)
+add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF ON OFF)
+
+# --- Run Regenerate Signing Public Key Tests ---
+add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON)
+add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF ON)
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)
