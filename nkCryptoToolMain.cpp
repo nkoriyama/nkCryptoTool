@@ -154,6 +154,7 @@ void display_usage() {
               << "  --digest-algo <algo> Hashing algorithm (e.g., SHA256, SHA3-256).\n\n"
               << "Other Options:\n"
               << "  --key-dir <path>    Base directory for keys (default: 'keys').\n"
+              << "  --regenerate-pubkey <private_key_path> <public_key_path> [passphrase] - Regenerate public key from private key.\n"
               << "  -h, --help          Display this help message.\n";
 }
 
@@ -180,7 +181,7 @@ int main(int argc, char* argv[]) {
         OPT_RECIPIENT_MLKEM_PUBKEY, OPT_RECIPIENT_ECDH_PUBKEY, 
         OPT_RECIPIENT_MLKEM_PRIVKEY, OPT_RECIPIENT_ECDH_PRIVKEY, 
         OPT_SIGNING_PRIVKEY, OPT_SIGNING_PUBKEY, OPT_SIGNATURE, 
-        OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_PARALLEL, OPT_PIPELINE 
+        OPT_DIGEST_ALGO, OPT_KEY_DIR, OPT_PARALLEL, OPT_PIPELINE, OPT_REGENERATE_PUBKEY 
     };
     
     static struct option long_options[] = {
@@ -196,6 +197,7 @@ int main(int argc, char* argv[]) {
         {"verify", no_argument, nullptr, OPT_VERIFY},
         {"parallel", no_argument, nullptr, OPT_PARALLEL},
         {"pipeline", no_argument, nullptr, OPT_PIPELINE}, 
+        {"regenerate-pubkey", no_argument, nullptr, OPT_REGENERATE_PUBKEY},
         {"recipient-pubkey", required_argument, nullptr, OPT_RECIPIENT_PUBKEY},
         {"user-privkey", required_argument, nullptr, OPT_USER_PRIVKEY},
         {"recipient-mlkem-pubkey", required_argument, nullptr, OPT_RECIPIENT_MLKEM_PUBKEY},
@@ -239,6 +241,7 @@ int main(int argc, char* argv[]) {
             case OPT_SIGNATURE: options["signature"] = optarg; break;
             case OPT_DIGEST_ALGO: options["digest-algo"] = optarg; break;
             case OPT_KEY_DIR: options["key-dir"] = optarg; break;
+            case OPT_REGENERATE_PUBKEY: flags["regenerate-pubkey"] = true; break;
             default: display_usage(); return 1;
         }
     }
@@ -248,6 +251,7 @@ int main(int argc, char* argv[]) {
     // 引数検証
     bool needs_input_file = flags["encrypt"] || flags["decrypt"] || flags["sign"] || flags["verify"];
     bool is_key_gen = flags["gen-enc-key"] || flags["gen-sign-key"];
+    bool is_regenerate_pubkey = flags["regenerate-pubkey"];
 
     if (flags["parallel"] && flags["pipeline"]) {
         std::cerr << "Error: --parallel and --pipeline cannot be used at the same time." << std::endl;
@@ -260,9 +264,18 @@ int main(int argc, char* argv[]) {
         if (non_option_args.size() > 1) {
             std::cerr << "Error: Too many input files specified. Please provide only one." << std::endl; return 1;
         }
-    } else if (!is_key_gen && argc <= 1) {
+    } else if (!is_key_gen && !is_regenerate_pubkey && argc <= 1) {
         display_usage();
         return 0;
+    }
+    if (is_regenerate_pubkey) {
+        if (non_option_args.size() < 2) {
+            std::cerr << "Error: --regenerate-pubkey requires private_key_path and public_key_path." << std::endl;
+            return 1;
+        }
+        options["regenerate-privkey-path"] = non_option_args[0];
+        options["regenerate-pubkey-path"] = non_option_args[1];
+        non_option_args.erase(non_option_args.begin(), non_option_args.begin() + 2);
     }
     if ((flags["encrypt"] || flags["decrypt"]) && options["output-file"].empty()) {
         std::cerr << "Error: --output-file must be specified for encryption/decryption." << std::endl; return 1;
@@ -286,7 +299,8 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> path_option_keys = {
         "output-file", "recipient-pubkey", "user-privkey", "recipient-mlkem-pubkey",
         "recipient-ecdh-pubkey", "recipient-mlkem-privkey", "recipient-ecdh-privkey",
-        "signing-privkey", "signing-pubkey", "signature"
+        "signing-privkey", "signing-pubkey", "signature",
+        "regenerate-privkey-path", "regenerate-pubkey-path"
     };
     for(const auto& key : path_option_keys) {
         if (options.count(key) && !options.at(key).empty()) {
@@ -356,6 +370,15 @@ int main(int argc, char* argv[]) {
             }
             if (success) { std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl; } 
             else { std::cerr << "Error: Key pair generation failed." << std::endl; return_code = 1; }
+        }
+        else if (is_regenerate_pubkey) {
+            std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
+            if (crypto_handler->regeneratePublicKey(options["regenerate-privkey-path"], options["regenerate-pubkey-path"], passphrase_to_use)) {
+                std::cout << "Public key successfully regenerated and saved to: " << options["regenerate-pubkey-path"] << std::endl;
+            } else {
+                std::cerr << "Failed to regenerate public key." << std::endl;
+                return_code = 1;
+            }
         }
         else if (flags["parallel"] && (flags["encrypt"] || flags["decrypt"])) {
             asio::io_context main_io_context;

@@ -183,5 +183,6 @@ private:
 
     public:
     static void printOpenSSLErrors();
+    bool regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase);
 };
 #endif // NKCRYPTOTOOLBASE_HPP
