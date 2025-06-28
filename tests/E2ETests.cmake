@@ -159,6 +159,98 @@ function(run_signing_scenario MODE)
     message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
 endfunction()
 
+# --- Scenario Definition: Regenerate Public Key and Use for Encryption/Decryption ---
+function(run_regenerate_pubkey_test MODE)
+    set(TEST_RESULT 0)
+
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
+    message(STATUS "\n=============================================")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Regenerate Public Key Test")
+    message(STATUS "=============================================")
+
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}/${MODE}_regenerate_pubkey")
+    set(KEY_DIR "${SCENARIO_DIR}/keys")
+    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted.bin")
+    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted.txt")
+    set(ORIGINAL_PUBLIC_KEY "${KEY_DIR}/public_enc_${MODE}.key")
+    set(REGENERATED_PUBLIC_KEY "${KEY_DIR}/public_enc_${MODE}_regenerated.key")
+    set(PRIVATE_KEY "${KEY_DIR}/private_enc_${MODE}.key")
+
+    file(REMOVE_RECURSE "${SCENARIO_DIR}")
+    file(MAKE_DIRECTORY "${KEY_DIR}")
+
+    # --- Key Generation ---
+    message(STATUS "  -> Generating ${MODE} encryption keys...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
+        set(TEST_RESULT 1)
+        return()
+    endif()
+
+    # --- Regenerate Public Key ---
+    message(STATUS "  -> Regenerating public key from private key...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --regenerate-pubkey "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} public key regeneration failed.")
+        set(TEST_RESULT 1)
+        return()
+    endif()
+
+    # --- Encryption using Regenerated Public Key ---
+    message(STATUS "  -> Encrypting file using regenerated public key...")
+    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        # Hybrid mode regeneration is not yet supported for this test, skip for now
+        message(STATUS "  [SKIPPED] Hybrid mode regeneration test is not yet fully supported.")
+        set(TEST_RESULT 0)
+        return()
+    else()
+        list(APPEND ENCRYPT_ARGS --recipient-pubkey "${REGENERATED_PUBLIC_KEY}")
+    endif()
+    list(APPEND ENCRYPT_ARGS "${TEST_INPUT_FILE}")
+
+    execute_process(COMMAND "${NK_TOOL_EXE}" ${ENCRYPT_ARGS} RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption with regenerated key failed.")
+        set(TEST_RESULT 1)
+        return()
+    endif()
+
+    # --- Decryption using Original Private Key ---
+    message(STATUS "  -> Decrypting file using original private key...")
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        # Hybrid mode decryption is not yet supported for this test, skip for now
+        message(STATUS "  [SKIPPED] Hybrid mode decryption test is not yet fully supported.")
+        set(TEST_RESULT 0)
+        return()
+    else()
+        list(APPEND DECRYPT_ARGS --user-privkey "${PRIVATE_KEY}")
+    endif()
+    list(APPEND DECRYPT_ARGS "${ENCRYPTED_FILE}")
+
+    execute_process(COMMAND "${NK_TOOL_EXE}" ${DECRYPT_ARGS} RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
+        set(TEST_RESULT 1)
+        return()
+    endif()
+
+    # --- Verification ---
+    message(STATUS "  -> Verifying file content...")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] Verification failed: Decrypted file does not match original.")
+        set(TEST_RESULT 1)
+        return()
+    endif()
+
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Regenerate Public Key Test")
+endfunction()
+
 
 # ===================================================================
 # --- Main script execution: Call all scenarios
@@ -185,7 +277,7 @@ endfunction()
 # run_signing_scenario(ecc)
 
 # Macro to define an E2E test for CTest
-macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING)
+macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING REGENERATE_PUBKEY)
     add_test(
         NAME ${TEST_NAME}
         COMMAND "${CMAKE_COMMAND}"
@@ -197,6 +289,7 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING)
             -D SCENARIO_PARALLEL=${PARALLEL}
             -D SCENARIO_PIPELINE=${PIPELINE}
             -D SCENARIO_SIGNING=${SIGNING}
+            -D SCENARIO_REGENERATE_PUBKEY=${REGENERATE_PUBKEY}
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
 endmacro()
@@ -205,6 +298,8 @@ endmacro()
 if(DEFINED SCENARIO_MODE)
     if(SCENARIO_SIGNING)
         run_signing_scenario(${SCENARIO_MODE})
+    elseif(SCENARIO_REGENERATE_PUBKEY)
+        run_regenerate_pubkey_test(${SCENARIO_MODE})
     else()
         run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL} ${SCENARIO_PIPELINE})
     endif()
