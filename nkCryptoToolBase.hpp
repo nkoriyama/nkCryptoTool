@@ -123,27 +123,6 @@ public:
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
     virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
 
-    // --- 仮想関数のシグネチャからCompressionAlgorithm引数を削除 ---
-    virtual void encryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
-    virtual void encryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
-    virtual void decryptFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
-    virtual void decryptFileHybrid(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code)>) = 0;
-
-    // --- 並列処理インターフェース：CompressionAlgorithm引数を削除 ---
-    virtual asio::awaitable<void> encryptFileParallel(
-        asio::io_context& worker_context,
-        std::string input_filepath,
-        std::string output_filepath,
-        std::string recipient_public_key_path
-    ) = 0;
-
-    virtual asio::awaitable<void> decryptFileParallel(
-        asio::io_context& worker_context,
-        std::string input_filepath,
-        std::string output_filepath,
-        std::string user_private_key_path
-    ) = 0;
-
     // --- パイプライン処理インターフェース ---
     virtual void encryptFileWithPipeline(
         asio::io_context& io_context,

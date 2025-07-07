@@ -139,8 +139,6 @@ int main(int argc, char* argv[]) {
             ("decrypt", "Decrypt input file")
             ("sign", "Sign input file")
             ("verify", "Verify signature of input file")
-            ("parallel", "Use coroutine-based parallel processing")
-            ("pipeline", "Use pipeline-based parallel processing")
             ("regenerate-pubkey", "Regenerate public key from private key. Expects <private_key_path> and <public_key_path> as positional arguments.")
             ("recipient-pubkey", "Recipient's public key (for ecc/pqc)", cxxopts::value<std::string>())
             ("user-privkey", "Your private key (for ecc/pqc)", cxxopts::value<std::string>())
@@ -172,11 +170,6 @@ int main(int argc, char* argv[]) {
         bool is_gen_sign_key = result.count("gen-sign-key") > 0;
         bool is_regenerate = result.count("regenerate-pubkey") > 0;
         bool needs_input_file = is_encrypt || is_decrypt || is_sign || is_verify;
-
-        if (result.count("parallel") && result.count("pipeline")) {
-            std::cerr << "Error: --parallel and --pipeline cannot be used at the same time." << std::endl;
-            return 1;
-        }
 
         std::vector<std::string> input_files;
         if (result.count("input")) {
@@ -301,82 +294,28 @@ int main(int argc, char* argv[]) {
                 return_code = 1;
             }
         }
-        else if (result.count("parallel") && (is_encrypt || is_decrypt)) {
-            asio::io_context main_io_context;
-            asio::io_context worker_context;
-            auto work_guard = asio::make_work_guard(worker_context.get_executor());
-            std::vector<std::thread> threads;
-            const auto num_threads = std::max(1u, std::thread::hardware_concurrency());
-            for (unsigned i = 0; i < num_threads; ++i) {
-                threads.emplace_back([&]() { 
-                    try { worker_context.run(); } catch (const std::exception& e) { std::cerr << "FATAL: Unhandled exception in worker thread: " << e.what() << std::endl; } catch (...) { std::cerr << "FATAL: Unknown unhandled exception in worker thread." << std::endl; }
-                });
-            }
-
-            if(is_encrypt) {
-                std::cout << "Starting parallel " << mode << " encryption..." << std::endl;
-                if (mode == "hybrid") {
-                    auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                    asio::co_spawn(main_io_context, pqc_handler->encryptFileParallelHybrid(worker_context, input_filepath.string(), output_filepath, recipient_mlkem_pubkey_path, recipient_ecdh_pubkey_path),
-                        [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel encryption failed: " << e.what() << std::endl; return_code = 1; } } });
-                } else {
-                    asio::co_spawn(main_io_context, crypto_handler->encryptFileParallel(worker_context, input_filepath.string(), output_filepath, recipient_pubkey_path), 
-                        [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel encryption failed: " << e.what() << std::endl; return_code = 1; } } });
-                }
-            } else { // decrypt
-                std::cout << "Starting parallel " << mode << " decryption..." << std::endl;
-                 if (mode == "hybrid") {
-                    auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                    asio::co_spawn(main_io_context, pqc_handler->decryptFileParallelHybrid(worker_context, input_filepath.string(), output_filepath, recipient_mlkem_privkey_path, recipient_ecdh_privkey_path),
-                        [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel decryption failed: " << e.what() << std::endl; return_code = 1; } } });
-                } else {
-                    asio::co_spawn(main_io_context, crypto_handler->decryptFileParallel(worker_context, input_filepath.string(), output_filepath, user_privkey_path), 
-                        [&](std::exception_ptr p) { if (p) { try { std::rethrow_exception(p); } catch (const std::exception& e) { std::cerr << "\nParallel decryption failed: " << e.what() << std::endl; return_code = 1; } } });
-                }
-            }
-            main_io_context.run();
-            work_guard.reset(); 
-            worker_context.stop();
-            for(auto& t : threads) { if (t.joinable()) { t.join(); } }
-        }
         else if (needs_input_file) {
             asio::io_context main_io_context;
             if (is_encrypt) {
-                if (result.count("pipeline")) {
-                    std::cout << "Starting pipeline " << mode << " encryption..." << std::endl;
-                    std::map<std::string, std::string> key_paths;
-                    if (mode == "hybrid") {
-                        key_paths["recipient-mlkem-pubkey"] = recipient_mlkem_pubkey_path;
-                        key_paths["recipient-ecdh-pubkey"] = recipient_ecdh_pubkey_path;
-                    } else {
-                        key_paths["recipient-pubkey"] = recipient_pubkey_path;
-                    }
-                    crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                std::cout << "Starting " << mode << " encryption..." << std::endl;
+                std::map<std::string, std::string> key_paths;
+                if (mode == "hybrid") {
+                    key_paths["recipient-mlkem-pubkey"] = recipient_mlkem_pubkey_path;
+                    key_paths["recipient-ecdh-pubkey"] = recipient_ecdh_pubkey_path;
                 } else {
-                    if (mode == "hybrid") { 
-                        crypto_handler->encryptFileHybrid(main_io_context, input_filepath, output_filepath, recipient_mlkem_pubkey_path, recipient_ecdh_pubkey_path, [&](std::error_code ec){ if(ec) return_code = 1; }); 
-                    } else { 
-                        crypto_handler->encryptFile(main_io_context, input_filepath, output_filepath, recipient_pubkey_path, [&](std::error_code ec){ if(ec) return_code = 1; }); 
-                    }
+                    key_paths["recipient-pubkey"] = recipient_pubkey_path;
                 }
+                crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_decrypt) {
-                if (result.count("pipeline")) {
-                    std::cout << "Starting pipeline " << mode << " decryption..." << std::endl;
-                    std::map<std::string, std::string> key_paths;
-                     if (mode == "hybrid") {
-                        key_paths["recipient-mlkem-privkey"] = recipient_mlkem_privkey_path;
-                        key_paths["recipient-ecdh-privkey"] = recipient_ecdh_privkey_path;
-                    } else {
-                        key_paths["user-privkey"] = user_privkey_path;
-                    }
-                    crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                std::cout << "Starting " << mode << " decryption..." << std::endl;
+                std::map<std::string, std::string> key_paths;
+                    if (mode == "hybrid") {
+                    key_paths["recipient-mlkem-privkey"] = recipient_mlkem_privkey_path;
+                    key_paths["recipient-ecdh-privkey"] = recipient_ecdh_privkey_path;
                 } else {
-                    if (mode == "hybrid") { 
-                        crypto_handler->decryptFileHybrid(main_io_context, input_filepath, output_filepath, recipient_mlkem_privkey_path, recipient_ecdh_privkey_path, [&](std::error_code ec){ if(ec) return_code = 1; }); 
-                    } else { 
-                        crypto_handler->decryptFile(main_io_context, input_filepath, output_filepath, user_privkey_path, "", [&](std::error_code ec){ if(ec) return_code = 1; }); 
-                    }
+                    key_paths["user-privkey"] = user_privkey_path;
                 }
+                crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_sign) {
                 crypto_handler->signFile(main_io_context, input_filepath, signature_path, signing_privkey_path, result["digest-algo"].as<std::string>(), [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_verify) {
