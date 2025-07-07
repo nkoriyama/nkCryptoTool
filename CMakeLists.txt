@@ -28,6 +28,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(asio)
 
+# --- 依存関係の取得: cxxopts ---
+FetchContent_Declare(
+  cxxopts
+  GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+  GIT_TAG        v3.1.1 # 安定したバージョンタグを指定
+)
+FetchContent_MakeAvailable(cxxopts)
+
 # --- 依存関係の取得: Threads ---
 find_package(Threads REQUIRED)
 
@@ -65,6 +73,7 @@ endif()
 target_include_directories(nkCryptoTool PRIVATE
   ${PROJECT_SOURCE_DIR}
   ${asio_SOURCE_DIR}/asio/include
+  ${cxxopts_SOURCE_DIR}/include
 )
 
 # 実行可能ファイルにライブラリをリンクします。
@@ -125,8 +134,15 @@ add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF ON)
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)
-    # MinGWのDLLパス（環境に応じて変更してください）
-    set(MINGW_DLL_DIR "C:/msys64/mingw64/bin")
+    # MinGWのDLLパスを環境変数から取得、なければデフォルト値を使用
+    if(DEFINED ENV{MINGW_PREFIX})
+        set(MINGW_DLL_DIR "$ENV{MINGW_PREFIX}/bin")
+    else()
+        set(MINGW_DLL_DIR "C:/msys64/mingw64/bin")
+        message(WARNING "MINGW_PREFIX environment variable is not set. "
+                        "Defaulting to '${MINGW_DLL_DIR}'. "
+                        "Set MINGW_PREFIX to your MinGW installation path if this is incorrect.")
+    endif()
 
     # 必要なDLLのリスト
     set(MINGW_DLLS

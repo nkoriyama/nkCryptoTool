@@ -100,15 +100,6 @@ protected:
         uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
 
-        // --- 圧縮関連のメンバをすべて削除 ---
-        // CompressionAlgorithm compression_algo = CompressionAlgorithm::NONE;
-        // void* compression_stream = nullptr;
-        // void* decompression_stream = nullptr;
-        // std::vector<unsigned char> compression_buffer;
-        // std::vector<unsigned char> compression_frame_buffer;
-        // std::vector<unsigned char> decryption_buffer;
-        // uint32_t expected_frame_size;
-        
         AsyncStateBase(asio::io_context& io_context);
         virtual ~AsyncStateBase();
     };
