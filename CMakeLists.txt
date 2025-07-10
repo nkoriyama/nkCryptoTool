@@ -115,10 +115,7 @@ add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF)
 
-# --- Run Pipeline Encryption Scenarios ---
-add_e2e_test(E2E_PQC_Pipeline_Encryption    pqc    OFF ON  OFF OFF OFF)
-add_e2e_test(E2E_Hybrid_Pipeline_Encryption hybrid OFF ON  OFF OFF OFF)
-add_e2e_test(E2E_ECC_Pipeline_Encryption    ecc    OFF ON  OFF OFF OFF)
+
 
 # --- Run Signing Scenarios ---
 add_e2e_test(E2E_PQC_Signing pqc OFF OFF ON OFF OFF)

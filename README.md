@@ -7,7 +7,7 @@
 * **デジタル署名・検証**: ファイルの改ざんを検出し、作成者を証明できます。  
 * **ECC (楕円曲線暗号)** および **PQC (耐量子計算機暗号)**、さらにRFC 9180の設計思想に基づきPQC (ML-KEM)とECC (ECDH)を組み合わせた**ハイブリッド暗号**に対応。  
 * **安定したストリーミング処理**: Asioライブラリの非同期I/Oにより、メモリ使用量を抑えつつ、ギガバイト単位の巨大なファイルも安定して暗号化・復号できます。 (PQCの署名・検証はOpenSSLというかML-DSA自体の仕様の制限によりストリーミングに非対応)  
-* **超高速パイプライン処理**: CPUとディスクI/Oを並列で稼働させるパイプラインアーキテクチャにより、OSのファイルキャッシュと連携し、ギガバイト級ファイルの暗号化・復号を数秒で完了させることが可能です。
+
 
 ## **はじめに (How to Get Started)**
 
@@ -61,8 +61,7 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
 暗号化・復号処理では、パフォーマンスを向上させるためのオプションが利用できます。
 
 * **通常モード (デフォルト)**: Asioを利用した非同期I/Oで、メモリ使用量を抑え安定して動作します。  
-* **\--parallel**: CPU処理を並列化し通常モードより高速に動作します。  
-* **\--pipeline (推奨)**: CPU処理とディスクI/Oをパイプラインで並列化する最も高度なモードです。OSのファイルキャッシュを最大限に活用し、特に大容量ファイルにおいて**劇的な高速化**を実現します。
+* **\--parallel**: CPU処理を並列化し通常モードより高速に動作します。
 
 ### **鍵ペアの生成**
 
@@ -113,17 +112,7 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
 * PQCモード:  
   nkCryptoTool \--mode pqc \--verify \<input.txt\> \--signature \<file.sig\> \--signing-pubkey \<public\_key.key\>
 
-### **実行例: パイプライン処理による高速な暗号化・復号 (推奨)**
 
-大容量ファイルを扱う際は、--pipelineオプションを付けることで処理を劇的に高速化できます。
-
-* **暗号化 (Hybrid):**  
-  \# パイプラインモードで高速に暗号化  
-  ./build/bin/nkCryptoTool \--mode hybrid \--encrypt \--pipeline \--recipient-mlkem-pubkey keys/public\_enc\_hybrid\_mlkem.key \--recipient-ecdh-pubkey keys/public\_enc\_hybrid\_ecdh.key \-o encrypted\_large.bin large\_file.dat
-
-* **復号 (PQC):**  
-  \# パイプラインモードで高速に復号  
-  ./build/bin/nkCryptoTool \--mode pqc \--decrypt \--pipeline \--user-privkey keys/private\_enc\_pqc.key \-o decrypted\_large.dat encrypted\_large.bin
 
 ## **処理フロー**
 
