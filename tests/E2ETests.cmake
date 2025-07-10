@@ -9,9 +9,8 @@
 # Arguments:
 #   MODE:         The crypto mode (ecc, pqc, hybrid)
 #   USE_PARALLEL: BOOL true to enable parallel processing, false otherwise
-#   USE_PIPELINE: BOOL true to enable pipeline processing, false otherwise
 #
-function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
+function(run_encryption_scenario MODE USE_PARALLEL)
     set(TEST_RESULT 0)
 
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
@@ -21,9 +20,6 @@ function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
     if(USE_PARALLEL)
         set(SCENARIO_VARIANT " (in parallel)")
         set(SCENARIO_SUFFIX "_parallel")
-    elseif(USE_PIPELINE)
-        set(SCENARIO_VARIANT " (in pipeline)")
-        set(SCENARIO_SUFFIX "_pipeline")
     else()
         set(SCENARIO_VARIANT "")
         set(SCENARIO_SUFFIX "")
@@ -62,11 +58,6 @@ function(run_encryption_scenario MODE USE_PARALLEL USE_PIPELINE)
     if(USE_PARALLEL)
         list(APPEND ENCRYPT_ARGS --parallel)
         list(APPEND DECRYPT_ARGS --parallel)
-    endif()
-    
-    if(USE_PIPELINE)
-        list(APPEND ENCRYPT_ARGS --pipeline)
-        list(APPEND DECRYPT_ARGS --pipeline)
     endif()
 
     if("${MODE}" STREQUAL "hybrid")
@@ -433,7 +424,7 @@ endfunction()
 # run_signing_scenario(ecc)
 
 # Macro to define an E2E test for CTest
-macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING REGENERATE_PUBKEY REGENERATE_SIGN_PUBKEY)
+macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGENERATE_PUBKEY REGENERATE_SIGN_PUBKEY)
     add_test(
         NAME ${TEST_NAME}
         COMMAND "${CMAKE_COMMAND}"
@@ -443,7 +434,6 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL PIPELINE SIGNING REGENERATE_PUBKEY RE
             -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
             -D SCENARIO_MODE=${MODE}
             -D SCENARIO_PARALLEL=${PARALLEL}
-            -D SCENARIO_PIPELINE=${PIPELINE}
             -D SCENARIO_SIGNING=${SIGNING}
             -D SCENARIO_REGENERATE_PUBKEY=${REGENERATE_PUBKEY}
             -D SCENARIO_REGENERATE_SIGN_PUBKEY=${REGENERATE_SIGN_PUBKEY}
@@ -460,7 +450,7 @@ if(DEFINED SCENARIO_MODE)
     elseif(SCENARIO_REGENERATE_SIGN_PUBKEY)
         run_regenerate_sign_pubkey_test(${SCENARIO_MODE})
     else()
-        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL} ${SCENARIO_PIPELINE})
+        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL})
     endif()
     # Exit with the test result
     if(TEST_RESULT EQUAL 0)
