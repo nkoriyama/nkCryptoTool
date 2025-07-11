@@ -80,21 +80,7 @@ original.txt を暗号化し、encrypted.bin というファイルに出力し�
 
 実行するとパスフレーズの入力を求められますが、鍵生成時にパスフレーズを設定していない場合は何も入力せずに Enter キーを押してください。成功すると、「Decryption to '...decrypted.txt' completed.」のようなメッセージが表示されます。decrypted.txt の中身を確認し、元のメッセージが読めることを確認してください。
 
-### **【応用】パイプライン処理で高速化しよう！**
 
-nkCryptoToolの最も強力な機能の一つが、--pipelineオプションによる高速化です。CPUでの計算とディスクの読み書きを並行して行うことで、特に**ギガバイト単位の大きなファイルを扱う際に、処理時間を劇的に短縮できます。**
-
-先ほどの暗号化・復号コマンドに \--pipeline を追加してみましょう。
-
-##### **高速に暗号化する:**
-
-./bin/nkCryptoTool \--mode ecc \--encrypt \--pipeline \--recipient-pubkey keys/public\_enc\_ecc.key \-o encrypted\_pipeline.bin original.txt
-
-##### **高速に復号する:**
-
-./bin/nkCryptoTool \--mode ecc \--decrypt \--pipeline \--user-privkey keys/private\_enc\_ecc.key \-o decrypted\_pipeline.txt encrypted\_pipeline.bin
-
-小さなファイルでは速度の違いは体感しにくいですが、DVDやBlu-rayのISOファイルのような巨大なファイルを扱う際に、その真価を発揮します。
 
 #### **ステップ4: 最初の署名・検証を体験しよう！（ECCモードで）**
 

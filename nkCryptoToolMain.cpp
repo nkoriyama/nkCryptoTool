@@ -125,33 +125,53 @@ int main(int argc, char* argv[]) {
     int return_code = 0;
 
     try {
-        cxxopts::Options options("nkCryptoTool", "Encrypt, decrypt, sign, or verify files using ECC, PQC, or Hybrid mode.");
-        options.positional_help("[FILE] [private_key_path] [public_key_path]");
+        cxxopts::Options options("nkCryptoTool", 
+            "A command-line tool for advanced cryptographic operations including ECC, PQC, and hybrid modes.\n\n"
+            "Usage examples:\n"
+            "  # Generate a hybrid encryption key pair\n"
+            "  nkCryptoTool --mode hybrid --gen-enc-key\n\n"
+            "  # Encrypt a file using hybrid mode\n"
+            "  nkCryptoTool --mode hybrid --encrypt -o out.enc file.txt --recipient-mlkem-pubkey mlkem.pub --recipient-ecdh-pubkey ecdh.pub\n\n"
+            "  # Decrypt a file using hybrid mode\n"
+            "  nkCryptoTool --mode hybrid --decrypt -o file.txt out.enc --recipient-mlkem-privkey mlkem.priv --recipient-ecdh-privkey ecdh.priv"
+        );
 
-        options.add_options()
-            ("m,mode", "Use 'ecc', 'pqc', or 'hybrid'", cxxopts::value<std::string>()->default_value("ecc"))
-            ("p,passphrase", "Passphrase for private key. For hybrid key generation, this is applied to BOTH keys.", cxxopts::value<std::string>())
-            ("o,output-file", "Output file path", cxxopts::value<std::string>())
+        options.add_options("General")
             ("h,help", "Display this help message")
-            ("gen-enc-key", "Generate encryption key pair(s)")
-            ("gen-sign-key", "Generate signing key pair ('ecc' or 'pqc' mode)")
-            ("encrypt", "Encrypt input file")
-            ("decrypt", "Decrypt input file")
-            ("sign", "Sign input file")
-            ("verify", "Verify signature of input file")
-            ("regenerate-pubkey", "Regenerate public key from private key. Expects <private_key_path> and <public_key_path> as positional arguments.")
-            ("recipient-pubkey", "Recipient's public key (for ecc/pqc)", cxxopts::value<std::string>())
-            ("user-privkey", "Your private key (for ecc/pqc)", cxxopts::value<std::string>())
-            ("recipient-mlkem-pubkey", "Recipient's ML-KEM public key (for hybrid)", cxxopts::value<std::string>())
-            ("recipient-ecdh-pubkey", "Recipient's ECDH public key (for hybrid)", cxxopts::value<std::string>())
-            ("recipient-mlkem-privkey", "Your ML-KEM private key (for hybrid)", cxxopts::value<std::string>())
-            ("recipient-ecdh-privkey", "Your ECDH private key (for hybrid)", cxxopts::value<std::string>())
-            ("signing-privkey", "Your private signing key", cxxopts::value<std::string>())
-            ("signing-pubkey", "Signer's public key", cxxopts::value<std::string>())
-            ("signature", "Path to the signature file", cxxopts::value<std::string>())
-            ("digest-algo", "Hashing algorithm (e.g., SHA256, SHA3-256)", cxxopts::value<std::string>()->default_value("SHA256"))
-            ("key-dir", "Base directory for keys (default: 'keys')", cxxopts::value<std::string>())
-            ("input", "Input file", cxxopts::value<std::vector<std::string>>());
+            ("m,mode", "Specify the cryptographic mode: 'ecc', 'pqc', or 'hybrid'", cxxopts::value<std::string>()->default_value("ecc"))
+            ("o,output-file", "Path to the output file", cxxopts::value<std::string>())
+            ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>());
+
+        options.add_options("Key Generation")
+            ("gen-enc-key", "Generate a key pair for encryption")
+            ("gen-sign-key", "Generate a key pair for signing (for 'ecc' or 'pqc' modes)")
+            ("regenerate-pubkey", "Regenerate a public key from a private key. Expects <private_key_path> and <public_key_path> as positional arguments.")
+            ("key-dir", "Directory to save the generated keys (default: './keys')", cxxopts::value<std::string>())
+            ("p,passphrase", "Passphrase for the private key. Use '''' for no passphrase.", cxxopts::value<std::string>());
+
+        options.add_options("Encryption (ECC/PQC)")
+            ("encrypt", "Encrypt the input file")
+            ("recipient-pubkey", "Recipient's public key file", cxxopts::value<std::string>());
+
+        options.add_options("Decryption (ECC/PQC)")
+            ("decrypt", "Decrypt the input file")
+            ("user-privkey", "Your private key file", cxxopts::value<std::string>());
+
+        options.add_options("Encryption (Hybrid)")
+            ("recipient-mlkem-pubkey", "Recipient's ML-KEM public key file", cxxopts::value<std::string>())
+            ("recipient-ecdh-pubkey", "Recipient's ECDH public key file", cxxopts::value<std::string>());
+
+        options.add_options("Decryption (Hybrid)")
+            ("recipient-mlkem-privkey", "Your ML-KEM private key file", cxxopts::value<std::string>())
+            ("recipient-ecdh-privkey", "Your ECDH private key file", cxxopts::value<std::string>());
+
+        options.add_options("Digital Signature (ECC/PQC)")
+            ("sign", "Sign the input file")
+            ("verify", "Verify the signature of the input file")
+            ("signing-privkey", "Your private key for signing", cxxopts::value<std::string>())
+            ("signing-pubkey", "The signer's public key for verification", cxxopts::value<std::string>())
+            ("signature", "Path to the signature file (for signing and verification)", cxxopts::value<std::string>())
+            ("digest-algo", "Hashing algorithm (e.g., SHA256, SHA3-256)", cxxopts::value<std::string>()->default_value("SHA256"));
 
         options.parse_positional({"input"});
         auto result = options.parse(argc, argv);
