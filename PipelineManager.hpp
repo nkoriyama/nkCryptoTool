@@ -37,7 +37,7 @@
 #include <asio/ts/internet.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
-#include <asio/as_tuple.hpp>
+
 #include <asio/steady_timer.hpp>
 
 #ifdef _WIN32
@@ -51,28 +51,14 @@ using async_file_t = asio::stream_file;
 using async_file_t = asio::posix::stream_descriptor;
 #endif
 
-// --- スレッドセーフなデバッグ用ロギング機能 ---
-namespace {
-    std::mutex g_log_mutex;
-    void log_message(const std::string& msg) {
-        std::lock_guard<std::mutex> lock(g_log_mutex);
-#if defined (DETAIL_LOG)
-        std::stringstream ss;
-        ss << "[TID:" << std::this_thread::get_id() << "] " << msg << "\n";
-        std::cout << ss.str();
-        std::cout.flush(); // Ensure logs are visible immediately
-#endif
-    }
-}
-
 class PipelineManager : public std::enable_shared_from_this<PipelineManager> {
 public:
     using StageFunc = std::function<std::vector<char>(const std::vector<char>&)>;
-    using FinalizationFunc = std::function<asio::awaitable<void>(async_file_t&)>;
+    using FinalizationFunc = std::function<asio::awaitable<void>(async_file_t)>;
 
     explicit PipelineManager(asio::io_context& io_context, size_t num_threads = std::thread::hardware_concurrency())
         : io_context_(io_context), 
-          work_guard_(asio::make_work_guard(io_context.get_executor())), // ★ ワークガードを初期化
+          work_guard_(asio::make_work_guard(io_context.get_executor())),
           threads_(num_threads), 
           input_file_(io_context), 
           output_file_(io_context), 
@@ -153,6 +139,16 @@ private:
         uint64_t original_order;
     };
 
+    void log_message(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(log_mutex_);
+#if defined (DETAIL_LOG)
+        std::stringstream ss;
+        ss << "[TID:" << std::this_thread::get_id() << "] " << msg << "\n";
+        std::cout << ss.str();
+        std::cout.flush(); // Ensure logs are visible immediately
+#endif
+    }
+
     void call_completion_handler(const std::error_code& ec) {
         bool already_called = completion_handler_called_.exchange(true);
         if (!already_called) {
@@ -161,7 +157,7 @@ private:
                 if (completion_handler_) {
                     completion_handler_(ec);
                 }
-                work_guard_.reset(); // ★ ワークガードを解除
+                work_guard_.reset();
             });
         }
     }
@@ -176,24 +172,22 @@ private:
         }
 
         size_t to_read_now = std::min(static_cast<size_t>(CHUNK_SIZE), static_cast<size_t>(total_to_read_ - total_read_));
-        if (total_to_read_ > 0 && to_read_now == 0) { // Check if we have a defined size and we're done
+        if (total_to_read_ > 0 && to_read_now == 0) {
              log_message("Finished reading specified size.");
             std::unique_lock<std::mutex> lock(shared_state_mutex_);
             reading_complete_ = true;
             cv_task_.notify_all();
             return;
         }
-        // If read_size was 0 initially, we read until EOF, so just use CHUNK_SIZE
         if (total_to_read_ == 0) {
             to_read_now = CHUNK_SIZE;
         }
-
 
         auto chunk = std::make_shared<std::vector<char>>(to_read_now);
         
         log_message("Reading next chunk. To read: " + std::to_string(to_read_now));
         input_file_.async_read_some(asio::buffer(*chunk),
-            [self = shared_from_this(), chunk](const std::error_code& ec, size_t bytes_transferred) {
+            [this, self = shared_from_this(), chunk](const std::error_code& ec, size_t bytes_transferred) {
                 if (ec && ec != asio::error::eof) {
                     log_message("Read error: " + ec.message());
                     self->call_completion_handler(ec);
@@ -258,7 +252,7 @@ private:
     }
     
     void start_writer() {
-        asio::co_spawn(io_context_, writer_coroutine(), [self = shared_from_this()](std::exception_ptr p) {
+        asio::co_spawn(io_context_, writer_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
             if (p) {
                 try {
                     std::rethrow_exception(p);
@@ -287,7 +281,7 @@ private:
             }
 
             std::vector<char> data_to_write;
-            { 
+            {
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 auto it = results_map_.find(next_order_to_write);
                 if (it != results_map_.end()) {
@@ -298,13 +292,14 @@ private:
 
             if (!data_to_write.empty()) {
                 log_message("Writer writing chunk " + std::to_string(next_order_to_write));
-                auto [ec, bytes_written] = co_await asio::async_write(output_file_, asio::buffer(data_to_write), asio::as_tuple(asio::use_awaitable));
-                if (ec) {
-                    log_message("Writer ERROR: " + ec.message());
-                    call_completion_handler(ec);
+                try {
+                    size_t bytes_written = co_await asio::async_write(output_file_, asio::buffer(data_to_write), asio::use_awaitable);
+                    log_message("Writer finished writing chunk " + std::to_string(next_order_to_write) + " (" + std::to_string(bytes_written) + " bytes)");
+                } catch (const std::system_error& e) {
+                    log_message("Writer ERROR: " + std::string(e.what()));
+                    call_completion_handler(e.code());
                     co_return;
                 }
-                log_message("Writer finished writing chunk " + std::to_string(next_order_to_write));
                 tasks_completed_count_++;
                 next_order_to_write++;
             } else {
@@ -315,7 +310,7 @@ private:
 
         log_message("Writer proceeding to finalization.");
         if (finalization_handler_) {
-            co_await finalization_handler_(output_file_);
+            co_await finalization_handler_(std::move(output_file_));
         }
 
         log_message("Writer finished successfully.");
@@ -328,6 +323,7 @@ private:
     std::vector<std::thread> threads_;
     std::vector<StageFunc> stages_;
     
+    std::mutex log_mutex_;
     std::mutex shared_state_mutex_;
 
     std::queue<Task> task_queue_;

@@ -366,7 +366,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
             return process_chunk(data, template_ctx.get(), true);
         });
 
-        PipelineManager::FinalizationFunc finalizer = [this, template_ctx](async_file_t& out_final) -> asio::awaitable<void> {
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx](async_file_t out_final) -> asio::awaitable<void> {
             auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
             auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
             int final_len = 0;
@@ -476,7 +476,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
             return process_chunk(data, template_ctx.get(), false);
         });
 
-        PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, input_filepath](async_file_t& out_final) -> asio::awaitable<void> {
+        PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, input_filepath](async_file_t out_final) -> asio::awaitable<void> {
             auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
             auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
             int final_len = 0;
