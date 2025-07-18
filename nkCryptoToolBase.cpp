@@ -124,40 +124,42 @@ bool nkCryptoToolBase::regeneratePublicKey(const std::filesystem::path& private_
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
+        printOpenSSLErrors();
         throw std::runtime_error("Error loading public key: Failed to open file " + public_key_path.string());
     }
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read public key."); }
+    if (!pkey) { printOpenSSLErrors(); ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read public key."); }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
+        printOpenSSLErrors();
         throw std::runtime_error("Error loading private key: Failed to open file " + private_key_path.string());
     }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)key_description);
-    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read private key."); }
+    if (!pkey) { printOpenSSLErrors(); ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read private key."); }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
 std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
-                                                      const std::string& salt_str, const std::string& info_str,
+                                                      const std::vector<unsigned char>& salt, const std::string& info_str,
                                                       const std::string& digest_algo) {
     std::unique_ptr<EVP_KDF, EVP_KDF_Deleter> kdf(EVP_KDF_fetch(nullptr, "HKDF", nullptr));
-    if (!kdf) { throw std::runtime_error("OpenSSL Error: Failed to fetch HKDF."); }
+    if (!kdf) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to fetch HKDF."); }
     std::unique_ptr<EVP_KDF_CTX, EVP_KDF_CTX_Deleter> kctx(EVP_KDF_CTX_new(kdf.get()));
-    if (!kctx) { throw std::runtime_error("OpenSSL Error: Failed to create HKDF context."); }
+    if (!kctx) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to create HKDF context."); }
     OSSL_PARAM params[5];
     int p = 0;
     params[p++] = OSSL_PARAM_construct_utf8_string("digest", (char*)digest_algo.c_str(), 0);
     params[p++] = OSSL_PARAM_construct_octet_string("key", (void*)ikm.data(), ikm.size());
-    if (!salt_str.empty()) params[p++] = OSSL_PARAM_construct_octet_string("salt", (void*)salt_str.c_str(), salt_str.length());
+    if (!salt.empty()) params[p++] = OSSL_PARAM_construct_octet_string("salt", (void*)salt.data(), salt.size());
     if (!info_str.empty()) params[p++] = OSSL_PARAM_construct_octet_string("info", (void*)info_str.c_str(), info_str.length());
     params[p] = OSSL_PARAM_construct_end();
     std::vector<unsigned char> derived_key(output_len);
     if (EVP_KDF_derive(kctx.get(), derived_key.data(), output_len, params) <= 0) {
-        throw std::runtime_error("OpenSSL Error: Failed to derive key with HKDF.");
+        printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to derive key with HKDF.");
     }
     return derived_key;
 }

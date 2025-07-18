@@ -63,10 +63,10 @@ static std::vector<unsigned char> ecc_encrypt_chunk_logic(
     EVP_CIPHER_CTX* template_cipher_ctx
 ) {
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for encryption.");
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) { nkCryptoToolBase::printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for encryption."); }
     std::vector<unsigned char> encrypted_data(plain_data.size() + EVP_MAX_BLOCK_LENGTH);
     int outlen = 0;
-    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) throw std::runtime_error("OpenSSL Error: Encryption update failed.");
+    if (EVP_EncryptUpdate(ctx.get(), encrypted_data.data(), &outlen, plain_data.data(), plain_data.size()) <= 0) { nkCryptoToolBase::printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Encryption update failed."); }
     encrypted_data.resize(outlen);
     return encrypted_data;
 }
@@ -77,7 +77,7 @@ static std::vector<unsigned char> ecc_decrypt_chunk_logic(
     EVP_CIPHER_CTX* template_cipher_ctx
 ) {
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
-    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for decryption.");
+    if (!ctx || !EVP_CIPHER_CTX_copy(ctx.get(), template_cipher_ctx)) { nkCryptoToolBase::printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to copy cipher context for decryption."); }
     std::vector<unsigned char> decrypted_data(encrypted_data.size() + EVP_MAX_BLOCK_LENGTH);
     int outlen = 0;
     if (EVP_DecryptUpdate(ctx.get(), decrypted_data.data(), &outlen, encrypted_data.data(), encrypted_data.size()) <= 0) {
@@ -127,26 +127,16 @@ bool nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& pub
 }
 
 bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
-    std::ofstream priv_file(private_key_path, std::ios::out | std::ios::binary);
-    if (!priv_file.is_open()) {
-        throw std::runtime_error("Error creating private key file: " + private_key_path.string());
-    }
-    priv_file.close(); 
-
-    std::ofstream pub_file(public_key_path, std::ios::out | std::ios::binary);
-    if (!pub_file.is_open()) {
-        throw std::runtime_error("Error creating public key file: " + public_key_path.string());
-    }
-    pub_file.close();
+    
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize EC key generation context."); }
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to initialize EC key generation context."); }
 
     OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
-    if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to set EC group parameters."); }
+    if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to set EC group parameters."); }
 
     EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate EC key pair."); }
+    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to generate EC key pair."); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key(pkey);
 
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
@@ -162,22 +152,22 @@ bool nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public
                                                 nullptr, nullptr) > 0;
     }
 
-    if (!success) { throw std::runtime_error("OpenSSL Error: Failed to write private key to file."); }
+    if (!success) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to write private key to file."); }
 
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to write public key to file."); }
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to write public key to file."); }
     return true;
 }
 
 std::vector<unsigned char> nkCryptoToolECC::generateSharedSecret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr));
     if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) {
-        throw std::runtime_error("OpenSSL Error: Failed to initialize shared secret derivation.");
+        printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to initialize shared secret derivation.");
     }
     size_t secret_len;
-    if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get shared secret length."); }
+    if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to get shared secret length."); }
     std::vector<unsigned char> secret(secret_len);
-    if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to derive shared secret."); }
+    if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to derive shared secret."); }
     secret.resize(secret_len);
     return secret;
 }
@@ -193,26 +183,16 @@ void nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesyst
     auto private_key = loadPrivateKey(signing_private_key_path, "ECC signing private key");
     if (!private_key) return completion_handler(std::make_error_code(std::errc::invalid_argument));
     const EVP_MD* digest = EVP_get_digestbyname(digest_algo.c_str());
-    if (!digest) throw std::runtime_error("OpenSSL Error: Unknown digest algorithm.");
-    if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing.");
+    if (!digest) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Unknown digest algorithm."); }
+    if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, digest, nullptr, private_key.get()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing."); }
     std::error_code ec;
     state->total_input_size = std::filesystem::file_size(input_filepath, ec);
     if(ec) return completion_handler(ec);
 
-#ifdef _WIN32
     state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
-#else
-    int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
-    if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
-#endif
     if(ec) return completion_handler(ec);
 
-#ifdef _WIN32
     state->output_file.open(signature_filepath.string(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
-#else
-    int fd_out = ::open(signature_filepath.string().c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
-#endif
     if(ec) return completion_handler(ec);
 
     state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolECC::handleFileReadForSigning, this, state, std::placeholders::_1, std::placeholders::_2));
@@ -246,12 +226,7 @@ void nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::f
     EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, digest, nullptr, public_key.get());
     std::error_code ec;
 
-#ifdef _WIN32
     state->signature_file.open(signature_filepath.string(), async_file_t::read_only, ec);
-#else
-    int fd_sig = ::open(signature_filepath.string().c_str(), O_RDONLY);
-    if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
-#endif
     if (ec) { completion_handler(ec, false); return; }
 
     state->signature.resize(std::filesystem::file_size(signature_filepath, ec));
@@ -262,12 +237,7 @@ void nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::f
         state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
         if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
 
-#ifdef _WIN32
         state->input_file.open(input_filepath.string(), async_file_t::read_only, open_ec);
-#else
-        int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
-        if (fd_in == -1) { open_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, open_ec); }
-#endif
         if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
 
         state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolECC::handleFileReadForVerification, this, state, std::placeholders::_1, std::placeholders::_2));
@@ -303,7 +273,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         auto manager = std::make_shared<PipelineManager>(io_context);
         
         auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
-            if (!ec) std::cout << "\nPipeline encryption to '" << output_filepath << "' completed." << std::endl;
+            if (!ec) std::cout << "\nPipeline encryption to \'" << output_filepath << "\' completed." << std::endl;
             else std::cerr << "\nPipeline encryption failed: " << ec.message() << std::endl;
             completion_handler(ec);
         };
@@ -314,11 +284,11 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_private_key;
         {
             std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx_eph(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-            if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { throw std::runtime_error("Failed to init ephemeral keygen."); }
+            if (!pctx_eph || EVP_PKEY_keygen_init(pctx_eph.get()) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to init ephemeral keygen."); }
             OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
-            if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { throw std::runtime_error("Failed to set ephemeral key params."); }
+            if (EVP_PKEY_CTX_set_params(pctx_eph.get(), params) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to set ephemeral key params."); }
             EVP_PKEY* eph_pkey_raw = nullptr;
-            if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { throw std::runtime_error("Failed to generate ephemeral key."); }
+            if (EVP_PKEY_keygen(pctx_eph.get(), &eph_pkey_raw) <= 0) { printOpenSSLErrors(); throw std::runtime_error("Failed to generate ephemeral key."); }
             ephemeral_private_key.reset(eph_pkey_raw);
         }
 
@@ -327,7 +297,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         RAND_bytes(salt.data(), salt.size());
         std::vector<unsigned char> iv(GCM_IV_LEN);
         RAND_bytes(iv.data(), GCM_IV_LEN);
-        std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256");
+        std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, salt, "ecc-encryption", "SHA3-256");
         if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key.");
 
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
@@ -335,12 +305,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
 
         std::error_code ec;
         async_file_t output_file(io_context);
-#ifdef _WIN32
         output_file.open(output_filepath.c_str(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
-#else
-        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
-#endif
         if (ec) throw std::system_error(ec, "Failed to open output file for header writing");
 
         FileHeader header;
@@ -418,12 +383,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
 
         std::error_code ec;
         async_file_t input_file(io_context);
-#ifdef _WIN32
         input_file.open(input_filepath.c_str(), async_file_t::read_only, ec);
-#else
-        int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
-        if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { input_file.assign(fd_in, ec); }
-#endif
         if (ec) throw std::system_error(ec, "Failed to open input file for header reading");
         
         FileHeader header; asio::read(input_file, asio::buffer(&header, sizeof(header)), ec); 
@@ -441,16 +401,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         std::vector<unsigned char> iv(iv_len); asio::read(input_file, asio::buffer(iv), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read IV");}
         
         uintmax_t header_size = 0;
-#ifdef _WIN32
         header_size = input_file.seek(0, asio::file_base::seek_cur, ec);
-#else
-        off_t pos = ::lseek(input_file.native_handle(), 0, SEEK_CUR);
-        if (pos == (off_t)-1) {
-            ec.assign(errno, std::system_category());
-        } else {
-            header_size = pos;
-        }
-#endif
         if(ec) {input_file.close(); throw std::system_error(ec);}
         input_file.close(ec); // Close the handle used for reading the header
 
@@ -458,21 +409,16 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         if (!user_private_key) throw std::runtime_error("Failed to load user private key.");
 
         std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(eph_pub_key_buf.data(), key_len)); 
-        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); if(!eph_pub_key) throw std::runtime_error("Failed to parse ephemeral public key");
+        std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); if(!eph_pub_key) { printOpenSSLErrors(); throw std::runtime_error("Failed to parse ephemeral public key"); }
         
         std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); 
-        std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256"); if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
+        std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, salt, "ecc-encryption", "SHA3-256"); if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
         
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
         EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
 
         async_file_t output_file(io_context);
-#ifdef _WIN32
         output_file.open(output_filepath.c_str(), async_file_t::write_only | async_file_t::create | async_file_t::truncate, ec);
-#else
-        int fd_out = ::open(output_filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { output_file.assign(fd_out, ec); }
-#endif
         if (ec) throw std::system_error(ec, "Failed to create output file");
 
         manager->add_stage([template_ctx](const std::vector<char>& data) {
@@ -486,34 +432,13 @@ void nkCryptoToolECC::decryptFileWithPipeline(
             
             async_file_t in_final(io_context);
             std::error_code final_ec;
-#ifdef _WIN32
             in_final.open(input_filepath, async_file_t::read_only, final_ec);
-#else
-            int fd_in = ::open(input_filepath.c_str(), O_RDONLY);
-            if (fd_in == -1) { final_ec.assign(errno, std::system_category()); } else { in_final.assign(fd_in, final_ec); }
-#endif
             if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
 
-#ifdef _WIN32
             uintmax_t file_size = in_final.size(final_ec);
             if (!final_ec) {
                 in_final.seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
             }
-#else
-            struct stat stat_buf;
-            uintmax_t file_size = 0;
-            if (::fstat(in_final.native_handle(), &stat_buf) != -1) {
-                file_size = stat_buf.st_size;
-            } else {
-                final_ec.assign(errno, std::system_category());
-            }
-
-            if (!final_ec) {
-                if (::lseek(in_final.native_handle(), file_size - GCM_TAG_LEN, SEEK_SET) == -1) {
-                    final_ec.assign(errno, std::system_category());
-                }
-            }
-#endif
             if(final_ec) { in_final.close(); throw std::system_error(final_ec, "Failed to get size or seek input for finalization"); }
 
             co_await asio::async_read(in_final, asio::buffer(*tag), asio::use_awaitable);

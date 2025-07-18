@@ -85,7 +85,7 @@ protected:
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description);
 
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
-                                          const std::string& salt, const std::string& info,
+                                          const std::vector<unsigned char>& salt, const std::string& info,
                                           const std::string& digest_algo);
     
     struct AsyncStateBase {
