@@ -327,9 +327,11 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         }
 
         std::vector<unsigned char> shared_secret = generateSharedSecret(ephemeral_private_key.get(), recipient_public_key.get());
+        std::vector<unsigned char> salt(16);
+        RAND_bytes(salt.data(), salt.size());
         std::vector<unsigned char> iv(GCM_IV_LEN);
         RAND_bytes(iv.data(), GCM_IV_LEN);
-        std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256");
+        std::vector<unsigned char> encryption_key = hkdfDerive(shared_secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256");
         if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key.");
 
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
@@ -356,9 +358,12 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         BUF_MEM *bio_buf;
         BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
         uint32_t key_len = bio_buf->length;
+        uint32_t salt_len = salt.size();
         uint32_t iv_len = iv.size();
         asio::write(output_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec) throw std::system_error(ec);
         asio::write(output_file, asio::buffer(bio_buf->data, key_len), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(&salt_len, sizeof(salt_len)), ec); if(ec) throw std::system_error(ec);
+        asio::write(output_file, asio::buffer(salt), ec); if(ec) throw std::system_error(ec);
         asio::write(output_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec) throw std::system_error(ec);
         asio::write(output_file, asio::buffer(iv), ec); if(ec) throw std::system_error(ec);
         
@@ -431,9 +436,11 @@ void nkCryptoToolECC::decryptFileWithPipeline(
             throw std::runtime_error("Invalid file header");
         }
         
-        uint32_t key_len = 0, iv_len = 0; 
+        uint32_t key_len = 0, salt_len = 0, iv_len = 0; 
         asio::read(input_file, asio::buffer(&key_len, sizeof(key_len)), ec); if(ec || key_len > 2048) {input_file.close(); throw std::runtime_error("Invalid key length");}
         std::vector<char> eph_pub_key_buf(key_len); asio::read(input_file, asio::buffer(eph_pub_key_buf), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read ephemeral key");}
+        asio::read(input_file, asio::buffer(&salt_len, sizeof(salt_len)), ec); if(ec || salt_len > 128) {input_file.close(); throw std::runtime_error("Invalid salt length");}
+        std::vector<unsigned char> salt(salt_len); asio::read(input_file, asio::buffer(salt), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read salt");}
         asio::read(input_file, asio::buffer(&iv_len, sizeof(iv_len)), ec); if(ec || iv_len != GCM_IV_LEN) {input_file.close(); throw std::runtime_error("Invalid IV length");}
         std::vector<unsigned char> iv(iv_len); asio::read(input_file, asio::buffer(iv), ec); if(ec) {input_file.close(); throw std::runtime_error("Failed to read IV");}
         
@@ -458,7 +465,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> eph_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr)); if(!eph_pub_key) throw std::runtime_error("Failed to parse ephemeral public key");
         
         std::vector<unsigned char> shared_secret = generateSharedSecret(user_private_key.get(), eph_pub_key.get()); 
-        std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(iv.begin(), iv.end()), "ecc-encryption", "SHA256"); if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
+        std::vector<unsigned char> decryption_key = hkdfDerive(shared_secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256"); if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key.");
         
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
         EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());

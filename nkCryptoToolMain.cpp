@@ -262,7 +262,7 @@ int main(int argc, char* argv[]) {
         // --- モードに応じて暗号化ハンドラを生成 ---
         std::unique_ptr<nkCryptoToolBase> crypto_handler;
         if (mode == "ecc") { crypto_handler = std::make_unique<nkCryptoToolECC>(); } 
-        else if (mode == "pqc" || mode == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); if (mode == "pqc") options.add_options()("digest-algo", "", cxxopts::value<std::string>()->default_value("SHA3-256")); } 
+        else if (mode == "pqc" || mode == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); } 
         else { std::cerr << "Error: Invalid mode '" << mode << "'." << std::endl; return 1; }
 
         if (!key_dir_path.empty()) {
