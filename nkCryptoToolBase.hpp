@@ -81,7 +81,6 @@ protected:
     };
     #pragma pack(pop)
 
-    void printProgress(double percentage);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description);
 

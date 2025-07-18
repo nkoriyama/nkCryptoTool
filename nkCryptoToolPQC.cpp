@@ -205,7 +205,6 @@ void nkCryptoToolPQC::handleFileReadForSigning(std::shared_ptr<SigningState> sta
     if (ec) { state->completion_handler(ec); return; }
     EVP_DigestSignUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
     state->total_bytes_processed += bytes_transferred;
-    if (state->total_input_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
     state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForSigning, this, state, std::placeholders::_1, std::placeholders::_2));
 }
 
@@ -216,7 +215,6 @@ void nkCryptoToolPQC::finishSigning(std::shared_ptr<SigningState> state){
     EVP_DigestSignFinal(state->md_ctx.get(), signature.data(), &sig_len);
     signature.resize(sig_len);
     asio::async_write(state->output_file, asio::buffer(signature), [this, state](const asio::error_code& write_ec, size_t) {
-        printProgress(1.0);
         state->completion_handler(write_ec);
     });
 }
@@ -266,12 +264,10 @@ void nkCryptoToolPQC::handleFileReadForVerification(std::shared_ptr<Verification
     if (ec) { state->verification_completion_handler(ec, false); return; }
     EVP_DigestVerifyUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
     state->total_bytes_processed += bytes_transferred;
-    if (state->total_input_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
     state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForVerification, this, state, std::placeholders::_1, std::placeholders::_2));
 }
 
 void nkCryptoToolPQC::finishVerification(std::shared_ptr<VerificationState> state){
-    printProgress(1.0);
     int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
     state->verification_completion_handler({}, (result == 1));
 }
@@ -381,7 +377,7 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get GCM tag."); }
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
             co_await asio::async_write(out_final, asio::buffer(*tag), asio::use_awaitable);
-            printProgress(1.0);
+
         };
         
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
@@ -537,7 +533,6 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
             final_block->resize(final_len);
             
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
-            printProgress(1.0);
         };
 
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
