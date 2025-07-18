@@ -41,23 +41,7 @@
 #include <asio/write.hpp>
 #include <asio/read.hpp>
 
-// PQC署名/検証用の状態管理構造体
-struct nkCryptoToolPQC::SigningState : public std::enable_shared_from_this<SigningState> {
-    async_file_t input_file;
-    async_file_t output_file;
-    std::vector<unsigned char> file_content;
-    std::function<void(std::error_code)> completion_handler;
-    SigningState(asio::io_context& io) : input_file(io), output_file(io) {}
-};
 
-struct nkCryptoToolPQC::VerificationState : public std::enable_shared_from_this<VerificationState> {
-    async_file_t input_file;
-    async_file_t signature_file;
-    std::vector<unsigned char> file_content;
-    std::vector<unsigned char> signature;
-    std::function<void(std::error_code, bool)> verification_completion_handler;
-    VerificationState(asio::io_context& io) : input_file(io), signature_file(io) {}
-};
 
 namespace {
 // ハイブリッド暗号用のヘルパー関数 (ECDH鍵生成・共有秘密導出)
@@ -182,10 +166,20 @@ bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public
 // --- PQC署名・検証 ---
 void nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string&, std::function<void(std::error_code)> completion_handler){
     auto state = std::make_shared<SigningState>(io_context);
-    state->completion_handler = [completion_handler](const std::error_code& ec) { if (!ec) std::cout << "\nFile signed successfully." << std::endl; completion_handler(ec); };
+    state->completion_handler = [completion_handler](const std::error_code& ec) { 
+        if (!ec) std::cout << "\nFile signed successfully." << std::endl; 
+        completion_handler(ec); 
+    };
     auto private_key = loadPrivateKey(signing_private_key_path, "PQC signing private key");
     if (!private_key) return completion_handler(std::make_error_code(std::errc::invalid_argument));
+
+    if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, nullptr, nullptr, private_key.get()) <= 0) { 
+        throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing."); 
+    }
+
     std::error_code ec;
+    state->total_input_size = std::filesystem::file_size(input_filepath, ec);
+    if(ec) return completion_handler(ec);
 
 #ifdef _WIN32
     state->input_file.open(input_filepath.string(), async_file_t::read_only, ec);
@@ -203,42 +197,27 @@ void nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesyst
 #endif
     if (ec) return completion_handler(ec);
 
-    state->file_content.resize(std::filesystem::file_size(input_filepath, ec)); if (ec) return completion_handler(ec);
-    
-    asio::async_read(state->input_file, asio::buffer(state->file_content), [this, state, pkey = std::move(private_key)](const asio::error_code& read_ec, size_t) mutable {
-        if (read_ec) {
-            state->completion_handler(read_ec);
-            return;
-        }
+    state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForSigning, this, state, std::placeholders::_1, std::placeholders::_2));
+}
 
-        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-        if (!mdctx) {
-            throw std::runtime_error("OpenSSL Error: Failed to create digest context.");
-        }
+void nkCryptoToolPQC::handleFileReadForSigning(std::shared_ptr<SigningState> state, const asio::error_code& ec, size_t bytes_transferred){
+    if (ec == asio::error::eof) { finishSigning(state); return; }
+    if (ec) { state->completion_handler(ec); return; }
+    EVP_DigestSignUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
+    state->total_bytes_processed += bytes_transferred;
+    if (state->total_input_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
+    state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForSigning, this, state, std::placeholders::_1, std::placeholders::_2));
+}
 
-        // 1. Get the maximum possible signature size directly from the key.
-        size_t sig_len = EVP_PKEY_get_size(pkey.get());
-        if (sig_len <= 0) {
-            throw std::runtime_error("OpenSSL Error: Failed to get signature size from key.");
-        }
-        std::vector<unsigned char> signature(sig_len);
-
-        // 2. Initialize the context. For pure signature algorithms like ML-DSA, the digest type is nullptr.
-        if (EVP_DigestSignInit(mdctx.get(), nullptr, nullptr, nullptr, pkey.get()) <= 0) {
-            throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing.");
-        }
-
-        // 3. Perform the one-shot signing operation. The actual signature length will be written to sig_len.
-        if (EVP_DigestSign(mdctx.get(), signature.data(), &sig_len, state->file_content.data(), state->file_content.size()) <= 0) {
-            throw std::runtime_error("OpenSSL Error: Failed to sign data.");
-        }
-
-        // 4. Resize the vector to the actual signature length.
-        signature.resize(sig_len);
-
-        asio::async_write(state->output_file, asio::buffer(signature), [state](const asio::error_code& write_ec, size_t) {
-            state->completion_handler(write_ec);
-        });
+void nkCryptoToolPQC::finishSigning(std::shared_ptr<SigningState> state){
+    size_t sig_len = 0;
+    EVP_DigestSignFinal(state->md_ctx.get(), nullptr, &sig_len);
+    std::vector<unsigned char> signature(sig_len);
+    EVP_DigestSignFinal(state->md_ctx.get(), signature.data(), &sig_len);
+    signature.resize(sig_len);
+    asio::async_write(state->output_file, asio::buffer(signature), [this, state](const asio::error_code& write_ec, size_t) {
+        printProgress(1.0);
+        state->completion_handler(write_ec);
     });
 }
 
@@ -247,40 +226,55 @@ void nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::f
     state->verification_completion_handler = completion_handler;
     auto public_key = loadPublicKey(signing_public_key_path);
     if (!public_key) return completion_handler(std::make_error_code(std::errc::invalid_argument), false);
-    std::error_code ec;
 
+    if (EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, nullptr, nullptr, public_key.get()) <= 0) { 
+        throw std::runtime_error("OpenSSL Error: Failed to initialize digest verification."); 
+    }
+
+    std::error_code ec;
 #ifdef _WIN32
     state->signature_file.open(signature_filepath.string(), async_file_t::read_only, ec);
 #else
     int fd_sig = ::open(signature_filepath.string().c_str(), O_RDONLY);
     if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
 #endif
-    if (ec) return completion_handler(ec, false);
+    if (ec) { completion_handler(ec, false); return; }
 
-    state->signature.resize(std::filesystem::file_size(signature_filepath, ec)); if (ec) return completion_handler(ec, false);
-    asio::async_read(state->signature_file, asio::buffer(state->signature), [this, state, input_filepath, pkey = std::move(public_key)](const asio::error_code& read_sig_ec, size_t) mutable {
+    state->signature.resize(std::filesystem::file_size(signature_filepath, ec));
+    if (ec) { completion_handler(ec, false); return; }
+
+    asio::async_read(state->signature_file, asio::buffer(state->signature), [this, state, input_filepath](const asio::error_code& read_sig_ec, size_t) mutable {
         if (read_sig_ec) { state->verification_completion_handler(read_sig_ec, false); return; }
-        std::error_code read_input_ec;
-        
+        std::error_code open_ec;
+        state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
+        if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
+
 #ifdef _WIN32
-        state->input_file.open(input_filepath.string(), async_file_t::read_only, read_input_ec);
+        state->input_file.open(input_filepath.string(), async_file_t::read_only, open_ec);
 #else
         int fd_in = ::open(input_filepath.string().c_str(), O_RDONLY);
-        if (fd_in == -1) { read_input_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, read_input_ec); }
+        if (fd_in == -1) { open_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, open_ec); }
 #endif
-        if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
-        
-        state->file_content.resize(std::filesystem::file_size(input_filepath, read_input_ec)); if(read_input_ec) { state->verification_completion_handler(read_input_ec, false); return; }
-        asio::async_read(state->input_file, asio::buffer(state->file_content), [this, state, pub_key = std::move(pkey)](const asio::error_code& final_read_ec, size_t) mutable {
-            if (final_read_ec && final_read_ec != asio::error::eof) { state->verification_completion_handler(final_read_ec, false); return; }
-            std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mdctx(EVP_MD_CTX_new());
-            if (EVP_DigestVerifyInit(mdctx.get(), nullptr, nullptr, nullptr, pub_key.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize digest verification."); }
-            int result = EVP_DigestVerify(mdctx.get(), state->signature.data(), state->signature.size(), state->file_content.data(), state->file_content.size());
-            state->verification_completion_handler({}, (result == 1));
-        });
+        if(open_ec) { state->verification_completion_handler(open_ec, false); return; }
+
+        state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForVerification, this, state, std::placeholders::_1, std::placeholders::_2));
     });
 }
 
+void nkCryptoToolPQC::handleFileReadForVerification(std::shared_ptr<VerificationState> state, const asio::error_code& ec, size_t bytes_transferred){
+    if (ec == asio::error::eof) { finishVerification(state); return; }
+    if (ec) { state->verification_completion_handler(ec, false); return; }
+    EVP_DigestVerifyUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
+    state->total_bytes_processed += bytes_transferred;
+    if (state->total_input_size > 0) printProgress(static_cast<double>(state->total_bytes_processed) / state->total_input_size);
+    state->input_file.async_read_some(asio::buffer(state->input_buffer), std::bind(&nkCryptoToolPQC::handleFileReadForVerification, this, state, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolPQC::finishVerification(std::shared_ptr<VerificationState> state){
+    printProgress(1.0);
+    int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
+    state->verification_completion_handler({}, (result == 1));
+}
 
 
 

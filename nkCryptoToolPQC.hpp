@@ -24,11 +24,22 @@
 #include "nkCryptoToolBase.hpp"
 
 class nkCryptoToolPQC : public nkCryptoToolBase {
-private:
-    struct SigningState;
-    struct VerificationState;
-
 public:
+    struct SigningState : public nkCryptoToolBase::AsyncStateBase, public std::enable_shared_from_this<SigningState> {
+        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx;
+        uintmax_t total_input_size;
+        SigningState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), total_input_size(0) {}
+    };
+
+    struct VerificationState : public nkCryptoToolBase::AsyncStateBase, public std::enable_shared_from_this<VerificationState> {
+        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx;
+        async_file_t signature_file;
+        std::vector<unsigned char> signature;
+        uintmax_t total_input_size;
+        std::function<void(std::error_code, bool)> verification_completion_handler;
+        VerificationState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), signature_file(io_context), total_input_size(0) {}
+    };
+
     nkCryptoToolPQC();
     ~nkCryptoToolPQC();
 
@@ -58,5 +69,11 @@ public:
         const std::map<std::string, std::string>& key_paths,
         std::function<void(std::error_code)> completion_handler
     ) override;
+
+private:
+    void handleFileReadForSigning(std::shared_ptr<SigningState> state, const asio::error_code& ec, size_t bytes_transferred);
+    void finishSigning(std::shared_ptr<SigningState> state);
+    void handleFileReadForVerification(std::shared_ptr<VerificationState> state, const asio::error_code& ec, size_t bytes_transferred);
+    void finishVerification(std::shared_ptr<VerificationState> state);
 };
 #endif // NKCRYPTOTOOLPQC_HPP
