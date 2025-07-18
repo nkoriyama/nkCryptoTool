@@ -387,7 +387,6 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to get GCM tag."); }
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
             co_await asio::async_write(out_final, asio::buffer(*tag), asio::use_awaitable);
-            printProgress(1.0);
         };
         
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
@@ -543,7 +542,6 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
             final_block->resize(final_len);
             
             if (!final_block->empty()) { co_await asio::async_write(out_final, asio::buffer(*final_block), asio::use_awaitable); }
-            printProgress(1.0);
         };
 
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);

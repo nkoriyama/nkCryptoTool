@@ -120,18 +120,6 @@ bool nkCryptoToolBase::regeneratePublicKey(const std::filesystem::path& private_
     return true;
 }
 
-void nkCryptoToolBase::printProgress(double percentage) {
-    int barWidth = 50;
-    std::cout << "[";
-    int pos = static_cast<int>(barWidth * percentage);
-    for (int i = 0; i < barWidth; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
-    }
-    std::cout << "] " << static_cast<int>(percentage * 100.0) << " %\r";
-    std::cout.flush();
-}
 
 std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
