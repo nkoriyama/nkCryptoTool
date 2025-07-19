@@ -56,6 +56,8 @@
 
 ## **使用法**
 
+各機能の具体的な使用方法については、[**nkCryptoTool 操作ガイド (wizard.md)**](wizard.md) を参照してください。
+
 nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mode pqc)、Hybridモード (--mode hybrid)の3つのモードで動作します。
 
 ### **処理アーキテクチャ: 高速パイプライン処理**
