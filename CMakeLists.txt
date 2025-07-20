@@ -91,6 +91,27 @@ endif()
 # インストールルールを設定します（オプション）。
 install(TARGETS nkCryptoTool DESTINATION bin)
 
+# ライセンスファイルとMarkdownファイルをパッケージに含める
+# LICENSESディレクトリ内のファイルを収集
+file(GLOB LICENSES_DIR_FILES "${PROJECT_SOURCE_DIR}/LICENSES/*")
+
+# すべてのライセンスファイルを doc/LICENSES に
+install(FILES
+    ${PROJECT_SOURCE_DIR}/COPYING
+    ${PROJECT_SOURCE_DIR}/COPYING.LESSER
+    ${PROJECT_SOURCE_DIR}/LICENSE.txt
+    ${LICENSES_DIR_FILES}
+    DESTINATION doc/LICENSES
+)
+
+# Markdownファイルは doc に
+install(FILES
+    ${PROJECT_SOURCE_DIR}/README.md
+    ${PROJECT_SOURCE_DIR}/GETTING_STARTED.md
+    ${PROJECT_SOURCE_DIR}/wizard.md
+    DESTINATION doc
+)
+
 # ==============================================================================
 # Testing Configuration (CTest)
 # ==============================================================================
