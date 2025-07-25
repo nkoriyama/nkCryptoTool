@@ -221,4 +221,58 @@ endif()
 message(STATUS "CPack: Package version set to: ${CPACK_PACKAGE_VERSION}")
 # --- Gitバージョン設定ここまで ---
 
+
+# ==============================================================================
+# Benchmark Configuration (Google Benchmark)
+# ==============================================================================
+
+# FetchContentを使ってGoogle Benchmarkを取得
+FetchContent_Declare(
+  GoogleBenchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG        v1.8.0
+)
+
+# BENCHMARK_ENABLE_TESTING=OFF を設定して、benchmarkのテストが
+# プロジェクトのテスト（CTest）に含まれないようにします。
+set(BENCHMARK_ENABLE_TESTING OFF)
+
+# Google Benchmarkをビルドする際に、-Werrorフラグを無効にする
+set(BENCHMARK_ENABLE_WERROR OFF)
+
+FetchContent_MakeAvailable(GoogleBenchmark)
+
+# ベンチマーク用の実行可能ファイルを追加
+add_executable(nkCryptoToolBench benchmark/BenchMain.cpp nkCryptoToolBase.cpp nkCryptoToolECC.cpp nkCryptoToolPQC.cpp)
+
+# ベンチマーク実行可能ファイルに必要なインクルードディレクトリとライブラリをリンク
+target_include_directories(nkCryptoToolBench PRIVATE
+  ${PROJECT_SOURCE_DIR}
+  ${asio_SOURCE_DIR}/asio/include
+  ${cxxopts_SOURCE_DIR}/include
+  ${GoogleBenchmark_SOURCE_DIR}/include
+)
+
+target_link_libraries(nkCryptoToolBench PRIVATE
+  benchmark::benchmark
+  Threads::Threads
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  ws2_32
+)
+
+# 最適化オプションをベンチマークにも適用
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nkCryptoToolBench PRIVATE
+        -O3
+        -march=native
+        -mtune=native
+        -flto
+        -funroll-loops
+    )
+    if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        target_compile_options(nkCryptoToolBench PRIVATE -g)
+    endif()
+endif()
+
 include(CPack)
