@@ -30,11 +30,26 @@
 class nkCryptoToolECC : public nkCryptoToolBase {
 private:
     std::vector<unsigned char> generateSharedSecret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key);
-    struct SigningState;
-    struct VerificationState;
-    void handleFileReadForSigning(std::shared_ptr<SigningState> state, const asio::error_code& ec, size_t bytes_transferred);
-    void finishSigning(std::shared_ptr<SigningState> state);
-    void handleFileReadForVerification(std::shared_ptr<VerificationState> state, const asio::error_code& ec, size_t bytes_transferred);
+
+public:
+    struct SigningState : public nkCryptoToolBase::AsyncStateBase, public std::enable_shared_from_this<SigningState> {
+        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx;
+        uintmax_t total_input_size;
+        SigningState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), total_input_size(0) {}
+    };
+    struct VerificationState : public nkCryptoToolBase::AsyncStateBase, public std::enable_shared_from_this<VerificationState> {
+        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx;
+        async_file_t signature_file;
+        std::vector<unsigned char> signature;
+        uintmax_t total_input_size;
+        std::function<void(std::error_code, bool)> verification_completion_handler;
+        VerificationState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), signature_file(io_context), total_input_size(0) {}
+    };
+
+    // Helper functions, now awaitable and without ec/bytes_transferred args
+    asio::awaitable<void> handleFileReadForSigning(std::shared_ptr<SigningState> state);
+    asio::awaitable<void> finishSigning(std::shared_ptr<SigningState> state);
+    asio::awaitable<void> handleFileReadForVerification(std::shared_ptr<VerificationState> state);
     void finishVerification(std::shared_ptr<VerificationState> state);
 
 public:
@@ -44,8 +59,8 @@ public:
     bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
-    void signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) override;
-    void verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code, bool)>) override;
+    asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) override;
+    asio::awaitable<void> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code, bool)>) override;
 
     std::filesystem::path getEncryptionPrivateKeyPath() const override;
     std::filesystem::path getSigningPrivateKeyPath() const override;
