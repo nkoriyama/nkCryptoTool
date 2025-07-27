@@ -26,9 +26,10 @@
 #include <mutex>
 #include <map>
 #include <functional>
-#include <thread>
+
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 
 #include <cxxopts.hpp>
 
@@ -266,10 +267,34 @@ int main(int argc, char* argv[]) {
                 }
                 crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_sign) {
-                crypto_handler->signFile(main_io_context, input_filepath, signature_path, signing_privkey_path, result["digest-algo"].as<std::string>(), [&](std::error_code ec){ if(ec) return_code = 1; });
+                // ### ここを修正 ###
+                // co_spawnの第3引数にasio::detachedを指定し、完了ハンドラはsignFileに渡す
+                asio::co_spawn(main_io_context, crypto_handler->signFile(
+                    main_io_context,
+                    input_filepath,
+                    signature_path,
+                    signing_privkey_path,
+                    result["digest-algo"].as<std::string>(),
+                    [&](std::error_code ec) { 
+                        if(ec) {
+                            std::cerr << "\n署名中にエラーが発生しました: " << ec.message() << std::endl;
+                            return_code = 1; 
+                        }
+                    }
+                ), asio::detached);
             } else if (is_verify) {
-                crypto_handler->verifySignature(main_io_context, input_filepath, signature_path, signing_pubkey_path,
-                    [&](std::error_code ec, bool res){ if(ec) { std::cerr << "\nError during verification: " << ec.message() << std::endl; return_code = 1; } else if (res) { std::cout << "\nSignature verified successfully." << std::endl; } else { std::cerr << "\nSignature verification failed." << std::endl; return_code = 1;} });
+                asio::co_spawn(main_io_context, crypto_handler->verifySignature(main_io_context, input_filepath, signature_path, signing_pubkey_path,
+                    [&](std::error_code ec, bool res){ 
+                        if(ec) { 
+                            std::cerr << "\n検証中にエラーが発生しました: " << ec.message() << std::endl; 
+                            return_code = 1; 
+                        } else if (res) { 
+                            std::cout << "\n署名は正常に検証されました。" << std::endl; 
+                        } else { 
+                            std::cerr << "\n署名の検証に失敗しました。" << std::endl; 
+                            return_code = 1;
+                        } 
+                    }), asio::detached);
             }
             main_io_context.run();
         }
