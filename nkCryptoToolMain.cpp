@@ -36,89 +36,7 @@
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolECC.hpp"
 #include "nkCryptoToolPQC.hpp"
-
-#if defined(_WIN32) || defined(_WIN64)
-#include <conio.h>
-#else
-#include <termios.h>
-#include <unistd.h>
-#include <cstdio>
-#endif
-
-// パスフレーズをコンソールから安全に入力するための関数
-std::string get_masked_passphrase() {
-    std::string passphrase_input;
-#if defined(_WIN32) || defined(_WIN64)
-    char ch;
-    while ((ch = _getch()) != '\r') {
-        if (ch == '\b') {
-            if (!passphrase_input.empty()) {
-                passphrase_input.pop_back();
-                std::cout << "\b \b";
-            }
-        } else {
-            passphrase_input.push_back(ch);
-            std::cout << '*';
-        }
-    }
-    std::cout << std::endl;
-#else
-    if (!isatty(STDIN_FILENO)) {
-        std::getline(std::cin, passphrase_input);
-        return passphrase_input;
-    }
-    termios oldt;
-    tcgetattr(STDIN_FILENO, &oldt);
-    termios newt = oldt;
-    newt.c_lflag &= ~ECHO;
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-    std::getline(std::cin, passphrase_input);
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-    std::cout << std::endl;
-#endif
-    return passphrase_input;
-}
-
-// パスフレーズを2回入力させ、一致を確認する関数
-std::string get_and_verify_passphrase(const std::string& prompt) {
-    std::string pass1, pass2;
-    do {
-        std::cout << prompt;
-        std::cout.flush();
-        pass1 = get_masked_passphrase();
-        if (pass1.empty()) {
-            return "";
-        }
-        std::cout << "Verifying - Enter same passphrase again: ";
-        std::cout.flush();
-        pass2 = get_masked_passphrase();
-        if (pass1 != pass2) {
-            std::cerr << "\nPassphrases do not match. Please try again." << std::endl;
-        }
-    } while (pass1 != pass2);
-    return pass1;
-}
-
-// OpenSSLが秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数
-int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
-    (void)rwflag;
-    const char* key_description = static_cast<const char*>(userdata);
-    if (key_description && *key_description) {
-        std::cout << "Enter passphrase for " << key_description << ": ";
-    } else {
-        std::cout << "Enter passphrase for private key: ";
-    }
-    std::cout.flush();
-    std::string final_passphrase = get_masked_passphrase();
-    if (std::cin.eof()) { return 0; }
-    if (final_passphrase.length() >= (unsigned int)size) {
-        std::cerr << "\nError: Passphrase is too long." << std::endl;
-        return 0;
-    }
-    strncpy(buf, final_passphrase.c_str(), size);
-    buf[size - 1] = '\0';
-    return static_cast<int>(strlen(buf));
-}
+#include "nkCryptoToolUtils.hpp"
 
 int main(int argc, char* argv[]) {
     OSSL_PROVIDER_load(nullptr, "default");
@@ -141,6 +59,9 @@ int main(int argc, char* argv[]) {
             ("m,mode", "Specify the cryptographic mode: 'ecc', 'pqc', or 'hybrid'", cxxopts::value<std::string>()->default_value("ecc"))
             ("o,output-file", "Path to the output file", cxxopts::value<std::string>())
             ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>());
+
+        options.add_options("Benchmark")
+            ("benchmark", "Run benchmarks");
 
         options.add_options("Key Generation")
             ("gen-enc-key", "Generate a key pair for encryption")
@@ -178,6 +99,14 @@ int main(int argc, char* argv[]) {
 
         if (result.count("help") || argc == 1) {
             std::cout << options.help() << std::endl;
+            return 0;
+        }
+
+        if (result.count("benchmark")) {
+            // ベンチマーク実行ロジックをここに記述するか、別の関数を呼び出す
+            std::cout << "Running benchmarks..." << std::endl;
+            // ここでbenchmark::Initializeとbenchmark::RunSpecifiedBenchmarksを呼び出す
+            // ただし、これはnkCryptoToolMain.cppではなく、専用のベンチマークファイルで行うべき
             return 0;
         }
 

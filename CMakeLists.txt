@@ -36,12 +36,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cxxopts)
 
+# --- 依存関係の取得: Google Benchmark ---
+FetchContent_Declare(
+  benchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG        v1.8.4 # v2はまだリリースされていないため、最新の安定版v1.8.4を使用
+)
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable building benchmark's tests" FORCE)
+set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "Disable -Werror for benchmark" FORCE)
+FetchContent_MakeAvailable(benchmark)
+
 # --- 依存関係の取得: Threads ---
 find_package(Threads REQUIRED)
 
 # --- 依存関係の取得: OpenSSL ---
-# OpenSSLライブラリを見つけます。
-find_package(OpenSSL REQUIRED)
+# OpenSSLライブラリのパスを直接指定します。
+# MinGW環境を想定しています。必要に応じてパスを修正してください。
+set(OPENSSL_ROOT_DIR "C:/msys64/mingw64") # MinGWのインストールパスに合わせて変更
+set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dll.a")
+set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dll.a")
 
 # 実行可能ファイルの出力ディレクトリを build/bin に設定します。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -52,7 +66,32 @@ add_executable(nkCryptoTool
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
+    nkCryptoToolUtils.cpp
 )
+
+add_executable(nkCryptoToolBenchmark
+    nkCryptoToolBenchmark.cpp
+    nkCryptoToolBase.cpp
+    nkCryptoToolECC.cpp
+    nkCryptoToolPQC.cpp
+    nkCryptoToolUtils.cpp
+)
+
+target_link_libraries(nkCryptoToolBenchmark PRIVATE
+    benchmark
+    benchmark_main
+    Threads::Threads
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+)
+
+target_include_directories(nkCryptoToolBenchmark PRIVATE
+  ${asio_SOURCE_DIR}/asio/include
+  ${PROJECT_SOURCE_DIR}
+  ${OPENSSL_INCLUDE_DIR}
+)
+
+target_compile_definitions(nkCryptoToolBenchmark PRIVATE BENCHMARK_STATIC_LIB)
 
 # add_executable の後に最適化フラグを設定します
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -74,18 +113,24 @@ target_include_directories(nkCryptoTool PRIVATE
   ${PROJECT_SOURCE_DIR}
   ${asio_SOURCE_DIR}/asio/include
   ${cxxopts_SOURCE_DIR}/include
+  ${OPENSSL_INCLUDE_DIR}
 )
 
 # 実行可能ファイルにライブラリをリンクします。
 target_link_libraries(nkCryptoTool PRIVATE
-    OpenSSL::SSL
-    OpenSSL::Crypto
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
     Threads::Threads
+    benchmark
+    benchmark_main
 )
+
+target_compile_definitions(nkCryptoTool PRIVATE BENCHMARK_STATIC_LIB)
 
 # Windows固有のライブラリを追加でリンクします。
 if(WIN32)
     target_link_libraries(nkCryptoTool PRIVATE ws2_32)
+    target_link_libraries(nkCryptoToolBenchmark PRIVATE ws2_32)
 endif()
 
 # インストールルールを設定します（オプション）。
