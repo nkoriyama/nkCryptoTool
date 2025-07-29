@@ -29,6 +29,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <coroutine> // Added for C++20 coroutines
 #include <string>
 #include <filesystem>
 #include <sstream>
@@ -51,6 +52,59 @@ using async_file_t = asio::stream_file;
 using async_file_t = asio::posix::stream_descriptor;
 #endif
 
+class AsyncOrderedQueue {
+public:
+    AsyncOrderedQueue(asio::io_context& io_context) : io_context_(io_context), next_expected_order_(0) {}
+
+    void push(uint64_t order, std::vector<char> data) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        buffer_.emplace(order, std::move(data));
+        cv_.notify_all(); // Notify any waiting coroutines
+    }
+
+    asio::awaitable<std::vector<char>> async_pop() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        
+        // Wait until the next expected order is available
+        while (buffer_.find(next_expected_order_) == buffer_.end()) {
+            // If not available, yield control and wait for notification
+            // This is a simplified awaitable wait. In a real scenario,
+            // you'd use a more robust mechanism like asio::experimental::promise
+            // or a custom awaitable that integrates with asio's event loop.
+            // For now, we'll use a short timer to yield and re-check.
+            // This is still a form of polling, but it's within the coroutine context.
+            lock.unlock(); // Unlock before co_await
+            asio::steady_timer timer(io_context_);
+            timer.expires_after(std::chrono::milliseconds(1)); // Small delay
+            co_await timer.async_wait(asio::use_awaitable);
+            lock.lock(); // Relock after co_await
+        }
+
+        auto it = buffer_.find(next_expected_order_);
+        std::vector<char> data = std::move(it->second);
+        buffer_.erase(it);
+        next_expected_order_++;
+        co_return data;
+    }
+
+    bool is_empty() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return buffer_.empty();
+    }
+
+    uint64_t get_next_expected_order() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return next_expected_order_;
+    }
+
+private:
+    asio::io_context& io_context_;
+    mutable std::mutex mutex_;
+    std::map<uint64_t, std::vector<char>> buffer_;
+    std::condition_variable cv_; // Used for notifying when data is available
+    uint64_t next_expected_order_;
+};
+
 class PipelineManager : public std::enable_shared_from_this<PipelineManager> {
 public:
     using StageFunc = std::function<std::vector<char>(const std::vector<char>&)>;
@@ -66,7 +120,8 @@ public:
           reading_complete_(false), 
           next_task_id_(0),
           tasks_completed_count_(0),
-          completion_handler_called_(false)
+          completion_handler_called_(false),
+          results_queue_(io_context_)
     {
         log_message("PipelineManager created with " + std::to_string(num_threads) + " threads.");
         for (size_t i = 0; i < num_threads; ++i) {
@@ -241,7 +296,7 @@ private:
                     cv_task_.notify_one();
                 } else {
                     std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                    results_map_[task.original_order] = std::move(task.data);
+                    results_queue_.push(task.original_order, std::move(task.data));
                 }
             } catch (const std::exception& e) {
                 log_message("Exception in worker thread " + std::to_string(thread_id) + ": " + e.what());
@@ -267,28 +322,19 @@ private:
     asio::awaitable<void> writer_coroutine() {
         log_message("Writer starting.");
         uint64_t next_order_to_write = 0;
-        asio::steady_timer timer(io_context_);
-
         while (true) {
-            bool is_finished = false;
+            // Check for completion condition before attempting to pop
+            bool all_tasks_processed = false;
             {
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                is_finished = reading_complete_ && (tasks_completed_count_ == next_task_id_);
+                all_tasks_processed = reading_complete_ && (tasks_completed_count_ == next_task_id_);
             }
-            if (is_finished) {
-                 log_message("Writer detected completion. Total tasks written: " + std::to_string(tasks_completed_count_));
-                 break;
+            if (all_tasks_processed && results_queue_.is_empty()) {
+                log_message("Writer detected completion. All tasks processed and queue empty.");
+                break;
             }
 
-            std::vector<char> data_to_write;
-            {
-                std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                auto it = results_map_.find(next_order_to_write);
-                if (it != results_map_.end()) {
-                    data_to_write = std::move(it->second);
-                    results_map_.erase(it);
-                }
-            }
+            std::vector<char> data_to_write = co_await results_queue_.async_pop();
 
             if (!data_to_write.empty()) {
                 log_message("Writer writing chunk " + std::to_string(next_order_to_write));
@@ -302,9 +348,11 @@ private:
                 }
                 tasks_completed_count_++;
                 next_order_to_write++;
-            } else {
-                timer.expires_after(std::chrono::milliseconds(10));
-                co_await timer.async_wait(asio::use_awaitable);
+            } else { // This else block should ideally not be reached if async_pop() correctly waits
+                // If async_pop() returns empty data, it means the queue is finished and empty
+                // and there are no more tasks to process.
+                log_message("Writer received empty data from queue, indicating completion.");
+                break;
             }
         }
 
@@ -329,7 +377,7 @@ private:
     std::queue<Task> task_queue_;
     std::condition_variable cv_task_;
 
-    std::map<uint64_t, std::vector<char>> results_map_;
+    AsyncOrderedQueue results_queue_;
     
     async_file_t input_file_;
     async_file_t output_file_;

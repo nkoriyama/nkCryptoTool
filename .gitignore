@@ -31,3 +31,6 @@ encrypt.bin
 # VS Code specific (optional, if you're using VS Code and want to ignore its settings)
 .vscode/
 .history/
+
+# Benchmark specific generated files
+benchmark_keys/
