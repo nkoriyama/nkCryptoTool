@@ -363,8 +363,8 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         auto manager = std::make_shared<PipelineManager>(io_context);
         
         auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
-            if (!ec) std::cout << "\nPipeline encryption to '" << output_filepath << "' completed." << std::endl;
-            else std::cerr << "\nPipeline encryption failed: " << ec.message() << std::endl;
+            //if (!ec) std::cout << "\nPipeline encryption to '" << output_filepath << "' completed." << std::endl;
+            //else std::cerr << "\nPipeline encryption failed: " << ec.message() << std::endl;
             completion_handler(ec);
         };
 
@@ -470,8 +470,8 @@ void nkCryptoToolECC::decryptFileWithPipeline(
         auto manager = std::make_shared<PipelineManager>(io_context);
         
         auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
-            if (!ec) std::cout << "\nPipeline decryption to '" << output_filepath << "' completed." << std::endl;
-            else std::cerr << "\nPipeline decryption failed: " << ec.message() << std::endl;
+            //if (!ec) std::cout << "\nPipeline decryption to '" << output_filepath << "' completed." << std::endl;
+            //else std::cerr << "\nPipeline decryption failed: " << ec.message() << std::endl;
             completion_handler(ec);
         };
 

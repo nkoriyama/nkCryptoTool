@@ -170,8 +170,8 @@ BENCHMARK(BM_Decryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({
 BENCHMARK(BM_Encryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
 
-BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2}); // ~6.7GB, ECC, PQC, Hybrid
-BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2}); // ~6.7GB, ECC, PQC, Hybrid
+BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
+BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
 
 // ベンチマーク実行前にキーペアを生成するセットアップ関数
 void SetupKeys() {
