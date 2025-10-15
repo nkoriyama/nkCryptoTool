@@ -172,14 +172,13 @@ std::vector<unsigned char> nkCryptoToolECC::generateSharedSecret(EVP_PKEY* priva
 
 
 
-asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, std::function<void(std::error_code)> completion_handler){
+asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo){
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
         auto private_key = loadPrivateKey(signing_private_key_path, "ECC signing private key");
         if (!private_key) {
-            completion_handler(std::make_error_code(std::errc::invalid_argument));
-            co_return;
+            throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load ECC signing private key");
         }
         const EVP_MD* digest = EVP_get_digestbyname(digest_algo.c_str());
         if (!digest) throw std::runtime_error("OpenSSL Error: Unknown digest algorithm.");
@@ -188,8 +187,7 @@ asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, co
         std::error_code ec;
         state->total_input_size = std::filesystem::file_size(input_filepath, ec);
         if(ec) {
-            completion_handler(ec);
-            co_return;
+            throw std::system_error(ec, "Failed to get input file size");
         }
 
 #ifdef _WIN32
@@ -199,8 +197,7 @@ asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, co
         if (fd_in == -1) { ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, ec); }
 #endif
         if(ec) {
-            completion_handler(ec);
-            co_return;
+            throw std::system_error(ec, "Failed to open input file");
         }
 
 #ifdef _WIN32
@@ -210,8 +207,7 @@ asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, co
         if (fd_out == -1) { ec.assign(errno, std::system_category()); } else { state->output_file.assign(fd_out, ec); }
 #endif
         if(ec) {
-            completion_handler(ec);
-            co_return;
+            throw std::system_error(ec, "Failed to open signature output file");
         }
 
         // Start the async read loop
@@ -220,10 +216,10 @@ asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, co
         // Finish signing after all reads are done
         co_await finishSigning(state); // Now finishSigning is also an awaitable
         std::cout << "\nFile signed successfully." << std::endl;
-        completion_handler({}); // Success
+        co_return; // Success
     } catch (const std::exception& e) {
         std::cerr << "Signing failed: " << e.what() << std::endl;
-        completion_handler(std::make_error_code(std::errc::io_error)); // Or a more specific error code
+        throw; // Re-throw the exception to be caught by co_spawn's handler
     }
 }
 
@@ -260,14 +256,13 @@ asio::awaitable<void> nkCryptoToolECC::finishSigning(std::shared_ptr<SigningStat
     }
 }
 
-asio::awaitable<void> nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path, std::function<void(std::error_code, bool)> completion_handler){
+asio::awaitable<bool> nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path){
     auto state = std::make_shared<VerificationState>(io_context);
 
     try {
         auto public_key = loadPublicKey(signing_public_key_path);
         if (!public_key) {
-            completion_handler(std::make_error_code(std::errc::invalid_argument), false);
-            co_return;
+            throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load public key");
         }
         const EVP_MD* digest = EVP_get_digestbyname("SHA256");
         EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, digest, nullptr, public_key.get());
@@ -281,27 +276,23 @@ asio::awaitable<void> nkCryptoToolECC::verifySignature(asio::io_context& io_cont
         if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
 #endif
         if (ec) {
-            completion_handler(ec, false);
-            co_return;
+            throw std::system_error(ec, "Failed to open signature file");
         }
 
         state->signature.resize(std::filesystem::file_size(signature_filepath, ec));
         if (ec) {
-            completion_handler(ec, false);
-            co_return;
+            throw std::system_error(ec, "Failed to get signature file size");
         }
         
         co_await asio::async_read(state->signature_file, asio::buffer(state->signature), asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
-            completion_handler(ec, false);
-            co_return;
+            throw std::system_error(ec, "Failed to read signature file");
         }
 
         std::error_code open_ec;
         state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
         if(open_ec) {
-            completion_handler(open_ec, false);
-            co_return;
+            throw std::system_error(open_ec, "Failed to get input file size for verification");
         }
 
 #ifdef _WIN32
@@ -311,19 +302,18 @@ asio::awaitable<void> nkCryptoToolECC::verifySignature(asio::io_context& io_cont
         if (fd_in == -1) { open_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, open_ec); }
 #endif
         if(open_ec) {
-            completion_handler(open_ec, false);
-            co_return;
+            throw std::system_error(open_ec, "Failed to open input file for verification");
         }
 
         co_await handleFileReadForVerification(state);
         
-        // Finish verification
-        finishVerification(state);
-        // The finishVerification function now directly calls the completion handler.
-        // So no need to call it here.
+        // Finish verification (inlined logic)
+        int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
+        co_return (result == 1);
+
     } catch (const std::exception& e) {
         std::cerr << "Verification failed: " << e.what() << std::endl;
-        completion_handler(std::make_error_code(std::errc::io_error), false);
+        throw; // Re-throw to be caught by co_spawn handler
     }
 }
 
@@ -340,11 +330,6 @@ asio::awaitable<void> nkCryptoToolECC::handleFileReadForVerification(std::shared
     EVP_DigestVerifyUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
     state->total_bytes_processed += bytes_transferred;
     co_await handleFileReadForVerification(state);
-}
-
-void nkCryptoToolECC::finishVerification(std::shared_ptr<VerificationState> state){
-    int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
-    state->verification_completion_handler({}, (result == 1));
 }
 
 

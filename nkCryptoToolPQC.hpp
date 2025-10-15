@@ -36,7 +36,6 @@ public:
         async_file_t signature_file;
         std::vector<unsigned char> signature;
         uintmax_t total_input_size;
-        std::function<void(std::error_code, bool)> verification_completion_handler;
         VerificationState(asio::io_context& io_context) : AsyncStateBase(io_context), md_ctx(EVP_MD_CTX_new()), signature_file(io_context), total_input_size(0) {}
     };
 
@@ -46,8 +45,8 @@ public:
     bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
-    asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, std::function<void(std::error_code)>) override;
-    asio::awaitable<void> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, std::function<void(std::error_code, bool)>) override;
+    asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&) override;
+    asio::awaitable<bool> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&) override;
 
     std::filesystem::path getEncryptionPrivateKeyPath() const override;
     std::filesystem::path getSigningPrivateKeyPath() const override;
@@ -74,6 +73,5 @@ private:
     asio::awaitable<void> handleFileReadForSigning(std::shared_ptr<SigningState> state);
     asio::awaitable<void> finishSigning(std::shared_ptr<SigningState> state);
     asio::awaitable<void> handleFileReadForVerification(std::shared_ptr<VerificationState> state);
-    void finishVerification(std::shared_ptr<VerificationState> state);
 };
 #endif // NKCRYPTOTOOLPQC_HPP
