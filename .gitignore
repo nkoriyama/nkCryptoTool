@@ -34,3 +34,4 @@ encrypt.bin
 
 # Benchmark specific generated files
 benchmark_keys/
+benchmark_data/

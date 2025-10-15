@@ -1,4 +1,5 @@
 // PipelineManager.hpp
+// Trivial change to force re-evaluation
 /*
  * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
