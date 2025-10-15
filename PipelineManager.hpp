@@ -184,7 +184,16 @@ public:
         total_read_ = 0;
         
         start_writer();
-        read_next_chunk();
+        asio::co_spawn(io_context_, reader_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
+            if (p) {
+                try {
+                    std::rethrow_exception(p);
+                } catch (const std::exception& e) {
+                    log_message("Reader coroutine exception: " + std::string(e.what()));
+                    self->call_completion_handler(std::make_error_code(std::errc::io_error));
+                }
+            }
+        });
     }
 
 private:
@@ -215,59 +224,6 @@ private:
                 work_guard_.reset();
             });
         }
-    }
-
-    void read_next_chunk() {
-        if (total_to_read_ > 0 && total_read_ >= total_to_read_) {
-            log_message("Finished reading all data. Total read: " + std::to_string(total_read_));
-            std::unique_lock<std::mutex> lock(shared_state_mutex_);
-            reading_complete_ = true;
-            cv_task_.notify_all();
-            return;
-        }
-
-        size_t to_read_now = std::min(static_cast<size_t>(CHUNK_SIZE), static_cast<size_t>(total_to_read_ - total_read_));
-        if (total_to_read_ > 0 && to_read_now == 0) {
-             log_message("Finished reading specified size.");
-            std::unique_lock<std::mutex> lock(shared_state_mutex_);
-            reading_complete_ = true;
-            cv_task_.notify_all();
-            return;
-        }
-        if (total_to_read_ == 0) {
-            to_read_now = CHUNK_SIZE;
-        }
-
-        auto chunk = std::make_shared<std::vector<char>>(to_read_now);
-        
-        log_message("Reading next chunk. To read: " + std::to_string(to_read_now));
-        input_file_.async_read_some(asio::buffer(*chunk),
-            [this, self = shared_from_this(), chunk](const std::error_code& ec, size_t bytes_transferred) {
-                if (ec && ec != asio::error::eof) {
-                    log_message("Read error: " + ec.message());
-                    self->call_completion_handler(ec);
-                    return;
-                }
-                
-                if (bytes_transferred > 0) {
-                    log_message("Read " + std::to_string(bytes_transferred) + " bytes.");
-                    self->total_read_ += bytes_transferred;
-                    chunk->resize(bytes_transferred);
-                    
-                    std::unique_lock<std::mutex> lock(self->shared_state_mutex_);
-                    self->task_queue_.push({std::move(*chunk), 0, self->next_task_id_++});
-                    self->cv_task_.notify_one();
-                }
-
-                if (!ec) {
-                    self->read_next_chunk();
-                } else { // EOF
-                    log_message("Final read (EOF). Total read: " + std::to_string(self->total_read_));
-                    std::unique_lock<std::mutex> lock(self->shared_state_mutex_);
-                    self->reading_complete_ = true;
-                    self->cv_task_.notify_all();
-                }
-            });
     }
 
     void worker_thread(size_t thread_id) {
@@ -366,6 +322,64 @@ private:
         co_return;
     }
 
+    asio::awaitable<void> reader_coroutine() {
+        log_message("Reader coroutine started.");
+        while (true) { // Loop to continuously read chunks
+            if (total_to_read_ > 0 && total_read_ >= total_to_read_) {
+                log_message("Finished reading all data. Total read: " + std::to_string(total_read_));
+                std::unique_lock<std::mutex> lock(shared_state_mutex_);
+                reading_complete_ = true;
+                cv_task_.notify_all();
+                break; // Exit loop
+            }
+
+            size_t to_read_now = std::min(static_cast<size_t>(CHUNK_SIZE), static_cast<size_t>(total_to_read_ - total_read_));
+            if (total_to_read_ > 0 && to_read_now == 0) {
+                 log_message("Finished reading specified size.");
+                std::unique_lock<std::mutex> lock(shared_state_mutex_);
+                reading_complete_ = true;
+                cv_task_.notify_all();
+                break; // Exit loop
+            }
+            if (total_to_read_ == 0) {
+                to_read_now = CHUNK_SIZE;
+            }
+
+            auto chunk = std::make_shared<std::vector<char>>(to_read_now);
+            
+            log_message("Reading next chunk. To read: " + std::to_string(to_read_now));
+            
+            std::error_code ec;
+            size_t bytes_transferred = co_await input_file_.async_read_some(asio::buffer(*chunk), asio::redirect_error(asio::use_awaitable, ec));
+
+            if (ec && ec != asio::error::eof) {
+                log_message("Read error: " + ec.message());
+                call_completion_handler(ec);
+                co_return; // Exit coroutine on error
+            }
+            
+            if (bytes_transferred > 0) {
+                log_message("Read " + std::to_string(bytes_transferred) + " bytes.");
+                total_read_ += bytes_transferred;
+                chunk->resize(bytes_transferred);
+                
+                std::unique_lock<std::mutex> lock(shared_state_mutex_);
+                task_queue_.push({std::move(*chunk), 0, next_task_id_++});
+                cv_task_.notify_one();
+            }
+
+            if (ec == asio::error::eof) {
+                log_message("Final read (EOF). Total read: " + std::to_string(total_read_));
+                std::unique_lock<std::mutex> lock(shared_state_mutex_);
+                reading_complete_ = true;
+                cv_task_.notify_all();
+                break; // Exit loop on EOF
+            }
+        }
+        log_message("Reader coroutine finished.");
+        co_return;
+    }
+
     asio::io_context& io_context_;
     asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
     std::vector<std::thread> threads_;
@@ -395,6 +409,5 @@ private:
     uintmax_t total_read_{0};
     
     static constexpr size_t CHUNK_SIZE = 1024 * 64; // 64 KB
-};
-
+}; // Missing closing brace for PipelineManager class
 #endif // PIPELINEMANAGER_HPP
