@@ -34,6 +34,7 @@
 #include <cxxopts.hpp>
 
 #include <openssl/provider.h>
+#include <openssl/conf.h>
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolECC.hpp"
 #include "nkCryptoToolPQC.hpp"
@@ -41,6 +42,7 @@
 
 int main(int argc, char* argv[]) {
     OSSL_PROVIDER_load(nullptr, "default");
+    // OSSL_PROVIDER_load(nullptr, "oqsprovider"); // Add oqsprovider for PQC functions
     int return_code = 0;
 
     try {
@@ -60,9 +62,6 @@ int main(int argc, char* argv[]) {
             ("m,mode", "Specify the cryptographic mode: 'ecc', 'pqc', or 'hybrid'", cxxopts::value<std::string>()->default_value("ecc"))
             ("o,output-file", "Path to the output file", cxxopts::value<std::string>())
             ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>());
-
-        options.add_options("Benchmark")
-            ("benchmark", "Run benchmarks");
 
         options.add_options("Key Generation")
             ("gen-enc-key", "Generate a key pair for encryption")
@@ -100,14 +99,6 @@ int main(int argc, char* argv[]) {
 
         if (result.count("help") || argc == 1) {
             std::cout << options.help() << std::endl;
-            return 0;
-        }
-
-        if (result.count("benchmark")) {
-            // ベンチマーク実行ロジックをここに記述するか、別の関数を呼び出す
-            std::cout << "Running benchmarks..." << std::endl;
-            // ここでbenchmark::Initializeとbenchmark::RunSpecifiedBenchmarksを呼び出す
-            // ただし、これはnkCryptoToolMain.cppではなく、専用のベンチマークファイルで行うべき
             return 0;
         }
 
@@ -216,11 +207,11 @@ int main(int argc, char* argv[]) {
                     ecdh_passphrase = get_and_verify_passphrase("Enter passphrase for ECDH private key (press Enter to save unencrypted): ");
                 }
                 auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory()/"public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory()/"private_enc_hybrid_mlkem.key", mlkem_passphrase);
+                success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory() / "public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory() / "private_enc_hybrid_mlkem.key", mlkem_passphrase);
                 if(success) {
                     nkCryptoToolECC ecc_handler;
                     ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
-                    success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory()/"public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory()/"private_enc_hybrid_ecdh.key", ecdh_passphrase);
+                    success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key", ecdh_passphrase);
                 }
             } else {
                 std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase to encrypt " + std::string(is_gen_enc_key ? "encryption" : "signing") + " private key (press Enter to save unencrypted): ");
@@ -240,8 +231,8 @@ int main(int argc, char* argv[]) {
             if (crypto_handler->regeneratePublicKey(regenerate_privkey_path, regenerate_pubkey_path, passphrase_to_use)) {
                 std::cout << "Public key successfully regenerated and saved to: " << regenerate_pubkey_path << std::endl;
             } else {
-                std::cerr << "Failed to regenerate public key." << std::endl;
-                return_code = 1;
+                std::cerr << "Failed to regenerate public key."
+;                return_code = 1;
             }
         }
         else if (needs_input_file) {

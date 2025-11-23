@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <asio.hpp>
 #include <openssl/provider.h>
+#include <openssl/conf.h>
 #include "nkCryptoToolECC.hpp"
 #include "nkCryptoToolPQC.hpp"
 
@@ -181,8 +182,8 @@ BENCHMARK(BM_Decryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({
 BENCHMARK(BM_Encryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
 
-BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
-BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
+// BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
+// BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
 
 // Function to setup dummy files
 void SetupDummyFiles() {
@@ -202,8 +203,6 @@ void TeardownDummyFiles() {
 
 // ベンチマーク実行前にキーペアを生成するセットアップ関数
 void SetupKeys() {
-    OSSL_PROVIDER_load(nullptr, "default"); // OpenSSLのデフォルトプロバイダをロード
-
     std::filesystem::path key_dir = "./benchmark_keys";
     std::filesystem::create_directories(key_dir);
 
@@ -218,20 +217,32 @@ void SetupKeys() {
 
     nkCryptoToolPQC pqc_handler;
     pqc_handler.setKeyBaseDirectory(key_dir);
-    if (pqc_handler.generateEncryptionKeyPair(pqc_handler.getEncryptionPublicKeyPath(), pqc_handler.getEncryptionPrivateKeyPath(), "")) {
-        std::cout << "PQC keys generated successfully." << std::endl;
-    } else {
-        std::cerr << "Error: Failed to generate PQC keys." << std::endl;
-        nkCryptoToolBase::printOpenSSLErrors();
+    try { // ★try-catchを追加
+        if (pqc_handler.generateEncryptionKeyPair(pqc_handler.getEncryptionPublicKeyPath(), pqc_handler.getEncryptionPrivateKeyPath(), "")) {
+            std::cout << "PQC keys generated successfully." << std::endl;
+        } else {
+            std::cerr << "Error: Failed to generate PQC keys." << std::endl;
+            nkCryptoToolBase::printOpenSSLErrors();
+        }
+    } catch (const std::runtime_error& e) { // ★runtime_errorを捕捉
+        std::cerr << "Caught exception during PQC key generation: " << e.what() << std::endl;
+        nkCryptoToolBase::printOpenSSLErrors(); // ★詳細エラーを出力
+        throw; // ★再度スロー
     }
 
     // Hybridモード用のキーペアも生成 (PQCとECCの組み合わせ)
     // PQCはML-KEM、ECCはECDHとして扱う
-    if (pqc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_mlkem.key", key_dir / "private_enc_hybrid_mlkem.key", "")) {
-        std::cout << "Hybrid ML-KEM keys generated successfully." << std::endl;
-    } else {
-        std::cerr << "Error: Failed to generate Hybrid ML-KEM keys." << std::endl;
-        nkCryptoToolBase::printOpenSSLErrors();
+    try { // ★try-catchを追加
+        if (pqc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_mlkem.key", key_dir / "private_enc_hybrid_mlkem.key", "")) {
+            std::cout << "Hybrid ML-KEM keys generated successfully." << std::endl;
+        } else {
+            std::cerr << "Error: Failed to generate Hybrid ML-KEM keys." << std::endl;
+            nkCryptoToolBase::printOpenSSLErrors();
+        }
+    } catch (const std::runtime_error& e) { // ★runtime_errorを捕捉
+        std::cerr << "Caught exception during Hybrid ML-KEM key generation: " << e.what() << std::endl;
+        nkCryptoToolBase::printOpenSSLErrors(); // ★詳細エラーを出力
+        throw; // ★再度スロー
     }
     if (ecc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_ecdh.key", key_dir / "private_enc_hybrid_ecdh.key", "")) {
         std::cout << "Hybrid ECDH keys generated successfully." << std::endl;
@@ -250,6 +261,8 @@ void TeardownKeys() {
 // ベンチマークのメイン関数
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
+    OSSL_PROVIDER_load(nullptr, "default"); // 既存
+    // OSSL_PROVIDER_load(nullptr, "oqsprovider"); // 追加
     SetupKeys();
     SetupDummyFiles();
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
