@@ -1,5 +1,4 @@
 // PipelineManager.hpp
-// Trivial change to force re-evaluation
 /*
  * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
@@ -410,5 +409,5 @@ private:
     uintmax_t total_read_{0};
     
     static constexpr size_t CHUNK_SIZE = 1024 * 64; // 64 KB
-}; // Missing closing brace for PipelineManager class
+};
 #endif // PIPELINEMANAGER_HPP

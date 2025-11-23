@@ -35,9 +35,8 @@ apt update && apt install \-y git cmake build-essential ninja-build libssl-dev
 
 ##### **nkCryptoToolをダウンロード**
 
-git clone https://github.com/nkoriyama/nkCryptToool  
-cd nkCryptToool
-
+git clone https://github.com/nkoriyama/nkCryptoTool
+cd nkCryptoTool
 ##### **ビルドディレクトリを作成し、ビルド**
 
 mkdir build  
