@@ -59,6 +59,11 @@
 
    *ビルドが成功すると、実行可能ファイルが build/bin ディレクトリに生成されます。*
 
+## **ベンチマーク**
+nkCryptoToolには、暗号化・復号、署名・検証のパフォーマンスを測定するためのベンチマーク機能が組み込まれています。
+
+    nkCryptoTool --benchmark
+
 ## **使用法**
 
 nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mode pqc)、Hybridモード (--mode hybrid)の3つのモードで動作します。
@@ -77,6 +82,9 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
   nkCryptoTool \--mode pqc \--gen-sign-key  
 * 暗号化鍵ペア (Hybrid):  
   nkCryptoTool \--mode hybrid \--gen-enc-key
+  これにより、ML-KEMとECDHの鍵ペアがそれぞれ生成されます (例: public_enc_hybrid_mlkem.key, private_enc_hybrid_mlkem.key, public_enc_hybrid_ecdh.key, private_enc_hybrid_ecdh.key)。
+* 秘密鍵からの公開鍵の再生成:
+  nkCryptoTool --regenerate-pubkey <private_key_path> <public_key_path>
 
 **Note:** \--passphrase "" を付けるとパスフレーズなしで鍵を生成します。--key-dir \<path\> で鍵の保存先を指定できます。
 
@@ -106,6 +114,8 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
   nkCryptoTool \--mode ecc \--sign \<input.txt\> \--signature \<file.sig\> \--signing-privkey \<private\_key.key\>  
 * PQCモード:  
   nkCryptoTool \--mode pqc \--sign \<input.txt\> \--signature \<file.sig\> \--signing-privkey \<private\_key.key\>
+
+**Note:** オプションで `--digest-algo <algorithm>` を追加することで、署名に使われるハッシュアルゴリズムを指定できます (例: `SHA256`, `SHA3-256`)。指定しない場合のデフォルトは `SHA256` です。
 
 ### **署名検証**
 
