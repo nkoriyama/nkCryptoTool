@@ -50,12 +50,15 @@ FetchContent_MakeAvailable(benchmark)
 find_package(Threads REQUIRED)
 
 # --- 依存関係の取得: OpenSSL ---
-# OpenSSLライブラリのパスを直接指定します。
-# MinGW環境を想定しています。必要に応じてパスを修正してください。
-set(OPENSSL_ROOT_DIR "C:/msys64/mingw64") # MinGWのインストールパスに合わせて変更
-set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
-set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dll.a")
-set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dll.a")
+# OpenSSLライブラリを検出します。
+find_package(OpenSSL REQUIRED)
+# If OpenSSL is found, OPENSSL_INCLUDE_DIR, OPENSSL_LIBRARIES will be set.
+# OPENSSL_LIBRARIES typically includes both SSL and Crypto.
+# For modern CMake, it's better to use imported targets like OpenSSL::SSL and OpenSSL::Crypto.
+# set(OPENSSL_ROOT_DIR "C:/msys64/mingw64") # MinGWのインストールパスに合わせて変更
+# set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+# set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dll.a")
+# set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dll.a")
 
 # 実行可能ファイルの出力ディレクトリを build/bin に設定します。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -81,14 +84,13 @@ target_link_libraries(nkCryptoToolBenchmark PRIVATE
     benchmark
     benchmark_main
     Threads::Threads
-    ${OPENSSL_SSL_LIBRARY}
-    ${OPENSSL_CRYPTO_LIBRARY}
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 target_include_directories(nkCryptoToolBenchmark PRIVATE
   ${asio_SOURCE_DIR}/asio/include
   ${PROJECT_SOURCE_DIR}
-  ${OPENSSL_INCLUDE_DIR}
 )
 
 target_compile_definitions(nkCryptoToolBenchmark PRIVATE BENCHMARK_STATIC_LIB)
@@ -113,13 +115,12 @@ target_include_directories(nkCryptoTool PRIVATE
   ${PROJECT_SOURCE_DIR}
   ${asio_SOURCE_DIR}/asio/include
   ${cxxopts_SOURCE_DIR}/include
-  ${OPENSSL_INCLUDE_DIR}
 )
 
 # 実行可能ファイルにライブラリをリンクします。
 target_link_libraries(nkCryptoTool PRIVATE
-    ${OPENSSL_SSL_LIBRARY}
-    ${OPENSSL_CRYPTO_LIBRARY}
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Threads::Threads
     benchmark
     benchmark_main
