@@ -86,7 +86,7 @@ static void BM_Encryption(benchmark::State& state) {
         }
 
         std::error_code ec;
-        crypto_handler->encryptFileWithPipeline(io_context, input_filename, encrypted_filename, key_paths, [&](std::error_code err){ ec = err; });
+        crypto_handler->encryptFileWithPipeline(io_context, input_filename, encrypted_filename, key_paths, nkCryptoToolBase::CompressionAlgorithm::NONE, [&](std::error_code err){ ec = err; });
         io_context.run();
         
         if (ec) {
@@ -131,7 +131,7 @@ static void BM_Decryption(benchmark::State& state) {
 
         asio::io_context enc_io_context;
         std::error_code enc_ec;
-        crypto_handler_enc->encryptFileWithPipeline(enc_io_context, input_filename, encrypted_filename, enc_key_paths, [&](std::error_code err){ enc_ec = err; });
+        crypto_handler_enc->encryptFileWithPipeline(enc_io_context, input_filename, encrypted_filename, enc_key_paths, nkCryptoToolBase::CompressionAlgorithm::NONE, [&](std::error_code err){ enc_ec = err; });
         enc_io_context.run();
         
         if (enc_ec) {

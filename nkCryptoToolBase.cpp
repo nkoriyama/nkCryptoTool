@@ -27,6 +27,7 @@
 #include <asio/read.hpp>
 #include <functional>
 #include <format>
+#include <zstd.h>
 
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
@@ -54,15 +55,22 @@ nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)
       output_file(io_context),
       cipher_ctx(EVP_CIPHER_CTX_new()),
       input_buffer(CHUNK_SIZE),
-      output_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH), // 暗号化時のバッファはブロックサイズ分余分に確保
+      output_buffer(ZSTD_compressBound(CHUNK_SIZE) + EVP_MAX_BLOCK_LENGTH),
       tag(GCM_TAG_LEN),
       bytes_read(0),
-      total_bytes_processed(0) {
-    // 圧縮関連の初期化を削除
+      total_bytes_processed(0),
+      compression_algo(CompressionAlgorithm::NONE),
+      cstream(nullptr),
+      dstream(nullptr) {
 }
 
 nkCryptoToolBase::AsyncStateBase::~AsyncStateBase() {
-    // 圧縮関連のクリーンアップを削除
+    if (cstream) {
+        ZSTD_freeCStream(cstream);
+    }
+    if (dstream) {
+        ZSTD_freeDStream(dstream);
+    }
 }
 
 void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
@@ -168,3 +176,184 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
     return derived_key;
 }
 
+void nkCryptoToolBase::startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size) {
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        state->cstream = ZSTD_createCStream();
+        if (!state->cstream) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+        ZSTD_initCStream(state->cstream, 1);
+    }
+    
+    state->input_file.async_read_some(asio::buffer(state->input_buffer),
+                                    std::bind(&nkCryptoToolBase::handleReadForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size) {
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        state->dstream = ZSTD_createDStream();
+        if (!state->dstream) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+        ZSTD_initDStream(state->dstream);
+    }
+    state->input_file.async_read_some(asio::buffer(state->input_buffer),
+                                    std::bind(&nkCryptoToolBase::handleReadForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred) {
+    if (ec && ec != asio::error::eof) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    state->bytes_read = bytes_transferred;
+    state->total_bytes_processed += bytes_transferred;
+    
+    int outlen = 0;
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        ZSTD_inBuffer in_buf = { state->input_buffer.data(), state->bytes_read, 0 };
+        ZSTD_outBuffer out_buf = { state->output_buffer.data(), state->output_buffer.size(), 0 };
+        ZSTD_compressStream(state->cstream, &out_buf, &in_buf);
+        
+        int encrypted_len = 0;
+        if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &encrypted_len, (const unsigned char*)out_buf.dst, out_buf.pos) <= 0) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+        outlen = encrypted_len;
+    } else {
+        if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), state->bytes_read) <= 0) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+    }
+    
+    asio::async_write(state->output_file, asio::buffer(state->output_buffer, outlen),
+                      std::bind(&nkCryptoToolBase::handleWriteForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+}
+
+void nkCryptoToolBase::handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t) {
+    if (ec) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    if (state->total_bytes_processed < total_input_size) {
+        state->input_file.async_read_some(asio::buffer(state->input_buffer),
+                                        std::bind(&nkCryptoToolBase::handleReadForEncryption, this, state, total_input_size, std::placeholders::_1, std::placeholders::_2));
+    } else {
+        finishEncryptionPipeline(state);
+    }
+}
+
+void nkCryptoToolBase::finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
+    int outlen = 0;
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        ZSTD_outBuffer out_buf = { state->output_buffer.data(), state->output_buffer.size(), 0 };
+        ZSTD_endStream(state->cstream, &out_buf);
+
+        int encrypted_len = 0;
+        if (EVP_EncryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &encrypted_len, (const unsigned char*)out_buf.dst, out_buf.pos) <= 0) {
+            state->completion_handler(std::make_error_code(std::errc::io_error));
+            return;
+        }
+        outlen = encrypted_len;
+    }
+
+    int final_len = 0;
+    if (EVP_EncryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data() + outlen, &final_len) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+    outlen += final_len;
+
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+
+    asio::write(state->output_file, asio::buffer(state->output_buffer, outlen));
+    asio::write(state->output_file, asio::buffer(state->tag));
+    
+    state->completion_handler(std::error_code());
+}
+
+void nkCryptoToolBase::handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t bytes_transferred) {
+    if (ec && ec != asio::error::eof) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    state->bytes_read = bytes_transferred;
+    state->total_bytes_processed += bytes_transferred;
+
+    int outlen = 0;
+    if (EVP_DecryptUpdate(state->cipher_ctx.get(), state->output_buffer.data(), &outlen, state->input_buffer.data(), state->bytes_read) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        ZSTD_inBuffer in_buf = { state->output_buffer.data(), (size_t)outlen, 0 };
+        while (in_buf.pos < in_buf.size) {
+            ZSTD_outBuffer out_buf = { state->input_buffer.data(), state->input_buffer.size(), 0 };
+            size_t ret = ZSTD_decompressStream(state->dstream, &out_buf, &in_buf);
+            if (ZSTD_isError(ret)) {
+                state->completion_handler(std::make_error_code(std::errc::io_error));
+                return;
+            }
+            asio::async_write(state->output_file, asio::buffer(state->input_buffer, out_buf.pos),
+                              std::bind(&nkCryptoToolBase::handleWriteForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+        }
+    } else {
+        asio::async_write(state->output_file, asio::buffer(state->output_buffer, outlen),
+                          std::bind(&nkCryptoToolBase::handleWriteForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+    }
+}
+
+void nkCryptoToolBase::handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t) {
+    if (ec) {
+        state->completion_handler(ec);
+        return;
+    }
+
+    if (state->total_bytes_processed < total_ciphertext_size) {
+        state->input_file.async_read_some(asio::buffer(state->input_buffer),
+                                        std::bind(&nkCryptoToolBase::handleReadForDecryption, this, state, total_ciphertext_size, std::placeholders::_1, std::placeholders::_2));
+    } else {
+        finishDecryptionPipeline(state);
+    }
+}
+
+void nkCryptoToolBase::finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state) {
+    if (EVP_CIPHER_CTX_ctrl(state->cipher_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, state->tag.data()) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+    
+    int outlen = 0;
+    if (EVP_DecryptFinal_ex(state->cipher_ctx.get(), state->output_buffer.data(), &outlen) <= 0) {
+        state->completion_handler(std::make_error_code(std::errc::io_error));
+        return;
+    }
+
+    if (state->compression_algo == CompressionAlgorithm::ZSTD) {
+        ZSTD_inBuffer in_buf = { state->output_buffer.data(), (size_t)outlen, 0 };
+        while (in_buf.pos < in_buf.size) {
+            ZSTD_outBuffer out_buf = { state->input_buffer.data(), state->input_buffer.size(), 0 };
+            size_t ret = ZSTD_decompressStream(state->dstream, &out_buf, &in_buf);
+            if (ZSTD_isError(ret)) {
+                state->completion_handler(std::make_error_code(std::errc::io_error));
+                return;
+            }
+            asio::write(state->output_file, asio::buffer(state->input_buffer, out_buf.pos));
+        }
+    } else {
+        asio::write(state->output_file, asio::buffer(state->output_buffer, outlen));
+    }
+    
+    state->completion_handler(std::error_code());
+}

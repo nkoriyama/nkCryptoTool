@@ -362,6 +362,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
     const std::string& input_filepath,
     const std::string& output_filepath,
     const std::map<std::string, std::string>& key_paths,
+    CompressionAlgorithm compression_algo,
     std::function<void(std::error_code)> completion_handler
 ) {
     try {
@@ -412,6 +413,7 @@ void nkCryptoToolECC::encryptFileWithPipeline(
         FileHeader header;
         memcpy(header.magic, MAGIC, sizeof(MAGIC));
         header.version = 1;
+        header.compression_algo = compression_algo;
         header.reserved = 0;
         asio::write(output_file, asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec);
 

@@ -71,6 +71,7 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
+        CompressionAlgorithm compression_algo,
         std::function<void(std::error_code)> completion_handler
     ) override;
 

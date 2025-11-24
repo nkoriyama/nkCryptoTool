@@ -36,6 +36,7 @@
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
+#include <zstd.h>
 // #include <lz4.h> // LZ4ヘッダを削除
 
 #ifdef _WIN32
@@ -62,11 +63,11 @@ struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
 
 class nkCryptoToolBase {
 public:
-    // enum class CompressionAlgorithm : uint8_t { // CompressionAlgorithm enumを削除
-    //     NONE = 0,
-    //     LZ4  = 1,
-    //     ZSTD = 2,
-    // };
+    enum class CompressionAlgorithm : uint8_t {
+        NONE = 0,
+        LZ4  = 1,
+        ZSTD = 2,
+    };
 
 protected:
     static constexpr int CHUNK_SIZE = 4096;
@@ -78,7 +79,7 @@ protected:
     struct FileHeader {
         char magic[4];
         uint8_t version;
-        // CompressionAlgorithm compression_algo; // FileHeaderから圧縮関連メンバを削除
+        CompressionAlgorithm compression_algo;
         uint16_t reserved;
     };
     #pragma pack(pop)
@@ -100,6 +101,9 @@ protected:
         size_t bytes_read;
         uintmax_t total_bytes_processed;
         std::function<void(std::error_code)> completion_handler;
+        CompressionAlgorithm compression_algo;
+        ZSTD_CStream* cstream;
+        ZSTD_DStream* dstream;
 
         AsyncStateBase(asio::io_context& io_context);
         virtual ~AsyncStateBase();
@@ -130,6 +134,7 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
+        CompressionAlgorithm compression_algo,
         std::function<void(std::error_code)> completion_handler
     ) = 0;
 
