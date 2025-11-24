@@ -72,7 +72,8 @@ int main(int argc, char* argv[]) {
 
         options.add_options("Encryption (ECC/PQC)")
             ("encrypt", "Encrypt the input file")
-            ("recipient-pubkey", "Recipient's public key file", cxxopts::value<std::string>());
+            ("recipient-pubkey", "Recipient's public key file", cxxopts::value<std::string>())
+            ("compress", "Compression algorithm to use ('none', 'lz4', 'zstd')", cxxopts::value<std::string>()->default_value("none"));
 
         options.add_options("Decryption (ECC/PQC)")
             ("decrypt", "Decrypt the input file")
@@ -246,7 +247,16 @@ int main(int argc, char* argv[]) {
                 } else {
                     key_paths["recipient-pubkey"] = recipient_pubkey_path;
                 }
-                crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+
+                std::string compression_str = result["compress"].as<std::string>();
+                nkCryptoToolBase::CompressionAlgorithm compression_algo = nkCryptoToolBase::CompressionAlgorithm::NONE;
+                if (compression_str == "zstd") {
+                    compression_algo = nkCryptoToolBase::CompressionAlgorithm::ZSTD;
+                } else if (compression_str == "lz4") {
+                    compression_algo = nkCryptoToolBase::CompressionAlgorithm::LZ4;
+                }
+
+                crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, compression_algo, [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_decrypt) {
                 std::cout << "Starting " << mode << " decryption..." << std::endl;
                 std::map<std::string, std::string> key_paths;

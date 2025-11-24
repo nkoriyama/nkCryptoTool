@@ -36,6 +36,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cxxopts)
 
+# --- 依存関係の取得: Zstandard ---
+FetchContent_Declare(
+  zstd
+  GIT_REPOSITORY https://github.com/facebook/zstd.git
+  GIT_TAG        v1.5.5 # 最新の安定板
+)
+FetchContent_MakeAvailable(zstd)
+
 # --- 依存関係の取得: Google Benchmark ---
 FetchContent_Declare(
   benchmark
@@ -86,6 +94,7 @@ target_link_libraries(nkCryptoToolBenchmark PRIVATE
     Threads::Threads
     OpenSSL::SSL
     OpenSSL::Crypto
+    zstd
 )
 
 target_include_directories(nkCryptoToolBenchmark PRIVATE
@@ -124,6 +133,7 @@ target_link_libraries(nkCryptoTool PRIVATE
     Threads::Threads
     benchmark
     benchmark_main
+    zstd
 )
 
 target_compile_definitions(nkCryptoTool PRIVATE BENCHMARK_STATIC_LIB)
@@ -160,6 +170,11 @@ add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF)
 add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF)
+
+# --- Run Zstd Encryption Scenarios ---
+add_e2e_test(E2E_Hybrid_Zstd_Encryption hybrid OFF zstd OFF OFF OFF)
+add_e2e_test(E2E_PQC_Zstd_Encryption    pqc    OFF zstd OFF OFF OFF)
+add_e2e_test(E2E_ECC_Zstd_Encryption    ecc    OFF zstd OFF OFF OFF)
 
 
 

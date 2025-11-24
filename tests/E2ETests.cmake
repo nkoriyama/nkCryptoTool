@@ -9,20 +9,24 @@
 # Arguments:
 #   MODE:         The crypto mode (ecc, pqc, hybrid)
 #   USE_PARALLEL: BOOL true to enable parallel processing, false otherwise
+#   COMPRESSION:  The compression algorithm (e.g., "zstd")
 #
-function(run_encryption_scenario MODE USE_PARALLEL)
+function(run_encryption_scenario MODE USE_PARALLEL COMPRESSION)
     set(TEST_RESULT 0)
 
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
     # --- Determine scenario name and suffix based on options ---
+    set(SCENARIO_VARIANT "")
+    set(SCENARIO_SUFFIX "")
     if(USE_PARALLEL)
         set(SCENARIO_VARIANT " (in parallel)")
         set(SCENARIO_SUFFIX "_parallel")
-    else()
-        set(SCENARIO_VARIANT "")
-        set(SCENARIO_SUFFIX "")
+    endif()
+    if(NOT "${COMPRESSION}" STREQUAL "none")
+        set(SCENARIO_VARIANT "${SCENARIO_VARIANT} (with ${COMPRESSION})")
+        set(SCENARIO_SUFFIX "${SCENARIO_SUFFIX}_${COMPRESSION}")
     endif()
 
     message(STATUS "\n=============================================")
@@ -58,6 +62,10 @@ function(run_encryption_scenario MODE USE_PARALLEL)
     if(USE_PARALLEL)
         list(APPEND ENCRYPT_ARGS --parallel)
         list(APPEND DECRYPT_ARGS --parallel)
+    endif()
+
+    if(NOT "${COMPRESSION}" STREQUAL "none")
+        list(APPEND ENCRYPT_ARGS --compress "${COMPRESSION}")
     endif()
 
     if("${MODE}" STREQUAL "hybrid")
@@ -244,7 +252,7 @@ endfunction()
 # run_signing_scenario(ecc)
 
 # Macro to define an E2E test for CTest
-macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGENERATE_PUBKEY REGENERATE_SIGN_PUBKEY)
+macro(add_e2e_test TEST_NAME MODE PARALLEL COMPRESSION SIGNING REGENERATE_PUBKEY REGENERATE_SIGN_PUBKEY)
     add_test(
         NAME ${TEST_NAME}
         COMMAND "${CMAKE_COMMAND}"
@@ -254,6 +262,7 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGENERATE_PUBKEY REGENERATE_
             -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
             -D SCENARIO_MODE=${MODE}
             -D SCENARIO_PARALLEL=${PARALLEL}
+            -D SCENARIO_COMPRESSION=${COMPRESSION}
             -D SCENARIO_SIGNING=${SIGNING}
             -D SCENARIO_REGENERATE_PUBKEY=${REGENERATE_PUBKEY}
             -D SCENARIO_REGENERATE_SIGN_PUBKEY=${REGENERATE_SIGN_PUBKEY}
@@ -270,7 +279,7 @@ if(DEFINED SCENARIO_MODE)
     elseif(SCENARIO_REGENERATE_SIGN_PUBKEY)
         run_regenerate_sign_pubkey_test(${SCENARIO_MODE})
     else()
-        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL})
+        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL} ${SCENARIO_COMPRESSION})
     endif()
     # Exit with the test result
     if(TEST_RESULT EQUAL 0)
