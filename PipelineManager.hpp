@@ -1,4 +1,3 @@
-// PipelineManager.hpp
 /*
  * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
@@ -38,6 +37,8 @@
 #include <asio/ts/internet.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
+#include <map>
+#include <stack> // Added for buffer pool
 
 #include <asio/steady_timer.hpp>
 
@@ -52,39 +53,38 @@ using async_file_t = asio::stream_file;
 using async_file_t = asio::posix::stream_descriptor;
 #endif
 
+// イベント駆動型キュー
 class AsyncOrderedQueue {
 public:
-    AsyncOrderedQueue(asio::io_context& io_context) : io_context_(io_context), next_expected_order_(0) {}
+    AsyncOrderedQueue(asio::io_context& io_context) : io_context_(io_context), next_expected_order_(0), signal_timer_(io_context) {
+        signal_timer_.expires_at(std::chrono::steady_clock::time_point::max());
+    }
 
     void push(uint64_t order, std::vector<char> data) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        buffer_.emplace(order, std::move(data));
-        cv_.notify_all(); // Notify any waiting coroutines
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            buffer_.emplace(order, std::move(data));
+        }
+        signal_timer_.cancel();
     }
 
     asio::awaitable<std::vector<char>> async_pop() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        
-        // Wait until the next expected order is available
-        while (buffer_.find(next_expected_order_) == buffer_.end()) {
-            // If not available, yield control and wait for notification
-            // This is a simplified awaitable wait. In a real scenario,
-            // you'd use a more robust mechanism like asio::experimental::promise
-            // or a custom awaitable that integrates with asio's event loop.
-            // For now, we'll use a short timer to yield and re-check.
-            // This is still a form of polling, but it's within the coroutine context.
-            lock.unlock(); // Unlock before co_await
-            asio::steady_timer timer(io_context_);
-            timer.expires_after(std::chrono::milliseconds(1)); // Small delay
-            co_await timer.async_wait(asio::use_awaitable);
-            lock.lock(); // Relock after co_await
+        while (true)
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            auto it = buffer_.find(next_expected_order_);
+            if (it != buffer_.end()) {
+                std::vector<char> data = std::move(it->second);
+                buffer_.erase(it);
+                next_expected_order_++;
+                co_return data;
+            }
+            lock.unlock();
+            
+            asio::error_code ec;
+            signal_timer_.expires_at(std::chrono::steady_clock::time_point::max());
+            co_await signal_timer_.async_wait(asio::redirect_error(asio::use_awaitable, ec));
         }
-
-        auto it = buffer_.find(next_expected_order_);
-        std::vector<char> data = std::move(it->second);
-        buffer_.erase(it);
-        next_expected_order_++;
-        co_return data;
     }
 
     bool is_empty() const {
@@ -101,8 +101,8 @@ private:
     asio::io_context& io_context_;
     mutable std::mutex mutex_;
     std::map<uint64_t, std::vector<char>> buffer_;
-    std::condition_variable cv_; // Used for notifying when data is available
     uint64_t next_expected_order_;
+    asio::steady_timer signal_timer_;
 };
 
 class PipelineManager : public std::enable_shared_from_this<PipelineManager> {
@@ -152,8 +152,7 @@ public:
         completion_handler_ = on_complete;
         finalization_handler_ = std::move(on_finalize);
         output_file_ = std::move(out_file);
-        log_message("Output file handle received.");
-
+        
         std::error_code ec;
 #ifdef _WIN32
         input_file_.open(in_path.c_str(), async_file_t::read_only, ec);
@@ -162,11 +161,9 @@ public:
         if (fd_in == -1) ec.assign(errno, std::system_category()); else input_file_.assign(fd_in, ec);
 #endif
         if (ec) {
-            log_message("Failed to open input file: " + ec.message());
             call_completion_handler(ec);
             return;
         }
-        log_message("Input file opened.");
 
 #ifdef _WIN32
         input_file_.seek(read_offset, asio::file_base::seek_set, ec);
@@ -176,7 +173,6 @@ public:
         }
 #endif
         if(ec) {
-             log_message("Failed to seek input file: " + ec.message());
              call_completion_handler(ec); return;
         }
 
@@ -186,12 +182,8 @@ public:
         start_writer();
         asio::co_spawn(io_context_, reader_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
             if (p) {
-                try {
-                    std::rethrow_exception(p);
-                } catch (const std::exception& e) {
-                    log_message("Reader coroutine exception: " + std::string(e.what()));
-                    self->call_completion_handler(std::make_error_code(std::errc::io_error));
-                }
+                try { std::rethrow_exception(p); } 
+                catch (const std::exception& e) { self->call_completion_handler(std::make_error_code(std::errc::io_error)); }
             }
         });
     }
@@ -199,9 +191,32 @@ public:
 private:
     struct Task {
         std::vector<char> data;
-        size_t stage_index;
         uint64_t original_order;
     };
+
+    // --- メモリプール機能 ---
+    std::stack<std::vector<char>> buffer_pool_;
+    std::mutex pool_mutex_;
+
+    std::vector<char> acquire_buffer(size_t size) {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        if (buffer_pool_.empty()) {
+            return std::vector<char>(size);
+        }
+        std::vector<char> buf = std::move(buffer_pool_.top());
+        buffer_pool_.pop();
+        
+        if (buf.size() != size) {
+            buf.resize(size);
+        }
+        return buf;
+    }
+
+    void release_buffer(std::vector<char> buf) {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        buffer_pool_.push(std::move(buf));
+    }
+    // ------------------------
 
     void log_message(const std::string& msg) {
         std::lock_guard<std::mutex> lock(log_mutex_);
@@ -209,25 +224,21 @@ private:
         std::stringstream ss;
         ss << "[TID:" << std::this_thread::get_id() << "] " << msg << "\n";
         std::cout << ss.str();
-        std::cout.flush(); // Ensure logs are visible immediately
+        std::cout.flush();
 #endif
     }
 
     void call_completion_handler(const std::error_code& ec) {
         bool already_called = completion_handler_called_.exchange(true);
         if (!already_called) {
-            log_message("Calling completion handler with code: " + ec.message());
             asio::post(io_context_, [this, ec]() {
-                if (completion_handler_) {
-                    completion_handler_(ec);
-                }
+                if (completion_handler_) completion_handler_(ec);
                 work_guard_.reset();
             });
         }
     }
 
     void worker_thread(size_t thread_id) {
-        log_message("Worker thread " + std::to_string(thread_id) + " started.");
         while (is_running_) {
             Task task;
             {
@@ -238,145 +249,110 @@ private:
 
                 task = std::move(task_queue_.front());
                 task_queue_.pop();
-                log_message("Worker " + std::to_string(thread_id) + " picked up task " + std::to_string(task.original_order));
             }
             
             try {
-                std::vector<char> processed_data = stages_[task.stage_index](task.data);
-                task.data = std::move(processed_data);
-                task.stage_index++;
-
-                if (task.stage_index < stages_.size()) {
-                    std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                    task_queue_.push(std::move(task));
-                    cv_task_.notify_one();
-                } else {
-                    std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                    results_queue_.push(task.original_order, std::move(task.data));
+                for (const auto& stage : stages_) {
+                    task.data = stage(task.data);
                 }
+                results_queue_.push(task.original_order, std::move(task.data));
             } catch (const std::exception& e) {
-                log_message("Exception in worker thread " + std::to_string(thread_id) + ": " + e.what());
                 call_completion_handler(std::make_error_code(std::errc::io_error));
             }
         }
-        log_message("Worker thread " + std::to_string(thread_id) + " finished.");
     }
-    
+
     void start_writer() {
         asio::co_spawn(io_context_, writer_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
             if (p) {
-                try {
-                    std::rethrow_exception(p);
-                } catch (const std::exception& e) {
-                    log_message("Writer coroutine exception: " + std::string(e.what()));
-                    self->call_completion_handler(std::make_error_code(std::errc::io_error));
-                }
+                try { std::rethrow_exception(p); }
+                catch (const std::exception& e) { self->call_completion_handler(std::make_error_code(std::errc::io_error)); }
             }
         });
     }
 
     asio::awaitable<void> writer_coroutine() {
-        log_message("Writer starting.");
         uint64_t next_order_to_write = 0;
         while (true) {
-            // Check for completion condition before attempting to pop
             bool all_tasks_processed = false;
             {
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 all_tasks_processed = reading_complete_ && (tasks_completed_count_ == next_task_id_);
             }
-            if (all_tasks_processed && results_queue_.is_empty()) {
-                log_message("Writer detected completion. All tasks processed and queue empty.");
-                break;
-            }
+            if (all_tasks_processed && results_queue_.is_empty()) break;
 
             std::vector<char> data_to_write = co_await results_queue_.async_pop();
 
             if (!data_to_write.empty()) {
-                log_message("Writer writing chunk " + std::to_string(next_order_to_write));
                 try {
                     size_t bytes_written = co_await asio::async_write(output_file_, asio::buffer(data_to_write), asio::use_awaitable);
-                    log_message("Writer finished writing chunk " + std::to_string(next_order_to_write) + " (" + std::to_string(bytes_written) + " bytes)");
                 } catch (const std::system_error& e) {
-                    log_message("Writer ERROR: " + std::string(e.what()));
                     call_completion_handler(e.code());
                     co_return;
                 }
+                
+                release_buffer(std::move(data_to_write));
+
                 tasks_completed_count_++;
                 next_order_to_write++;
-            } else { // This else block should ideally not be reached if async_pop() correctly waits
-                // If async_pop() returns empty data, it means the queue is finished and empty
-                // and there are no more tasks to process.
-                log_message("Writer received empty data from queue, indicating completion.");
+            } else {
                 break;
             }
         }
 
-        log_message("Writer proceeding to finalization.");
         if (finalization_handler_) {
             co_await finalization_handler_(std::move(output_file_));
         }
-
-        log_message("Writer finished successfully.");
         call_completion_handler({});
         co_return;
     }
 
     asio::awaitable<void> reader_coroutine() {
-        log_message("Reader coroutine started.");
-        while (true) { // Loop to continuously read chunks
+        while (true) {
             if (total_to_read_ > 0 && total_read_ >= total_to_read_) {
-                log_message("Finished reading all data. Total read: " + std::to_string(total_read_));
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 reading_complete_ = true;
                 cv_task_.notify_all();
-                break; // Exit loop
+                break;
             }
 
             size_t to_read_now = std::min(static_cast<size_t>(CHUNK_SIZE), static_cast<size_t>(total_to_read_ - total_read_));
             if (total_to_read_ > 0 && to_read_now == 0) {
-                 log_message("Finished reading specified size.");
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 reading_complete_ = true;
                 cv_task_.notify_all();
-                break; // Exit loop
+                break;
             }
-            if (total_to_read_ == 0) {
-                to_read_now = CHUNK_SIZE;
-            }
+            if (total_to_read_ == 0) to_read_now = CHUNK_SIZE;
 
-            auto chunk = std::make_shared<std::vector<char>>(to_read_now);
-            
-            log_message("Reading next chunk. To read: " + std::to_string(to_read_now));
+            std::vector<char> chunk = acquire_buffer(to_read_now);
             
             std::error_code ec;
-            size_t bytes_transferred = co_await input_file_.async_read_some(asio::buffer(*chunk), asio::redirect_error(asio::use_awaitable, ec));
+            size_t bytes_transferred = co_await input_file_.async_read_some(asio::buffer(chunk), asio::redirect_error(asio::use_awaitable, ec));
 
             if (ec && ec != asio::error::eof) {
-                log_message("Read error: " + ec.message());
                 call_completion_handler(ec);
-                co_return; // Exit coroutine on error
+                co_return;
             }
             
             if (bytes_transferred > 0) {
-                log_message("Read " + std::to_string(bytes_transferred) + " bytes.");
                 total_read_ += bytes_transferred;
-                chunk->resize(bytes_transferred);
+                if (chunk.size() != bytes_transferred) {
+                    chunk.resize(bytes_transferred);
+                }
                 
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
-                task_queue_.push({std::move(*chunk), 0, next_task_id_++});
+                task_queue_.push({std::move(chunk), next_task_id_++});
                 cv_task_.notify_one();
             }
 
             if (ec == asio::error::eof) {
-                log_message("Final read (EOF). Total read: " + std::to_string(total_read_));
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 reading_complete_ = true;
                 cv_task_.notify_all();
-                break; // Exit loop on EOF
+                break;
             }
         }
-        log_message("Reader coroutine finished.");
         co_return;
     }
 
@@ -408,6 +384,7 @@ private:
     uintmax_t total_to_read_{0};
     uintmax_t total_read_{0};
     
-    static constexpr size_t CHUNK_SIZE = 1024 * 64; // 64 KB
+    // [修正] 実績のある 64KB に戻す (SysTime削減とキャッシュ効率向上)
+    static constexpr size_t CHUNK_SIZE = 1024 * 64; 
 };
 #endif // PIPELINEMANAGER_HPP
