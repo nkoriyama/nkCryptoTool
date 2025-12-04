@@ -60,9 +60,9 @@
    *ビルドが成功すると、実行可能ファイルが build/bin ディレクトリに生成されます。*
 
 ## **ベンチマーク**
-nkCryptoToolには、暗号化・復号、署名・検証のパフォーマンスを測定するためのベンチマーク機能が組み込まれています。
+`nkCryptoToolBenchmark`は、暗号化・復号、署名・検証のパフォーマンスを測定するための**独立した**ベンチマークプログラムです。
 
-    nkCryptoTool --benchmark
+    build/bin/nkCryptoToolBenchmark
 
 ## **使用法**
 
