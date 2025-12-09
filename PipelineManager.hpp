@@ -28,7 +28,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <coroutine> // Added for C++20 coroutines
+#include <coroutine> // Added for C++ coroutines
 #include <string>
 #include <filesystem>
 #include <sstream>

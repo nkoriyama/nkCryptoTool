@@ -29,6 +29,8 @@
 #include <system_error>
 #include <memory>
 #include <map>
+#include <expected>
+#include "CryptoError.hpp"
 #include <asio.hpp>
 #include <asio/awaitable.hpp>
 #include <asio/buffer.hpp>
@@ -81,8 +83,8 @@ protected:
     };
     #pragma pack(pop)
 
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPublicKey(const std::filesystem::path& public_key_path);
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(const std::filesystem::path& public_key_path);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description);
 
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
                                           const std::string& salt, const std::string& info,
@@ -113,10 +115,10 @@ public:
     void setKeyBaseDirectory(const std::filesystem::path& dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
-    virtual bool generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
-    virtual bool generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
     virtual asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&) = 0;
-    virtual asio::awaitable<bool> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&) = 0;
+    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&) = 0;
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
@@ -152,6 +154,6 @@ private:
 
     public:
     static void printOpenSSLErrors();
-    bool regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase);
+    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase);
 };
 #endif // NKCRYPTOTOOLBASE_HPP

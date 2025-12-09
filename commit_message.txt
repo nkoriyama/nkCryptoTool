@@ -1,0 +1,16 @@
+feat: Adopt C++23 features for modern error handling and string formatting
+
+This commit introduces several C++23 features to enhance the codebase:
+
+- **C++23 Standard Update**: The project's CMake configuration has been updated to use C++23, enabling access to modern language features. Corresponding documentation in `README.md` and `nkCryptoTool_optimization_secrets.md` has been adjusted.
+
+- **`std::expected` for Error Handling**: Error management has been modernized by replacing boolean return values and exceptions with `std::expected` in key functions. This includes:
+    - Key pair generation (`generateEncryptionKeyPair`, `generateSigningKeyPair`) in `nkCryptoToolECC` and `nkCryptoToolPQC`.
+    - Public key regeneration (`regeneratePublicKey`) in `nkCryptoToolBase`.
+    - Key loading (`loadPublicKey`, `loadPrivateKey`) in `nkCryptoToolBase`.
+    - Signature verification (`verifySignature`) in `nkCryptoToolECC` and `nkCryptoToolPQC`.
+    A new `CryptoError.hpp` file was introduced to define specific error types for clearer reporting.
+
+- **`std::format` for String Formatting**: String concatenation for error messages and output strings has been replaced with `std::format` for improved type safety, readability, and performance. This change was applied to `nkCryptoToolBenchmark.cpp`, `nkCryptoToolBase.cpp`, `nkCryptoToolMain.cpp`, and `nkCryptoToolUtils.cpp`.
+
+- **`std::ranges` Demonstration**: A basic use case of `std::ranges::for_each` was introduced in `nkCryptoToolBenchmark.cpp` to demonstrate modern range-based algorithms for cleaner iteration.

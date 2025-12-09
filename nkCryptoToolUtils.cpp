@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstring>
+#include <format>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <conio.h>
@@ -71,7 +72,7 @@ int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     (void)rwflag;
     const char* key_description = static_cast<const char*>(userdata);
     if (key_description && *key_description) {
-        std::cout << "Enter passphrase for " << key_description << ": ";
+        std::cout << std::format("Enter passphrase for {}: ", key_description);
     } else {
         std::cout << "Enter passphrase for private key: ";
     }

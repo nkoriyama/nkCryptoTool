@@ -26,6 +26,7 @@
 #include <asio/write.hpp>
 #include <asio/read.hpp>
 #include <functional>
+#include <format>
 
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
@@ -43,7 +44,7 @@ nkCryptoToolBase::nkCryptoToolBase() : key_base_directory("keys") {
             std::filesystem::create_directories(key_base_directory);
         }
     } catch (const std::filesystem::filesystem_error& e) {
-        std::cerr << "Error creating directory '" << key_base_directory.string() << "': " << e.what() << std::endl;
+        std::cerr << std::format("Error creating directory '{}': {}\n", key_base_directory.string(), e.what());
     }
 }
 nkCryptoToolBase::~nkCryptoToolBase() {}
@@ -71,7 +72,7 @@ void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
             std::filesystem::create_directories(key_base_directory);
         }
     } catch (const std::filesystem::filesystem_error& e) {
-        std::cerr << "Error creating directory '" << key_base_directory.string() << "': " << e.what() << std::endl;
+        std::cerr << std::format("Error creating directory '{}': {}\n", key_base_directory.string(), e.what());
     }
 }
 std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
@@ -93,50 +94,56 @@ void nkCryptoToolBase::printOpenSSLErrors() {
     std::cerr << "OpenSSL Error: " << error_msg << std::endl;
 }
 
-bool nkCryptoToolBase::regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         printOpenSSLErrors();
-        throw std::runtime_error("Error opening private key file: " + private_key_path.string());
+        return std::unexpected(CryptoError::FileReadError);
     }
 
     EVP_PKEY* pkey_raw = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)passphrase.c_str());
     if (!pkey_raw) {
         printOpenSSLErrors();
-        throw std::runtime_error("OpenSSL Error: Failed to read private key from " + private_key_path.string() + ". Check passphrase or file format.");
+        return std::unexpected(CryptoError::PrivateKeyLoadError);
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey(pkey_raw);
 
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
     if (!pub_bio) {
         printOpenSSLErrors();
-        throw std::runtime_error("Error creating public key file: " + public_key_path.string());
+        return std::unexpected(CryptoError::FileCreationError);
     }
 
     if (PEM_write_bio_PUBKEY(pub_bio.get(), pkey.get()) <= 0) {
         printOpenSSLErrors();
-        throw std::runtime_error("OpenSSL Error: Failed to write public key to " + public_key_path.string());
+        return std::unexpected(CryptoError::PublicKeyWriteError);
     }
-    return true;
+    return {};
 }
 
-std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
-        throw std::runtime_error("Error loading public key: Failed to open file " + public_key_path.string());
+        return std::unexpected(CryptoError::FileReadError);
     }
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read public key."); }
+    if (!pkey) { 
+        ERR_clear_error(); 
+        return std::unexpected(CryptoError::PublicKeyLoadError); 
+    }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
-        throw std::runtime_error("Error loading private key: Failed to open file " + private_key_path.string());
+        return std::unexpected(CryptoError::FileReadError);
     }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)key_description);
-    if (!pkey) { ERR_clear_error(); throw std::runtime_error("OpenSSL Error: Failed to read private key."); }
+    if (!pkey) { 
+        ERR_clear_error(); 
+        return std::unexpected(CryptoError::PrivateKeyLoadError);
+    }
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 

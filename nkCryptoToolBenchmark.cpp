@@ -3,6 +3,8 @@
 #include <vector>
 #include <string>
 #include <filesystem>
+#include <format>
+#include <ranges>
 #include <asio.hpp>
 #include <openssl/provider.h>
 #include <openssl/conf.h>
@@ -19,7 +21,7 @@ void createDummyFile(const std::string& filename, size_t size) {
 
     std::ofstream ofs(filename, std::ios::binary | std::ios::trunc);
     if (!ofs) {
-        throw std::runtime_error("Failed to create dummy file: " + filename);
+        throw std::runtime_error(std::format("Failed to create dummy file: {}", filename));
     }
     std::vector<char> buffer(1024, 'A');
     for (size_t i = 0; i < size; i += buffer.size()) {
@@ -188,12 +190,12 @@ BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1
 // Function to setup dummy files
 void SetupDummyFiles() {
     std::filesystem::create_directories(dummy_input_files_dir);
-    for (size_t size : dummy_file_sizes) {
+    std::ranges::for_each(dummy_file_sizes, [&](size_t size) {
         std::string filename = (dummy_input_files_dir / ("input_" + std::to_string(size) + ".bin")).string();
         createDummyFile(filename, size);
         dummy_input_file_paths[size] = filename;
         std::cout << "Created dummy file: " << filename << " (" << size << " bytes)" << std::endl;
-    }
+    });
 }
 
 // Function to teardown dummy files
