@@ -26,6 +26,7 @@
 #include <mutex>
 #include <map>
 #include <functional>
+#include <format>
 
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
@@ -159,7 +160,7 @@ int main(int argc, char* argv[]) {
             try {
                 return std::filesystem::absolute(path_str).string();
             } catch (const std::filesystem::filesystem_error& e) {
-                std::cerr << "Error resolving path for '" << path_str << "': " << e.what() << std::endl;
+                std::cerr << std::format("Error resolving path for '{}': {}\n", path_str, e.what());
                 throw;
             }
         };
@@ -184,7 +185,7 @@ int main(int argc, char* argv[]) {
         std::unique_ptr<nkCryptoToolBase> crypto_handler;
         if (mode == "ecc") { crypto_handler = std::make_unique<nkCryptoToolECC>(); } 
         else if (mode == "pqc" || mode == "hybrid") { crypto_handler = std::make_unique<nkCryptoToolPQC>(); } 
-        else { std::cerr << "Error: Invalid mode '" << mode << "'." << std::endl; return 1; }
+        else { std::cerr << std::format("Error: Invalid mode '{}'.\n", mode); return 1; }
 
         if (!key_dir_path.empty()) {
             crypto_handler->setKeyBaseDirectory(key_dir_path);
@@ -192,9 +193,17 @@ int main(int argc, char* argv[]) {
 
         // --- 処理の実行 ---
         if (is_gen_enc_key || is_gen_sign_key) {
-            bool success = false;
             std::string passphrase_from_args = result.count("passphrase") ? result["passphrase"].as<std::string>() : "";
             bool passphrase_was_provided = result.count("passphrase") > 0;
+            
+            auto handle_result = [&](const std::expected<void, CryptoError>& res) {
+                if (res) {
+                    std::cout << std::format("Key pair generated successfully in {}\n", crypto_handler->getKeyBaseDirectory().string());
+                } else {
+                    std::cerr << std::format("Error: Key pair generation failed. Reason: {}\n", toString(res.error()));
+                    return_code = 1;
+                }
+            };
 
             if (is_gen_enc_key && mode == "hybrid") {
                 std::string mlkem_passphrase, ecdh_passphrase;
@@ -207,38 +216,40 @@ int main(int argc, char* argv[]) {
                     ecdh_passphrase = get_and_verify_passphrase("Enter passphrase for ECDH private key (press Enter to save unencrypted): ");
                 }
                 auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                success = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory() / "public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory() / "private_enc_hybrid_mlkem.key", mlkem_passphrase);
-                if(success) {
+                auto res_pqc = pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory() / "public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory() / "private_enc_hybrid_mlkem.key", mlkem_passphrase);
+                if(res_pqc) {
                     nkCryptoToolECC ecc_handler;
                     ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
-                    success = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key", ecdh_passphrase);
+                    auto res_ecc = ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key", ecdh_passphrase);
+                    handle_result(res_ecc);
+                } else {
+                    handle_result(res_pqc);
                 }
             } else {
                 std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase to encrypt " + std::string(is_gen_enc_key ? "encryption" : "signing") + " private key (press Enter to save unencrypted): ");
                 if (is_gen_enc_key) {
-                    success = crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use);
+                    handle_result(crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use));
                 } else {
-                    success = crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use);
+                    handle_result(crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use));
                 }
             }
-            if (success) { std::cout << "Key pair generated successfully in " << crypto_handler->getKeyBaseDirectory().string() << std::endl; } 
-            else { std::cerr << "Error: Key pair generation failed." << std::endl; return_code = 1; }
         }
         else if (is_regenerate) {
             std::string passphrase_from_args = result.count("passphrase") ? result["passphrase"].as<std::string>() : "";
             bool passphrase_was_provided = result.count("passphrase") > 0;
             std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
-            if (crypto_handler->regeneratePublicKey(regenerate_privkey_path, regenerate_pubkey_path, passphrase_to_use)) {
-                std::cout << "Public key successfully regenerated and saved to: " << regenerate_pubkey_path << std::endl;
+            auto res = crypto_handler->regeneratePublicKey(regenerate_privkey_path, regenerate_pubkey_path, passphrase_to_use);
+            if (res) {
+                std::cout << std::format("Public key successfully regenerated and saved to: {}\n", regenerate_pubkey_path);
             } else {
-                std::cerr << "Failed to regenerate public key."
-;                return_code = 1;
+                std::cerr << std::format("Failed to regenerate public key. Reason: {}\n", toString(res.error()));
+                return_code = 1;
             }
         }
         else if (needs_input_file) {
             asio::io_context main_io_context;
             if (is_encrypt) {
-                std::cout << "Starting " << mode << " encryption..." << std::endl;
+                std::cout << std::format("Starting {} encryption...\n", mode);
                 std::map<std::string, std::string> key_paths;
                 if (mode == "hybrid") {
                     key_paths["recipient-mlkem-pubkey"] = recipient_mlkem_pubkey_path;
@@ -248,7 +259,7 @@ int main(int argc, char* argv[]) {
                 }
                 crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
             } else if (is_decrypt) {
-                std::cout << "Starting " << mode << " decryption..." << std::endl;
+                std::cout << std::format("Starting {} decryption...\n", mode);
                 std::map<std::string, std::string> key_paths;
                     if (mode == "hybrid") {
                     key_paths["recipient-mlkem-privkey"] = recipient_mlkem_privkey_path;
@@ -283,15 +294,15 @@ int main(int argc, char* argv[]) {
                     input_filepath,
                     signature_path,
                     signing_pubkey_path
-                ), [&](std::exception_ptr p, bool is_valid) {
+                ), [&](std::exception_ptr p, std::expected<void, CryptoError> result) {
                     try {
                         if (p) {
                             std::rethrow_exception(p);
                         }
-                        if (is_valid) {
+                        if (result) {
                             std::cout << "\nSignature verified successfully." << std::endl;
                         } else {
-                            std::cerr << "\nSignature verification failed." << std::endl;
+                            std::cerr << std::format("\nSignature verification failed. Reason: {}\n", toString(result.error()));
                             return_code = 1;
                         }
                     } catch (const std::exception& e) {

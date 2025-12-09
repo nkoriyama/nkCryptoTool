@@ -40,7 +40,7 @@
 #include <asio/buffer.hpp>
 #include <asio/write.hpp>
 #include <asio/read.hpp>
-
+#include <format>
 
 
 namespace {
@@ -127,38 +127,38 @@ std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const { retu
 std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_pqc.key"; }
 
 // --- 鍵ペア生成 ---
-bool nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize ML-KEM key generation context."); }
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { return std::unexpected(CryptoError::KeyGenerationInitError); }
     EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ML-KEM key pair."); }
+    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { return std::unexpected(CryptoError::KeyGenerationError); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> kem_key(pkey);
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { throw std::runtime_error("Error creating private key file: " + private_key_path.string()); }
+    if (!priv_bio) { return std::unexpected(CryptoError::FileCreationError); }
     bool success = false;
     if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
     } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
-    if (!success) { throw std::runtime_error("OpenSSL Error: Failed to write ML-KEM private key to file."); }
+    if (!success) { return std::unexpected(CryptoError::PrivateKeyWriteError); }
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), kem_key.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to write ML-KEM public key to file."); }
-    return true;
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), kem_key.get()) <= 0) { return std::unexpected(CryptoError::PublicKeyWriteError); }
+    return {};
 }
 
-bool nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-DSA-87", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to initialize ML-DSA key generation context."); }
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { return std::unexpected(CryptoError::KeyGenerationInitError); }
     EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to generate ML-DSA key pair."); }
+    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { return std::unexpected(CryptoError::KeyGenerationError); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> dsa_key(pkey);
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
-    if (!priv_bio) { throw std::runtime_error("Error creating private key file: " + private_key_path.string()); }
+    if (!priv_bio) { return std::unexpected(CryptoError::FileCreationError); }
     bool success = false;
     if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
     } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
-    if (!success) { throw std::runtime_error("OpenSSL Error: Failed to write ML-DSA private key to file."); }
+    if (!success) { return std::unexpected(CryptoError::PrivateKeyWriteError); }
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
-    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), dsa_key.get()) <= 0) { throw std::runtime_error("OpenSSL Error: Failed to write ML-DSA public key to file."); }
-    return true;
+    if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), dsa_key.get()) <= 0) { return std::unexpected(CryptoError::PublicKeyWriteError); }
+    return {};
 }
 
 
@@ -168,10 +168,11 @@ asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, co
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
-        auto private_key = loadPrivateKey(signing_private_key_path, "PQC signing private key");
-        if (!private_key) {
+        auto private_key_res = loadPrivateKey(signing_private_key_path, "PQC signing private key");
+        if (!private_key_res) {
             throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load PQC signing private key");
         }
+        auto private_key = std::move(*private_key_res);
 
         if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, nullptr, nullptr, private_key.get()) <= 0) {
             throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing.");
@@ -241,17 +242,18 @@ asio::awaitable<void> nkCryptoToolPQC::finishSigning(std::shared_ptr<SigningStat
     }
 }
 
-asio::awaitable<bool> nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path){
+asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path){
     auto state = std::make_shared<VerificationState>(io_context);
 
     try {
-        auto public_key = loadPublicKey(signing_public_key_path);
-        if (!public_key) {
-            throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load public key");
+        auto public_key_res = loadPublicKey(signing_public_key_path);
+        if (!public_key_res) {
+            co_return std::unexpected(public_key_res.error());
         }
+        auto public_key = std::move(*public_key_res);
 
         if (EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, nullptr, nullptr, public_key.get()) <= 0) {
-            throw std::runtime_error("OpenSSL Error: Failed to initialize digest verification.");
+            co_return std::unexpected(CryptoError::OpenSSLError);
         }
 
         std::error_code ec;
@@ -262,23 +264,23 @@ asio::awaitable<bool> nkCryptoToolPQC::verifySignature(asio::io_context& io_cont
         if (fd_sig == -1) { ec.assign(errno, std::system_category()); } else { state->signature_file.assign(fd_sig, ec); }
 #endif
         if (ec) {
-            throw std::system_error(ec, "Failed to open signature file");
+            co_return std::unexpected(CryptoError::FileReadError);
         }
 
         state->signature.resize(std::filesystem::file_size(signature_filepath, ec));
         if (ec) {
-            throw std::system_error(ec, "Failed to get signature file size");
+            co_return std::unexpected(CryptoError::FileReadError);
         }
 
         co_await asio::async_read(state->signature_file, asio::buffer(state->signature), asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
-            throw std::system_error(ec, "Failed to read signature file");
+            co_return std::unexpected(CryptoError::FileReadError);
         }
 
         std::error_code open_ec;
         state->total_input_size = std::filesystem::file_size(input_filepath, open_ec);
         if(open_ec) {
-            throw std::system_error(open_ec, "Failed to get input file size for verification");
+            co_return std::unexpected(CryptoError::FileReadError);
         }
 
 #ifdef _WIN32
@@ -288,17 +290,21 @@ asio::awaitable<bool> nkCryptoToolPQC::verifySignature(asio::io_context& io_cont
         if (fd_in == -1) { open_ec.assign(errno, std::system_category()); } else { state->input_file.assign(fd_in, open_ec); }
 #endif
         if(open_ec) {
-            throw std::system_error(open_ec, "Failed to open input file for verification");
+            co_return std::unexpected(CryptoError::FileReadError);
         }
 
         co_await handleFileReadForVerification(state);
         
         int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
-        co_return (result == 1);
+        if (result == 1) {
+            co_return std::expected<void, CryptoError>{};
+        } else {
+            co_return std::unexpected(CryptoError::SignatureVerificationError);
+        }
 
     } catch (const std::exception& e) {
         std::cerr << "Verification failed: " << e.what() << std::endl;
-        throw;
+        co_return std::unexpected(CryptoError::OpenSSLError);
     }
 }
 
@@ -343,8 +349,9 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
         
         const auto& mlkem_pub_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-pubkey" : "recipient-pubkey");
-        auto recipient_mlkem_public_key = loadPublicKey(mlkem_pub_key_path);
-        if (!recipient_mlkem_public_key) throw std::runtime_error("Failed to load recipient ML-KEM public key.");
+        auto recipient_mlkem_public_key_res = loadPublicKey(mlkem_pub_key_path);
+        if (!recipient_mlkem_public_key_res) throw std::runtime_error("Failed to load recipient ML-KEM public key.");
+        auto recipient_mlkem_public_key = std::move(*recipient_mlkem_public_key_res);
 
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
         if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) { throw std::runtime_error("OpenSSL Error: EVP_PKEY_encapsulate_init failed."); }
@@ -356,8 +363,9 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         combined_secret = secret_mlkem;
 
         if (is_hybrid) {
-            auto recipient_ecdh_public_key = loadPublicKey(key_paths.at("recipient-ecdh-pubkey"));
-            if (!recipient_ecdh_public_key) throw std::runtime_error("Failed to load recipient ECDH public key.");
+            auto recipient_ecdh_public_key_res = loadPublicKey(key_paths.at("recipient-ecdh-pubkey"));
+            if (!recipient_ecdh_public_key_res) throw std::runtime_error("Failed to load recipient ECDH public key.");
+            auto recipient_ecdh_public_key = std::move(*recipient_ecdh_public_key_res);
             auto ephemeral_ecdh_key = generate_ephemeral_ec_key();
             if (!ephemeral_ecdh_key) { throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral ECDH key."); }
             std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(ephemeral_ecdh_key.get(), recipient_ecdh_public_key.get());
@@ -494,8 +502,9 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
 
         std::vector<unsigned char> combined_secret;
         const auto& mlkem_priv_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-privkey" : "user-privkey");
-        auto recipient_mlkem_private_key = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
-        if (!recipient_mlkem_private_key) throw std::runtime_error("Failed to load user ML-KEM private key.");
+        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
+        if (!recipient_mlkem_private_key_res) throw std::runtime_error("Failed to load user ML-KEM private key.");
+        auto recipient_mlkem_private_key = std::move(*recipient_mlkem_private_key_res);
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
         if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) { throw std::runtime_error("OpenSSL Error: EVP_PKEY_decapsulate_init failed."); }
         size_t secret_len_mlkem = 0;
@@ -505,8 +514,9 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
         combined_secret = secret_mlkem;
         
         if(is_hybrid) {
-            auto recipient_ecdh_private_key = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
-            if (!recipient_ecdh_private_key) throw std::runtime_error("Failed to load user ECDH private key.");
+            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
+            if (!recipient_ecdh_private_key_res) throw std::runtime_error("Failed to load user ECDH private key.");
+            auto recipient_ecdh_private_key = std::move(*recipient_ecdh_private_key_res);
             std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
             std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
             if(!ephemeral_pub_key) { throw std::runtime_error("OpenSSL Error: Failed to parse ephemeral ECDH key."); }

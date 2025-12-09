@@ -13,8 +13,8 @@ project(nkCryptoTool CXX C)
 # このターゲット固有の最適化フラグは、add_executable の後で設定する必要があります。
 # そのため、このブロックは後ほど移動します。
 
-# C++20標準を使用するように設定します。
-set(CMAKE_CXX_STANDARD 20)
+# C++23標準を使用するように設定します。
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # FetchContentモジュールをインクルードします。
