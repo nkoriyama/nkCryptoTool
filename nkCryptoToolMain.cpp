@@ -61,8 +61,10 @@ int main(int argc, char* argv[]) {
         options.add_options("General")
             ("h,help", "Display this help message")
             ("m,mode", "Specify the cryptographic mode: 'ecc', 'pqc', or 'hybrid'", cxxopts::value<std::string>()->default_value("ecc"))
-            ("o,output-file", "Path to the output file", cxxopts::value<std::string>())
-            ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>());
+            ("o,output-file", "Path to the output file (for single file operations)", cxxopts::value<std::string>())
+            ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>())
+            ("input-dir", "Path to the input directory for recursive processing", cxxopts::value<std::string>())
+            ("output-dir", "Path to the output directory for recursive processing", cxxopts::value<std::string>());
 
         options.add_options("Key Generation")
             ("gen-enc-key", "Generate a key pair for encryption")
@@ -111,19 +113,24 @@ int main(int argc, char* argv[]) {
         bool is_gen_enc_key = result.count("gen-enc-key") > 0;
         bool is_gen_sign_key = result.count("gen-sign-key") > 0;
         bool is_regenerate = result.count("regenerate-pubkey") > 0;
-        bool needs_input_file = is_encrypt || is_decrypt || is_sign || is_verify;
+        
+        bool is_recursive = result.count("input-dir") > 0;
+        bool needs_input = is_encrypt || is_decrypt || is_sign || is_verify;
 
         std::vector<std::string> input_files;
         if (result.count("input")) {
             input_files = result["input"].as<std::vector<std::string>>();
         }
 
-        if (needs_input_file) {
-            if (input_files.empty()) {
+        if (needs_input) {
+            if (is_recursive && !input_files.empty()) {
+                std::cerr << "Error: --input-dir and positional input file(s) cannot be specified at the same time." << std::endl; return 1;
+            }
+            if (!is_recursive && input_files.empty()) {
                 std::cerr << "Error: Input file must be specified for this operation." << std::endl; return 1;
             }
-            if (input_files.size() > 1) {
-                std::cerr << "Error: Too many input files specified. Please provide only one." << std::endl; return 1;
+            if (!is_recursive && input_files.size() > 1) {
+                std::cerr << "Error: Too many input files specified for single file operation. Please provide only one." << std::endl; return 1;
             }
         }
         
@@ -134,8 +141,13 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        if ((is_encrypt || is_decrypt) && !result.count("output-file")) {
-            std::cerr << "Error: --output-file must be specified for encryption/decryption." << std::endl; return 1;
+        if ((is_encrypt || is_decrypt)) {
+            if (is_recursive && !result.count("output-dir")) {
+                std::cerr << "Error: --output-dir must be specified for recursive encryption/decryption." << std::endl; return 1;
+            }
+            if (!is_recursive && !result.count("output-file")) {
+                std::cerr << "Error: --output-file must be specified for encryption/decryption." << std::endl; return 1;
+            }
         }
         if (is_sign && !result.count("signature")) {
             std::cerr << "Error: --signature file path must be specified for signing." << std::endl; return 1;
@@ -165,8 +177,10 @@ int main(int argc, char* argv[]) {
             }
         };
         
-        std::filesystem::path input_filepath = !input_files.empty() ? get_absolute_path(input_files[0]) : "";
+        std::filesystem::path input_filepath = !is_recursive && !input_files.empty() ? get_absolute_path(input_files[0]) : "";
         std::string output_filepath = result.count("output-file") ? get_absolute_path(result["output-file"].as<std::string>()) : "";
+        std::string input_dir_path = result.count("input-dir") ? get_absolute_path(result["input-dir"].as<std::string>()) : "";
+        std::string output_dir_path = result.count("output-dir") ? get_absolute_path(result["output-dir"].as<std::string>()) : "";
         std::string recipient_pubkey_path = result.count("recipient-pubkey") ? get_absolute_path(result["recipient-pubkey"].as<std::string>()) : "";
         std::string user_privkey_path = result.count("user-privkey") ? get_absolute_path(result["user-privkey"].as<std::string>()) : "";
         std::string recipient_mlkem_pubkey_path = result.count("recipient-mlkem-pubkey") ? get_absolute_path(result["recipient-mlkem-pubkey"].as<std::string>()) : "";
@@ -246,9 +260,75 @@ int main(int argc, char* argv[]) {
                 return_code = 1;
             }
         }
-        else if (needs_input_file) {
+        else if (needs_input) {
             asio::io_context main_io_context;
-            if (is_encrypt) {
+
+            if (is_recursive) {
+                if (is_encrypt || is_decrypt) {
+                    
+                    std::atomic<int> files_to_process = 0;
+                    try {
+                        for (const auto& entry : std::filesystem::recursive_directory_iterator(input_dir_path)) {
+                            if (entry.is_regular_file()) {
+                                files_to_process++;
+                            }
+                        }
+                    } catch (const std::filesystem::filesystem_error& e) {
+                        std::cerr << "Error scanning input directory: " << e.what() << std::endl;
+                        return 1;
+                    }
+
+                    if (files_to_process == 0) {
+                        std::cout << "No files to process in the input directory." << std::endl;
+                        return 0;
+                    }
+
+                    auto main_work_guard = asio::make_work_guard(main_io_context.get_executor());
+
+                    auto file_operation = [&](const std::filesystem::path& input_path, const std::filesystem::path& output_path) {
+                        
+                        auto per_file_completion_handler = 
+                            [=, &files_to_process, &main_work_guard, &return_code] (std::error_code ec) {
+                            
+                            if (ec) {
+                                std::cerr << "Error processing file " << input_path.string() << ": " << ec.message() << std::endl;
+                                return_code = 1; // Set error flag
+                            }
+
+                            if (--files_to_process == 0) {
+                                main_work_guard.reset(); // Last file, release the guard
+                            }
+                        };
+                        
+                        if (is_encrypt) {
+                            std::map<std::string, std::string> key_paths;
+                            if (mode == "hybrid") {
+                                key_paths["recipient-mlkem-pubkey"] = recipient_mlkem_pubkey_path;
+                                key_paths["recipient-ecdh-pubkey"] = recipient_ecdh_pubkey_path;
+                            } else {
+                                key_paths["recipient-pubkey"] = recipient_pubkey_path;
+                            }
+                            crypto_handler->encryptFileWithPipeline(main_io_context, input_path.string(), output_path.string(), key_paths, per_file_completion_handler);
+                        } else { // is_decrypt
+                            std::map<std::string, std::string> key_paths;
+                            if (mode == "hybrid") {
+                                key_paths["recipient-mlkem-privkey"] = recipient_mlkem_privkey_path;
+                                key_paths["recipient-ecdh-privkey"] = recipient_ecdh_privkey_path;
+                            } else {
+                                key_paths["user-privkey"] = user_privkey_path;
+                            }
+                            crypto_handler->decryptFileWithPipeline(main_io_context, input_path.string(), output_path.string(), key_paths, per_file_completion_handler);
+                        }
+                    };
+                    processDirectory(main_io_context, input_dir_path, output_dir_path, file_operation);
+                }
+                 else {
+                    std::cerr << "Recursive signing/verification is not yet supported." << std::endl;
+                    return_code = 1;
+                }
+                main_io_context.run();
+            }
+            else if (is_encrypt) {
                 std::cout << std::format("Starting {} encryption...\n", mode);
                 std::map<std::string, std::string> key_paths;
                 if (mode == "hybrid") {
@@ -258,6 +338,7 @@ int main(int argc, char* argv[]) {
                     key_paths["recipient-pubkey"] = recipient_pubkey_path;
                 }
                 crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                main_io_context.run();
             } else if (is_decrypt) {
                 std::cout << std::format("Starting {} decryption...\n", mode);
                 std::map<std::string, std::string> key_paths;
@@ -268,6 +349,7 @@ int main(int argc, char* argv[]) {
                     key_paths["user-privkey"] = user_privkey_path;
                 }
                 crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                main_io_context.run();
             } else if (is_sign) {
                 std::cout << "Starting file signing..." << std::endl;
                 asio::co_spawn(main_io_context, crypto_handler->signFile(
@@ -287,6 +369,7 @@ int main(int argc, char* argv[]) {
                         return_code = 1;
                     }
                 });
+                main_io_context.run();
             } else if (is_verify) {
                 std::cout << "Starting signature verification..." << std::endl;
                 asio::co_spawn(main_io_context, crypto_handler->verifySignature(
@@ -310,8 +393,8 @@ int main(int argc, char* argv[]) {
                         return_code = 1;
                     }
                 });
+                main_io_context.run();
             }
-            main_io_context.run();
         }
 
     } catch (const cxxopts::exceptions::exception& e) {
