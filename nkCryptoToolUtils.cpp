@@ -13,6 +13,49 @@
 #include <unistd.h>
 #endif
 
+void processDirectory(
+    asio::io_context& io_context,
+    const std::filesystem::path& input_dir,
+    const std::filesystem::path& output_dir,
+    const std::function<void(const std::filesystem::path&, const std::filesystem::path&)>& file_operation)
+{
+    if (!std::filesystem::exists(input_dir)) {
+        std::cerr << "Error: Input directory does not exist: " << input_dir.string() << std::endl;
+        return;
+    }
+    if (!std::filesystem::is_directory(input_dir)) {
+        std::cerr << "Error: Input path is not a directory: " << input_dir.string() << std::endl;
+        return;
+    }
+
+    std::cout << "Starting recursive processing of directory: " << input_dir.string() << std::endl;
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(input_dir)) {
+        if (entry.is_regular_file()) {
+            const auto& input_path = entry.path();
+            // Calculate relative path from the input directory
+            auto relative_path = std::filesystem::relative(input_path, input_dir);
+            // Construct the full output path
+            auto output_path = output_dir / relative_path;
+
+            // Ensure the output directory for the current file exists
+            if (!output_path.parent_path().empty() && !std::filesystem::exists(output_path.parent_path())) {
+                try {
+                    std::filesystem::create_directories(output_path.parent_path());
+                } catch (const std::filesystem::filesystem_error& e) {
+                    std::cerr << "Error creating output directory " << output_path.parent_path().string() << ": " << e.what() << std::endl;
+                    continue; // Skip to the next file
+                }
+            }
+
+            std::cout << "  Processing: " << input_path.string() << "\n      -> to: " << output_path.string() << std::endl;
+            // Execute the provided operation (encryption/decryption)
+            file_operation(input_path, output_path);
+        }
+    }
+}
+
+
 // パスフレーズをコンソールから安全に入力するための関数
 std::string get_masked_passphrase() {
     std::string passphrase_input;
