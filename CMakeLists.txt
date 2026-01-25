@@ -9,6 +9,11 @@ endif()
 # プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
 
+# Add io_uring support for Asio on Linux
+if(UNIX AND NOT APPLE)
+  add_compile_definitions(ASIO_HAS_IO_URING)
+endif()
+
 # 最適化フラグを追加
 # このターゲット固有の最適化フラグは、add_executable の後で設定する必要があります。
 # そのため、このブロックは後ほど移動します。
@@ -88,6 +93,11 @@ target_link_libraries(nkCryptoToolBenchmark PRIVATE
     OpenSSL::Crypto
 )
 
+# Add uring library for io_uring support on Linux
+if(UNIX AND NOT APPLE)
+  target_link_libraries(nkCryptoToolBenchmark PRIVATE uring)
+endif()
+
 target_include_directories(nkCryptoToolBenchmark PRIVATE
   ${asio_SOURCE_DIR}/asio/include
   ${PROJECT_SOURCE_DIR}
@@ -125,6 +135,11 @@ target_link_libraries(nkCryptoTool PRIVATE
     benchmark
     benchmark_main
 )
+
+# Add uring library for io_uring support on Linux
+if(UNIX AND NOT APPLE)
+  target_link_libraries(nkCryptoTool PRIVATE uring)
+endif()
 
 target_compile_definitions(nkCryptoTool PRIVATE BENCHMARK_STATIC_LIB)
 
@@ -232,7 +247,7 @@ if(GIT_FOUND)
         # 先頭の "v" または "V" を削除
         string(REGEX REPLACE "^[vV]" "" GIT_VERSION_STRING "${GIT_VERSION_STRING}")
         # RPMなどのために、最初のハイフン(-)をドット(.)に置換 (例: 1.2.3-4 -> 1.2.3.4)
-        string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+)-" "\\1." GIT_VERSION_STRING "${GIT_VERSION_STRING}")
+        string(REGEX REPLACE "^([0-9]+\.[0-9]+\.[0-9]+)-" "\\1." GIT_VERSION_STRING "${GIT_VERSION_STRING}")
         set(CPACK_PACKAGE_VERSION "${GIT_VERSION_STRING}")
     else()
         # Gitコマンドが失敗した場合 (Gitリポジトリでない、タグがないなど)
@@ -243,7 +258,7 @@ else()
     set(CPACK_PACKAGE_VERSION "0.0.0-nogit")
 endif()
 
-message(STATUS "CPack: Package version set to: ${CPACK_PACKAGE_VERSION}")
+message(STATUS "CPACK: Package version set to: ${CPACK_PACKAGE_VERSION}")
 # --- Gitバージョン設定ここまで ---
 
 include(CPack)
