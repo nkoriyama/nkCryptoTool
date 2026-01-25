@@ -18,6 +18,7 @@
  */
 
 #include "nkCryptoToolBase.hpp"
+ #include "async_file_types.hpp"
 #include <fstream>
 #include <iostream>
 #include <openssl/pem.h>
@@ -122,10 +123,14 @@ std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(const std
 }
 
 std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
+//    std::cerr << "[DEBUG] Attempting to load public key from: " << public_key_path.string() << std::endl;
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
+//        std::cerr << "[DEBUG] BIO_new_file failed for: " << public_key_path.string() << std::endl;
+        printOpenSSLErrors();
         return std::unexpected(CryptoError::FileReadError);
     }
+//    std::cerr << "[DEBUG] BIO_new_file succeeded for: " << public_key_path.string() << std::endl;
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
     if (!pkey) { 
         ERR_clear_error(); 
@@ -166,5 +171,27 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
         throw std::runtime_error("OpenSSL Error: Failed to derive key with HKDF.");
     }
     return derived_key;
+}
+
+// Helper functions for ECDH key generation and shared secret derivation
+std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> nkCryptoToolBase::generate_ephemeral_ec_key() {
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize ephemeral EC key generation context.");
+    OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)"prime256v1", 0), OSSL_PARAM_construct_end() };
+    if (EVP_PKEY_CTX_set_params(pctx.get(), params) <= 0) throw std::runtime_error("OpenSSL Error: Failed to set ephemeral EC group parameters.");
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral EC key pair.");
+    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
+}
+
+std::vector<unsigned char> nkCryptoToolBase::ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key) {
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(private_key, nullptr));
+    if (!ctx || EVP_PKEY_derive_init(ctx.get()) <= 0 || EVP_PKEY_derive_set_peer(ctx.get(), peer_public_key) <= 0) throw std::runtime_error("OpenSSL Error: Failed to initialize ECDH shared secret derivation.");
+    size_t secret_len;
+    if (EVP_PKEY_derive(ctx.get(), nullptr, &secret_len) <= 0) throw std::runtime_error("OpenSSL Error: Failed to get ECDH shared secret length.");
+    std::vector<unsigned char> secret(secret_len);
+    if (EVP_PKEY_derive(ctx.get(), secret.data(), &secret_len) <= 0) throw std::runtime_error("OpenSSL Error: Failed to derive ECDH shared secret.");
+    secret.resize(secret_len);
+    return secret;
 }
 

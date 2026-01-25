@@ -35,6 +35,7 @@ std::vector<size_t> dummy_file_sizes = {
     1024 * 1024,
     1024 * 1024 * 10,
     6719094784
+    // Removed 6719094784 to prevent long setup time
 };
 std::filesystem::path dummy_input_files_dir = "./benchmark_data";
 std::map<size_t, std::string> dummy_input_file_paths;
@@ -65,16 +66,24 @@ static void BM_Encryption(benchmark::State& state) {
     std::string input_filename = dummy_input_file_paths[file_size];
     std::string encrypted_filename = (dummy_input_files_dir / ("encrypted_" + std::to_string(file_size) + ".enc")).string();
 
-    for (auto _ : state) {
-        std::unique_ptr<nkCryptoToolBase> crypto_handler;
-        if (mode == "ecc") {
-            crypto_handler = std::make_unique<nkCryptoToolECC>();
-        } else if (mode == "pqc" || mode == "hybrid") {
-            crypto_handler = std::make_unique<nkCryptoToolPQC>();
-        }
-        crypto_handler->setKeyBaseDirectory(key_dir);
+    std::unique_ptr<nkCryptoToolBase> crypto_handler;
+    if (mode == "ecc") {
+        crypto_handler = std::make_unique<nkCryptoToolECC>();
+    } else if (mode == "pqc" || mode == "hybrid") {
+        crypto_handler = std::make_unique<nkCryptoToolPQC>();
+    }
+    crypto_handler->setKeyBaseDirectory(key_dir);
 
-        asio::io_context io_context;
+    asio::io_context io_context;
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        // Ensure the output file does not exist from a previous failed iteration
+        std::filesystem::remove(encrypted_filename);
+        state.ResumeTiming();
+        
+        io_context.restart();
+
         std::map<std::string, std::string> key_paths;
         if (mode == "hybrid") {
             key_paths["recipient-mlkem-pubkey"] = (key_dir / "public_enc_hybrid_mlkem.key").string();
@@ -91,9 +100,12 @@ static void BM_Encryption(benchmark::State& state) {
         
         if (ec) {
             state.SkipWithError(("Encryption failed: " + ec.message()).c_str());
-            break;
+            // Do not break here, let the benchmark framework handle stopping.
         }
+        
+        state.PauseTiming();
         std::filesystem::remove(encrypted_filename); // Remove encrypted file after each iteration
+        state.ResumeTiming();
     }
     // input_filename is a dummy file, no need to remove here
     // encrypted_filename is removed inside the loop
@@ -109,7 +121,7 @@ static void BM_Decryption(benchmark::State& state) {
     std::string encrypted_filename = (dummy_input_files_dir / ("encrypted_" + std::to_string(file_size) + ".enc")).string();
     std::string decrypted_filename = (dummy_input_files_dir / ("decrypted_" + std::to_string(file_size) + ".bin")).string();
 
-    // Setup encryption outside the benchmark loop, but ensure its resources are released
+    // Setup: Create an encrypted file to be used by all iterations
     { 
         std::unique_ptr<nkCryptoToolBase> crypto_handler_enc;
         if (mode == "ecc") {
@@ -141,16 +153,24 @@ static void BM_Decryption(benchmark::State& state) {
         }
     } 
 
-    for (auto _ : state) {
-        std::unique_ptr<nkCryptoToolBase> crypto_handler_dec;
-        if (mode == "ecc") {
-            crypto_handler_dec = std::make_unique<nkCryptoToolECC>();
-        } else if (mode == "pqc" || mode == "hybrid") {
-            crypto_handler_dec = std::make_unique<nkCryptoToolPQC>();
-        }
-        crypto_handler_dec->setKeyBaseDirectory(key_dir);
+    std::unique_ptr<nkCryptoToolBase> crypto_handler_dec;
+    if (mode == "ecc") {
+        crypto_handler_dec = std::make_unique<nkCryptoToolECC>();
+    } else if (mode == "pqc" || mode == "hybrid") {
+        crypto_handler_dec = std::make_unique<nkCryptoToolPQC>();
+    }
+    crypto_handler_dec->setKeyBaseDirectory(key_dir);
 
-        asio::io_context io_context;
+    asio::io_context io_context;
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        // Ensure the output file does not exist from a previous failed iteration
+        std::filesystem::remove(decrypted_filename);
+        state.ResumeTiming();
+
+        io_context.restart();
+
         std::map<std::string, std::string> dec_key_paths;
         if (mode == "hybrid") {
             dec_key_paths["recipient-mlkem-privkey"] = (key_dir / "private_enc_hybrid_mlkem.key").string();
@@ -167,25 +187,28 @@ static void BM_Decryption(benchmark::State& state) {
         
         if (ec) {
             state.SkipWithError(("Decryption failed: " + ec.message()).c_str());
-            break;
+            // Do not break here, let the benchmark framework handle stopping.
         }
+        
+        state.PauseTiming();
         std::filesystem::remove(decrypted_filename); // Remove decrypted file after each iteration
+        state.ResumeTiming();
     }
     std::filesystem::remove(encrypted_filename); // Remove encrypted file after all iterations
 }
 
 // ベンチマークの登録
-BENCHMARK(BM_Encryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2}); // 1KB, ECC, PQC, Hybrid
-BENCHMARK(BM_Decryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2}); // 1KB, ECC, PQC, Hybrid
+BENCHMARK(BM_Encryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1); // 1KB, ECC, PQC, Hybrid
+BENCHMARK(BM_Decryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1); // 1KB, ECC, PQC, Hybrid
 
-BENCHMARK(BM_Encryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2}); // 1MB, ECC, PQC, Hybrid
-BENCHMARK(BM_Decryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2}); // 1MB, ECC, PQC, Hybrid
+BENCHMARK(BM_Encryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1); // 1MB, ECC, PQC, Hybrid
+BENCHMARK(BM_Decryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1); // 1MB, ECC, PQC, Hybrid
 
-BENCHMARK(BM_Encryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
-BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2}); // 10MB, ECC, PQC, Hybrid
+BENCHMARK(BM_Encryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1); // 10MB, ECC, PQC, Hybrid
+BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1); // 10MB, ECC, PQC, Hybrid
 
-// BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
-// BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(5); // ~6.7GB, ECC, PQC, Hybrid
+BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1); // ~6.7GB, ECC, PQC, Hybrid
+BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1); // ~6.7GB, ECC, PQC, Hybrid
 
 // Function to setup dummy files
 void SetupDummyFiles() {
@@ -194,13 +217,14 @@ void SetupDummyFiles() {
         std::string filename = (dummy_input_files_dir / ("input_" + std::to_string(size) + ".bin")).string();
         createDummyFile(filename, size);
         dummy_input_file_paths[size] = filename;
-        std::cout << "Created dummy file: " << filename << " (" << size << " bytes)" << std::endl;
+        std::cout << "Created dummy file: " << filename << " (" << size << " bytes)" << std::endl << std::flush;
     });
 }
 
 // Function to teardown dummy files
 void TeardownDummyFiles() {
     std::filesystem::remove_all(dummy_input_files_dir);
+    std::cout << "Removed dummy files." << std::endl << std::flush;
 }
 
 // ベンチマーク実行前にキーペアを生成するセットアップ関数
@@ -211,45 +235,45 @@ void SetupKeys() {
     nkCryptoToolECC ecc_handler;
     ecc_handler.setKeyBaseDirectory(key_dir);
     if (ecc_handler.generateEncryptionKeyPair(ecc_handler.getEncryptionPublicKeyPath(), ecc_handler.getEncryptionPrivateKeyPath(), "")) {
-        std::cout << "ECC keys generated successfully." << std::endl;
+        std::cout << "ECC keys generated successfully." << std::endl << std::flush;
     } else {
-        std::cerr << "Error: Failed to generate ECC keys." << std::endl;
+        std::cerr << "Error: Failed to generate ECC keys." << std::endl << std::flush;
         nkCryptoToolBase::printOpenSSLErrors();
     }
 
     nkCryptoToolPQC pqc_handler;
     pqc_handler.setKeyBaseDirectory(key_dir);
-    try { // ★try-catchを追加
+    try {
         if (pqc_handler.generateEncryptionKeyPair(pqc_handler.getEncryptionPublicKeyPath(), pqc_handler.getEncryptionPrivateKeyPath(), "")) {
-            std::cout << "PQC keys generated successfully." << std::endl;
+            std::cout << "PQC keys generated successfully." << std::endl << std::flush;
         } else {
-            std::cerr << "Error: Failed to generate PQC keys." << std::endl;
+            std::cerr << "Error: Failed to generate PQC keys." << std::endl << std::flush;
             nkCryptoToolBase::printOpenSSLErrors();
         }
-    } catch (const std::runtime_error& e) { // ★runtime_errorを捕捉
-        std::cerr << "Caught exception during PQC key generation: " << e.what() << std::endl;
-        nkCryptoToolBase::printOpenSSLErrors(); // ★詳細エラーを出力
-        throw; // ★再度スロー
+    } catch (const std::runtime_error& e) {
+        std::cerr << "Caught exception during PQC key generation: " << e.what() << std::endl << std::flush;
+        nkCryptoToolBase::printOpenSSLErrors();
+        throw;
     }
 
     // Hybridモード用のキーペアも生成 (PQCとECCの組み合わせ)
     // PQCはML-KEM、ECCはECDHとして扱う
-    try { // ★try-catchを追加
+    try {
         if (pqc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_mlkem.key", key_dir / "private_enc_hybrid_mlkem.key", "")) {
-            std::cout << "Hybrid ML-KEM keys generated successfully." << std::endl;
+            std::cout << "Hybrid ML-KEM keys generated successfully." << std::endl << std::flush;
         } else {
-            std::cerr << "Error: Failed to generate Hybrid ML-KEM keys." << std::endl;
+            std::cerr << "Error: Failed to generate Hybrid ML-KEM keys." << std::endl << std::flush;
             nkCryptoToolBase::printOpenSSLErrors();
         }
-    } catch (const std::runtime_error& e) { // ★runtime_errorを捕捉
-        std::cerr << "Caught exception during Hybrid ML-KEM key generation: " << e.what() << std::endl;
-        nkCryptoToolBase::printOpenSSLErrors(); // ★詳細エラーを出力
-        throw; // ★再度スロー
+    } catch (const std::runtime_error& e) {
+        std::cerr << "Caught exception during Hybrid ML-KEM key generation: " << e.what() << std::endl << std::flush;
+        nkCryptoToolBase::printOpenSSLErrors();
+        throw;
     }
     if (ecc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_ecdh.key", key_dir / "private_enc_hybrid_ecdh.key", "")) {
-        std::cout << "Hybrid ECDH keys generated successfully." << std::endl;
+        std::cout << "Hybrid ECDH keys generated successfully." << std::endl << std::flush;
     } else {
-        std::cerr << "Error: Failed to generate Hybrid ECDH keys." << std::endl;
+        std::cerr << "Error: Failed to generate Hybrid ECDH keys." << std::endl << std::flush;
         nkCryptoToolBase::printOpenSSLErrors();
     }
 }

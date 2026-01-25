@@ -39,7 +39,7 @@
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolECC.hpp"
 #include "nkCryptoToolPQC.hpp"
-#include "nkCryptoToolUtils.hpp"
+#include "nkCryptoToolUtils.hpp" // Includes processDirectory, get_and_verify_passphrase, pem_passwd_cb
 
 int main(int argc, char* argv[]) {
     OSSL_PROVIDER_load(nullptr, "default");
@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
             ("gen-sign-key", "Generate a key pair for signing (for 'ecc' or 'pqc' modes)")
             ("regenerate-pubkey", "Regenerate a public key from a private key. Expects <private_key_path> and <public_key_path> as positional arguments.")
             ("key-dir", "Directory to save the generated keys (default: './keys')", cxxopts::value<std::string>())
-            ("p,passphrase", "Passphrase for the private key. Use '''' for no passphrase.", cxxopts::value<std::string>());
+            ("p,passphrase", "Passphrase for the private key. Use '' for no passphrase.", cxxopts::value<std::string>());
 
         options.add_options("Encryption (ECC/PQC)")
             ("encrypt", "Encrypt the input file")
@@ -252,6 +252,7 @@ int main(int argc, char* argv[]) {
             std::string passphrase_from_args = result.count("passphrase") ? result["passphrase"].as<std::string>() : "";
             bool passphrase_was_provided = result.count("passphrase") > 0;
             std::string passphrase_to_use = passphrase_was_provided ? passphrase_from_args : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
+            // This is the correct call with 3 arguments now
             auto res = crypto_handler->regeneratePublicKey(regenerate_privkey_path, regenerate_pubkey_path, passphrase_to_use);
             if (res) {
                 std::cout << std::format("Public key successfully regenerated and saved to: {}\n", regenerate_pubkey_path);
