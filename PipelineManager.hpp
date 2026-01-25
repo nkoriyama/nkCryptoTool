@@ -41,22 +41,16 @@
 #include <stack> // Added for buffer pool
 
 #include <asio/steady_timer.hpp>
-
-#ifdef _WIN32
-#include <asio/stream_file.hpp>
-using async_file_t = asio::stream_file;
-#else // For Linux/macOS
-#include <asio/posix/stream_descriptor.hpp>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h> // For fstat()
-using async_file_t = asio::posix::stream_descriptor;
-#endif
+#include "async_file_types.hpp" // Use the new centralized header
 
 // イベント駆動型キュー
 class AsyncOrderedQueue {
 public:
-    AsyncOrderedQueue(asio::io_context& io_context) : io_context_(io_context), next_expected_order_(0), signal_timer_(io_context) {
+    AsyncOrderedQueue(asio::io_context& io_context)
+        : io_context_(io_context),
+          next_expected_order_(0),
+          signal_timer_(io_context) // Corrected initializer list
+    {
         signal_timer_.expires_at(std::chrono::steady_clock::time_point::max());
     }
 
@@ -80,7 +74,7 @@ public:
                 co_return data;
             }
             lock.unlock();
-            
+
             asio::error_code ec;
             signal_timer_.expires_at(std::chrono::steady_clock::time_point::max());
             co_await signal_timer_.async_wait(asio::redirect_error(asio::use_awaitable, ec));
@@ -108,16 +102,16 @@ private:
 class PipelineManager : public std::enable_shared_from_this<PipelineManager> {
 public:
     using StageFunc = std::function<std::vector<char>(const std::vector<char>&)>;
-    using FinalizationFunc = std::function<asio::awaitable<void>(async_file_t)>;
+    using FinalizationFunc = std::function<asio::awaitable<void>(async_file_t&)>;
 
     explicit PipelineManager(asio::io_context& io_context, size_t num_threads = std::thread::hardware_concurrency())
-        : io_context_(io_context), 
+        : io_context_(io_context),
           work_guard_(asio::make_work_guard(io_context.get_executor())),
-          threads_(num_threads), 
-          input_file_(io_context), 
-          output_file_(io_context), 
-          is_running_(true), 
-          reading_complete_(false), 
+          threads_(num_threads),
+          input_file_(io_context),
+          output_file_(io_context),
+          is_running_(true),
+          reading_complete_(false),
           next_task_id_(0),
           tasks_completed_count_(0),
           completion_handler_called_(false),
@@ -152,13 +146,12 @@ public:
         completion_handler_ = on_complete;
         finalization_handler_ = std::move(on_finalize);
         output_file_ = std::move(out_file);
-        
+
         std::error_code ec;
 #ifdef _WIN32
         input_file_.open(in_path.c_str(), async_file_t::read_only, ec);
 #else
-        int fd_in = ::open(in_path.c_str(), O_RDONLY);
-        if (fd_in == -1) ec.assign(errno, std::system_category()); else input_file_.assign(fd_in, ec);
+        input_file_.open(in_path, O_RDONLY, ec); // Changed c_str() to path for SafeStreamDescriptor
 #endif
         if (ec) {
             call_completion_handler(ec);
@@ -166,8 +159,9 @@ public:
         }
 
 #ifdef _WIN32
-        input_file_.seek(read_offset, asio::file_base::seek_set, ec);
+        input_file_.get().seek(read_offset, asio::file_base::seek_set, ec); // Use .get() for seek
 #else
+        // Using native_handle() for lseek as SafeStreamDescriptor wraps stream_descriptor
         if (::lseek(input_file_.native_handle(), read_offset, SEEK_SET) == -1) {
             ec.assign(errno, std::system_category());
         }
@@ -178,11 +172,11 @@ public:
 
         total_to_read_ = read_size;
         total_read_ = 0;
-        
+
         start_writer();
         asio::co_spawn(io_context_, reader_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
             if (p) {
-                try { std::rethrow_exception(p); } 
+                try { std::rethrow_exception(p); }
                 catch (const std::exception& e) { self->call_completion_handler(std::make_error_code(std::errc::io_error)); }
             }
         });
@@ -205,7 +199,7 @@ private:
         }
         std::vector<char> buf = std::move(buffer_pool_.top());
         buffer_pool_.pop();
-        
+
         if (buf.size() != size) {
             buf.resize(size);
         }
@@ -250,7 +244,7 @@ private:
                 task = std::move(task_queue_.front());
                 task_queue_.pop();
             }
-            
+
             try {
                 for (const auto& stage : stages_) {
                     task.data = stage(task.data);
@@ -285,12 +279,12 @@ private:
 
             if (!data_to_write.empty()) {
                 try {
-                    size_t bytes_written = co_await asio::async_write(output_file_, asio::buffer(data_to_write), asio::use_awaitable);
+                    size_t bytes_written = co_await asio::async_write(output_file_.get(), asio::buffer(data_to_write), asio::use_awaitable);
                 } catch (const std::system_error& e) {
                     call_completion_handler(e.code());
                     co_return;
                 }
-                
+
                 release_buffer(std::move(data_to_write));
 
                 tasks_completed_count_++;
@@ -301,7 +295,7 @@ private:
         }
 
         if (finalization_handler_) {
-            co_await finalization_handler_(std::move(output_file_));
+            co_await finalization_handler_(output_file_);
         }
         call_completion_handler({});
         co_return;
@@ -326,21 +320,22 @@ private:
             if (total_to_read_ == 0) to_read_now = CHUNK_SIZE;
 
             std::vector<char> chunk = acquire_buffer(to_read_now);
-            
+
             std::error_code ec;
-            size_t bytes_transferred = co_await input_file_.async_read_some(asio::buffer(chunk), asio::redirect_error(asio::use_awaitable, ec));
+            // Corrected: Use .get() for async_read_some on SafeStreamDescriptor
+            size_t bytes_transferred = co_await input_file_.get().async_read_some(asio::buffer(chunk), asio::redirect_error(asio::use_awaitable, ec));
 
             if (ec && ec != asio::error::eof) {
                 call_completion_handler(ec);
                 co_return;
             }
-            
+
             if (bytes_transferred > 0) {
                 total_read_ += bytes_transferred;
                 if (chunk.size() != bytes_transferred) {
                     chunk.resize(bytes_transferred);
                 }
-                
+
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 task_queue_.push({std::move(chunk), next_task_id_++});
                 cv_task_.notify_one();
@@ -360,7 +355,7 @@ private:
     asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
     std::vector<std::thread> threads_;
     std::vector<StageFunc> stages_;
-    
+
     std::mutex log_mutex_;
     std::mutex shared_state_mutex_;
 
@@ -368,10 +363,10 @@ private:
     std::condition_variable cv_task_;
 
     AsyncOrderedQueue results_queue_;
-    
+
     async_file_t input_file_;
     async_file_t output_file_;
-    
+
     std::function<void(std::error_code)> completion_handler_;
     FinalizationFunc finalization_handler_;
 
@@ -383,8 +378,8 @@ private:
 
     uintmax_t total_to_read_{0};
     uintmax_t total_read_{0};
-    
+
     // [修正] 実績のある 64KB に戻す (SysTime削減とキャッシュ効率向上)
-    static constexpr size_t CHUNK_SIZE = 1024 * 64; 
+    static constexpr size_t CHUNK_SIZE = 1024 * 64;
 };
 #endif // PIPELINEMANAGER_HPP

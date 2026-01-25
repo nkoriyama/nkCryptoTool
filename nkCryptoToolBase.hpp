@@ -31,24 +31,11 @@
 #include <map>
 #include <expected>
 #include "CryptoError.hpp"
-#include <asio.hpp>
+#include "async_file_types.hpp"
 #include <asio/awaitable.hpp>
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
-// #include <lz4.h> // LZ4ヘッダを削除
-
-#ifdef _WIN32
-#include <asio/stream_file.hpp>
-// Windowsではstream_fileをそのまま使う
-using async_file_t = asio::stream_file;
-#else // For Linux/macOS
-#include <asio/posix/stream_descriptor.hpp>
-#include <fcntl.h> // For open()
-#include <unistd.h> // For close()
-// Linux/macOSではposix::stream_descriptorを使う
-using async_file_t = asio::posix::stream_descriptor;
-#endif
 
 namespace asio { class io_context; }
 
@@ -62,12 +49,6 @@ struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
 
 class nkCryptoToolBase {
 public:
-    // enum class CompressionAlgorithm : uint8_t { // CompressionAlgorithm enumを削除
-    //     NONE = 0,
-    //     LZ4  = 1,
-    //     ZSTD = 2,
-    // };
-
 protected:
     static constexpr int CHUNK_SIZE = 4096;
     static constexpr int GCM_IV_LEN = 12;
@@ -78,7 +59,6 @@ protected:
     struct FileHeader {
         char magic[4];
         uint8_t version;
-        // CompressionAlgorithm compression_algo; // FileHeaderから圧縮関連メンバを削除
         uint16_t reserved;
     };
     #pragma pack(pop)
@@ -105,9 +85,6 @@ protected:
         virtual ~AsyncStateBase();
     };
     
-    void startEncryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size);
-    void startDecryptionPipeline(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size);
-
 public:
     nkCryptoToolBase();
     virtual ~nkCryptoToolBase();
@@ -144,16 +121,14 @@ public:
 
 private:
     std::filesystem::path key_base_directory;
-    void handleReadForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t bytes_transferred);
-    void handleWriteForEncryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_input_size, const std::error_code& ec, size_t);
-    void finishEncryptionPipeline(std::shared_ptr<AsyncStateBase> state);
-    // void processDecryptionBuffer(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, bool finished_reading); // 不要になるため削除
-    void handleReadForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
-    void handleWriteForDecryption(std::shared_ptr<AsyncStateBase> state, uintmax_t total_ciphertext_size, const std::error_code& ec, size_t);
-    void finishDecryptionPipeline(std::shared_ptr<AsyncStateBase> state);
 
-    public:
+public:
     static void printOpenSSLErrors();
+    // Corrected regeneratePublicKey declaration
     std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase);
+
+    // Helper functions for ECDH key generation and shared secret derivation
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key();
+    std::vector<unsigned char> ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key);
 };
 #endif // NKCRYPTOTOOLBASE_HPP
