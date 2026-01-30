@@ -177,21 +177,31 @@ int main(int argc, char* argv[]) {
             }
         };
         
+        std::string key_dir_path = result.count("key-dir") ? get_absolute_path(result["key-dir"].as<std::string>()) : "";
+
+        auto resolve_key_path = [&](const std::string& key_path_arg) -> std::string {
+            if (key_path_arg.empty()) return "";
+            std::filesystem::path key_path(key_path_arg);
+            if (key_path.is_relative() && !key_dir_path.empty()) {
+                return std::filesystem::absolute(std::filesystem::path(key_dir_path) / key_path).string();
+            }
+            return get_absolute_path(key_path_arg);
+        };
+
         std::filesystem::path input_filepath = !is_recursive && !input_files.empty() ? get_absolute_path(input_files[0]) : "";
         std::string output_filepath = result.count("output-file") ? get_absolute_path(result["output-file"].as<std::string>()) : "";
         std::string input_dir_path = result.count("input-dir") ? get_absolute_path(result["input-dir"].as<std::string>()) : "";
         std::string output_dir_path = result.count("output-dir") ? get_absolute_path(result["output-dir"].as<std::string>()) : "";
-        std::string recipient_pubkey_path = result.count("recipient-pubkey") ? get_absolute_path(result["recipient-pubkey"].as<std::string>()) : "";
-        std::string user_privkey_path = result.count("user-privkey") ? get_absolute_path(result["user-privkey"].as<std::string>()) : "";
-        std::string recipient_mlkem_pubkey_path = result.count("recipient-mlkem-pubkey") ? get_absolute_path(result["recipient-mlkem-pubkey"].as<std::string>()) : "";
-        std::string recipient_ecdh_pubkey_path = result.count("recipient-ecdh-pubkey") ? get_absolute_path(result["recipient-ecdh-pubkey"].as<std::string>()) : "";
-        std::string recipient_mlkem_privkey_path = result.count("recipient-mlkem-privkey") ? get_absolute_path(result["recipient-mlkem-privkey"].as<std::string>()) : "";
-        std::string recipient_ecdh_privkey_path = result.count("recipient-ecdh-privkey") ? get_absolute_path(result["recipient-ecdh-privkey"].as<std::string>()) : "";
-        std::string signing_privkey_path = result.count("signing-privkey") ? get_absolute_path(result["signing-privkey"].as<std::string>()) : "";
-        std::string signing_pubkey_path = result.count("signing-pubkey") ? get_absolute_path(result["signing-pubkey"].as<std::string>()) : "";
+        std::string recipient_pubkey_path = result.count("recipient-pubkey") ? resolve_key_path(result["recipient-pubkey"].as<std::string>()) : "";
+        std::string user_privkey_path = result.count("user-privkey") ? resolve_key_path(result["user-privkey"].as<std::string>()) : "";
+        std::string recipient_mlkem_pubkey_path = result.count("recipient-mlkem-pubkey") ? resolve_key_path(result["recipient-mlkem-pubkey"].as<std::string>()) : "";
+        std::string recipient_ecdh_pubkey_path = result.count("recipient-ecdh-pubkey") ? resolve_key_path(result["recipient-ecdh-pubkey"].as<std::string>()) : "";
+        std::string recipient_mlkem_privkey_path = result.count("recipient-mlkem-privkey") ? resolve_key_path(result["recipient-mlkem-privkey"].as<std::string>()) : "";
+        std::string recipient_ecdh_privkey_path = result.count("recipient-ecdh-privkey") ? resolve_key_path(result["recipient-ecdh-privkey"].as<std::string>()) : "";
+        std::string signing_privkey_path = result.count("signing-privkey") ? resolve_key_path(result["signing-privkey"].as<std::string>()) : "";
+        std::string signing_pubkey_path = result.count("signing-pubkey") ? resolve_key_path(result["signing-pubkey"].as<std::string>()) : "";
         std::string signature_path = result.count("signature") ? get_absolute_path(result["signature"].as<std::string>()) : "";
-        std::string key_dir_path = result.count("key-dir") ? get_absolute_path(result["key-dir"].as<std::string>()) : "";
-        std::string regenerate_privkey_path = is_regenerate && input_files.size() > 0 ? get_absolute_path(input_files[0]) : "";
+        std::string regenerate_privkey_path = is_regenerate && input_files.size() > 0 ? resolve_key_path(input_files[0]) : "";
         std::string regenerate_pubkey_path = is_regenerate && input_files.size() > 1 ? get_absolute_path(input_files[1]) : "";
 
 
