@@ -303,6 +303,16 @@ private:
 
     asio::awaitable<void> reader_coroutine() {
         while (true) {
+            // Backpressure: Wait if task queue is too large
+            while (true) {
+                std::unique_lock<std::mutex> lock(shared_state_mutex_);
+                if (task_queue_.size() < threads_.size() * 128) {
+                    break; // Queue is not full, proceed
+                }
+                lock.unlock(); // Unlock before awaiting
+                co_await asio::post(io_context_, asio::use_awaitable);
+            }
+
             if (total_to_read_ > 0 && total_read_ >= total_to_read_) {
                 std::unique_lock<std::mutex> lock(shared_state_mutex_);
                 reading_complete_ = true;
