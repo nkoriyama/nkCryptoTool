@@ -42,6 +42,7 @@
 #include <asio/write.hpp>
 #include <asio/read.hpp>
 #include <format>
+#include <fstream>
 
 
 
@@ -553,5 +554,209 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
     } catch (const std::exception& e) {
         std::cerr << "\nPipeline decryption setup failed: " << e.what() << std::endl;
         completion_handler(std::make_error_code(std::errc::io_error));
+    }
+}
+
+void nkCryptoToolPQC::encryptFileWithSync(
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths
+) {
+    try {
+        bool is_hybrid = key_paths.count("recipient-ecdh-pubkey");
+
+        // Key Derivation
+        std::vector<unsigned char> combined_secret;
+        std::vector<unsigned char> encapsulated_key_mlkem;
+        std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
+        
+        const auto& mlkem_pub_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-pubkey" : "recipient-pubkey");
+        auto recipient_mlkem_public_key_res = loadPublicKey(mlkem_pub_key_path);
+        if (!recipient_mlkem_public_key_res) throw std::runtime_error("Failed to load recipient ML-KEM public key: " + toString(recipient_mlkem_public_key_res.error()));
+        auto recipient_mlkem_public_key = std::move(*recipient_mlkem_public_key_res);
+
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_public_key.get(), nullptr));
+        if (!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx.get(), nullptr) <= 0) throw std::runtime_error("EVP_PKEY_encapsulate_init failed.");
+        
+        size_t secret_len_mlkem = 0, enc_len_mlkem = 0;
+        if (EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &enc_len_mlkem, nullptr, &secret_len_mlkem) <= 0) throw std::runtime_error("EVP_PKEY_encapsulate get length failed.");
+        
+        std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+        encapsulated_key_mlkem.resize(enc_len_mlkem);
+        if (EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_mlkem.data(), &enc_len_mlkem, secret_mlkem.data(), &secret_len_mlkem) <= 0) throw std::runtime_error("EVP_PKEY_encapsulate failed.");
+        combined_secret = secret_mlkem;
+
+        if (is_hybrid) {
+            auto recipient_ecdh_public_key_res = loadPublicKey(key_paths.at("recipient-ecdh-pubkey"));
+            if (!recipient_ecdh_public_key_res) throw std::runtime_error("Failed to load recipient ECDH public key: " + toString(recipient_ecdh_public_key_res.error()));
+            auto recipient_ecdh_public_key = std::move(*recipient_ecdh_public_key_res);
+            auto ephemeral_ecdh_key = generate_ephemeral_ec_key();
+            std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(ephemeral_ecdh_key.get(), recipient_ecdh_public_key.get());
+            
+            std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
+            PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_ecdh_key.get());
+            BUF_MEM *bio_buf; BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
+            ephemeral_ecdh_pubkey_bytes.assign(bio_buf->data, bio_buf->data + bio_buf->length);
+            combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
+        }
+
+        std::vector<unsigned char> salt(16), iv(GCM_IV_LEN);
+        RAND_bytes(salt.data(), salt.size());
+        RAND_bytes(iv.data(), iv.size());
+        std::vector<unsigned char> encryption_key = hkdfDerive(combined_secret, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+
+        auto ctx = std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter>(EVP_CIPHER_CTX_new());
+        EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
+
+        // File I/O
+        std::ifstream input_file(input_filepath, std::ios::binary);
+        std::ofstream output_file(output_filepath, std::ios::binary | std::ios::trunc);
+
+        // Write header
+        FileHeader header;
+        memcpy(header.magic, MAGIC, sizeof(MAGIC));
+        header.version = 1;
+        header.reserved = is_hybrid ? 1 : 0;
+        output_file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        
+        uint32_t len;
+        len = encapsulated_key_mlkem.size(); output_file.write(reinterpret_cast<const char*>(&len), sizeof(len));
+        output_file.write(reinterpret_cast<const char*>(encapsulated_key_mlkem.data()), encapsulated_key_mlkem.size());
+        if (is_hybrid) {
+            len = ephemeral_ecdh_pubkey_bytes.size(); output_file.write(reinterpret_cast<const char*>(&len), sizeof(len));
+            output_file.write(reinterpret_cast<const char*>(ephemeral_ecdh_pubkey_bytes.data()), ephemeral_ecdh_pubkey_bytes.size());
+        }
+        len = salt.size(); output_file.write(reinterpret_cast<const char*>(&len), sizeof(len));
+        output_file.write(reinterpret_cast<const char*>(salt.data()), salt.size());
+        len = iv.size(); output_file.write(reinterpret_cast<const char*>(&len), sizeof(len));
+        output_file.write(reinterpret_cast<const char*>(iv.data()), iv.size());
+
+        // Sync loop
+        std::vector<char> in_buffer(CHUNK_SIZE);
+        std::vector<unsigned char> out_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH);
+        int out_len = 0;
+        while (input_file.read(in_buffer.data(), in_buffer.size())) {
+            EVP_EncryptUpdate(ctx.get(), out_buffer.data(), &out_len, reinterpret_cast<const unsigned char*>(in_buffer.data()), input_file.gcount());
+            output_file.write(reinterpret_cast<const char*>(out_buffer.data()), out_len);
+        }
+        if(input_file.gcount() > 0){
+             EVP_EncryptUpdate(ctx.get(), out_buffer.data(), &out_len, reinterpret_cast<const unsigned char*>(in_buffer.data()), input_file.gcount());
+             output_file.write(reinterpret_cast<const char*>(out_buffer.data()), out_len);
+        }
+
+        // Finalization
+        EVP_EncryptFinal_ex(ctx.get(), out_buffer.data(), &out_len);
+        output_file.write(reinterpret_cast<const char*>(out_buffer.data()), out_len);
+        
+        std::vector<unsigned char> tag(GCM_TAG_LEN);
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag.data());
+        output_file.write(reinterpret_cast<const char*>(tag.data()), tag.size());
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nSynchronous PQC encryption failed: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+void nkCryptoToolPQC::decryptFileWithSync(
+    const std::string& input_filepath,
+    const std::string& output_filepath,
+    const std::map<std::string, std::string>& key_paths
+) {
+    try {
+        // 1. Read Header and Derive Key
+        std::ifstream input_file(input_filepath, std::ios::binary);
+        if (!input_file) throw std::runtime_error("Failed to open input file for header reading: " + input_filepath);
+        
+        FileHeader header;
+        input_file.read(reinterpret_cast<char*>(&header), sizeof(header));
+        if (!input_file || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) {
+            throw std::runtime_error("Invalid file header");
+        }
+        bool is_hybrid = header.reserved == 1;
+        if (is_hybrid && !key_paths.count("recipient-ecdh-privkey")) {
+            throw std::runtime_error("Hybrid file requires ECDH private key.");
+        }
+
+        uint32_t len;
+        std::vector<unsigned char> encapsulated_key_mlkem, ephemeral_ecdh_pubkey_bytes, salt, iv;
+        input_file.read(reinterpret_cast<char*>(&len), sizeof(len)); encapsulated_key_mlkem.resize(len);
+        input_file.read(reinterpret_cast<char*>(encapsulated_key_mlkem.data()), len);
+        if (is_hybrid) {
+            input_file.read(reinterpret_cast<char*>(&len), sizeof(len)); ephemeral_ecdh_pubkey_bytes.resize(len);
+            input_file.read(reinterpret_cast<char*>(ephemeral_ecdh_pubkey_bytes.data()), len);
+        }
+        input_file.read(reinterpret_cast<char*>(&len), sizeof(len)); salt.resize(len);
+        input_file.read(reinterpret_cast<char*>(salt.data()), len);
+        input_file.read(reinterpret_cast<char*>(&len), sizeof(len)); iv.resize(len);
+        input_file.read(reinterpret_cast<char*>(iv.data()), len);
+        uintmax_t header_size = input_file.tellg();
+
+        std::vector<unsigned char> combined_secret;
+        const auto& mlkem_priv_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-privkey" : "user-privkey");
+        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
+        if (!recipient_mlkem_private_key_res) throw std::runtime_error("Failed to load user ML-KEM private key.");
+        auto recipient_mlkem_private_key = std::move(*recipient_mlkem_private_key_res);
+        
+        std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
+        if (!kem_ctx || EVP_PKEY_decapsulate_init(kem_ctx.get(), nullptr) <= 0) throw std::runtime_error("EVP_PKEY_decapsulate_init failed.");
+        size_t secret_len_mlkem = 0;
+        if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) throw std::runtime_error("EVP_PKEY_decapsulate get length failed.");
+        std::vector<unsigned char> secret_mlkem(secret_len_mlkem);
+        if (EVP_PKEY_decapsulate(kem_ctx.get(), secret_mlkem.data(), &secret_len_mlkem, encapsulated_key_mlkem.data(), encapsulated_key_mlkem.size()) <= 0) throw std::runtime_error("Decapsulation failed.");
+        combined_secret = secret_mlkem;
+        
+        if (is_hybrid) {
+            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
+            auto recipient_ecdh_private_key = std::move(*recipient_ecdh_private_key_res);
+            std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
+            std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
+            std::vector<unsigned char> secret_ecdh = ecdh_generate_shared_secret(recipient_ecdh_private_key.get(), ephemeral_pub_key.get());
+            combined_secret.insert(combined_secret.end(), secret_ecdh.begin(), secret_ecdh.end());
+        }
+
+        std::vector<unsigned char> decryption_key = hkdfDerive(combined_secret, 32, std::string(salt.begin(), salt.end()), "hybrid-pqc-ecc-encryption", "SHA3-256");
+        auto ctx = std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter>(EVP_CIPHER_CTX_new());
+        EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
+
+        // 2. Set Tag
+        input_file.seekg(0, std::ios::end);
+        uintmax_t total_input_size = input_file.tellg();
+        uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
+        std::vector<unsigned char> tag(GCM_TAG_LEN);
+        input_file.seekg(total_input_size - GCM_TAG_LEN);
+        input_file.read(reinterpret_cast<char*>(tag.data()), GCM_TAG_LEN);
+        if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag.data()) <= 0) {
+            throw std::runtime_error("Failed to set GCM tag.");
+        }
+
+        // 3. Decryption Loop
+        std::ofstream output_file(output_filepath, std::ios::binary | std::ios::trunc);
+        input_file.seekg(header_size);
+        std::vector<char> in_buffer(CHUNK_SIZE);
+        std::vector<unsigned char> out_buffer(CHUNK_SIZE + EVP_MAX_BLOCK_LENGTH);
+        int out_len = 0;
+        uintmax_t bytes_to_process = ciphertext_size;
+        while (bytes_to_process > 0) {
+            std::streamsize to_read = std::min((uintmax_t)in_buffer.size(), bytes_to_process);
+            input_file.read(in_buffer.data(), to_read);
+            std::streamsize bytes_read = input_file.gcount();
+            if (bytes_read == 0) break;
+            if (EVP_DecryptUpdate(ctx.get(), out_buffer.data(), &out_len, reinterpret_cast<const unsigned char*>(in_buffer.data()), bytes_read) <= 0) {
+                throw std::runtime_error("Decrypt update failed.");
+            }
+            output_file.write(reinterpret_cast<const char*>(out_buffer.data()), out_len);
+            bytes_to_process -= bytes_read;
+        }
+
+        // 4. Finalization
+        if (EVP_DecryptFinal_ex(ctx.get(), out_buffer.data(), &out_len) <= 0) {
+            throw std::runtime_error("GCM tag verification failed.");
+        }
+        output_file.write(reinterpret_cast<const char*>(out_buffer.data()), out_len);
+
+    } catch (const std::exception& e) {
+        std::cerr << "\nSynchronous PQC decryption failed: " << e.what() << std::endl;
+        throw;
     }
 }

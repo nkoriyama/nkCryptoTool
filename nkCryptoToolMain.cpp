@@ -64,7 +64,8 @@ int main(int argc, char* argv[]) {
             ("o,output-file", "Path to the output file (for single file operations)", cxxopts::value<std::string>())
             ("input", "Input file(s)", cxxopts::value<std::vector<std::string>>())
             ("input-dir", "Path to the input directory for recursive processing", cxxopts::value<std::string>())
-            ("output-dir", "Path to the output directory for recursive processing", cxxopts::value<std::string>());
+            ("output-dir", "Path to the output directory for recursive processing", cxxopts::value<std::string>())
+            ("sync", "Use synchronous processing instead of the pipeline");
 
         options.add_options("Key Generation")
             ("gen-enc-key", "Generate a key pair for encryption")
@@ -348,19 +349,27 @@ int main(int argc, char* argv[]) {
                 } else {
                     key_paths["recipient-pubkey"] = recipient_pubkey_path;
                 }
-                crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
-                main_io_context.run();
+                if (result.count("sync")) {
+                    crypto_handler->encryptFileWithSync(input_filepath.string(), output_filepath, key_paths);
+                } else {
+                    crypto_handler->encryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                    main_io_context.run();
+                }
             } else if (is_decrypt) {
                 std::cout << std::format("Starting {} decryption...\n", mode);
                 std::map<std::string, std::string> key_paths;
-                    if (mode == "hybrid") {
+                if (mode == "hybrid") {
                     key_paths["recipient-mlkem-privkey"] = recipient_mlkem_privkey_path;
                     key_paths["recipient-ecdh-privkey"] = recipient_ecdh_privkey_path;
                 } else {
                     key_paths["user-privkey"] = user_privkey_path;
                 }
-                crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
-                main_io_context.run();
+                if (result.count("sync")) {
+                    crypto_handler->decryptFileWithSync(input_filepath.string(), output_filepath, key_paths);
+                } else {
+                    crypto_handler->decryptFileWithPipeline(main_io_context, input_filepath.string(), output_filepath, key_paths, [&](std::error_code ec){ if(ec) return_code = 1; });
+                    main_io_context.run();
+                }
             } else if (is_sign) {
                 std::cout << "Starting file signing..." << std::endl;
                 asio::co_spawn(main_io_context, crypto_handler->signFile(

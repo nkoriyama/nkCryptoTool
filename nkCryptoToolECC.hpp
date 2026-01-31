@@ -81,6 +81,18 @@ public:
         const std::map<std::string, std::string>& key_paths,
         std::function<void(std::error_code)> completion_handler
     ) override;
+
+    void encryptFileWithSync(
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths
+    ) override;
+
+    void decryptFileWithSync(
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths
+    ) override;
 };
 
 #endif

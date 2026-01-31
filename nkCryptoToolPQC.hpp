@@ -69,6 +69,18 @@ public:
         std::function<void(std::error_code)> completion_handler
     ) override;
 
+    void encryptFileWithSync(
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths
+    ) override;
+
+    void decryptFileWithSync(
+        const std::string& input_filepath,
+        const std::string& output_filepath,
+        const std::map<std::string, std::string>& key_paths
+    ) override;
+
 private:
     asio::awaitable<void> handleFileReadForSigning(std::shared_ptr<SigningState> state);
     asio::awaitable<void> finishSigning(std::shared_ptr<SigningState> state);
