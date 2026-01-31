@@ -197,18 +197,143 @@ static void BM_Decryption(benchmark::State& state) {
     std::filesystem::remove(encrypted_filename); // Remove encrypted file after all iterations
 }
 
+
+// 同期暗号化ベンチマーク
+static void BM_EncryptionSync(benchmark::State& state) {
+    const size_t file_size = state.range(0);
+    const std::string mode = state.range(1) == 0 ? "ecc" : (state.range(1) == 1 ? "pqc" : "hybrid");
+
+    std::filesystem::path key_dir = "./benchmark_keys";
+    std::string input_filename = dummy_input_file_paths[file_size];
+    std::string encrypted_filename = (dummy_input_files_dir / ("encrypted_" + std::to_string(file_size) + ".enc")).string();
+
+    std::unique_ptr<nkCryptoToolBase> crypto_handler;
+    if (mode == "ecc") {
+        crypto_handler = std::make_unique<nkCryptoToolECC>();
+    } else if (mode == "pqc" || mode == "hybrid") {
+        crypto_handler = std::make_unique<nkCryptoToolPQC>();
+    }
+    crypto_handler->setKeyBaseDirectory(key_dir);
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        std::filesystem::remove(encrypted_filename);
+        state.ResumeTiming();
+        
+        std::map<std::string, std::string> key_paths;
+        if (mode == "hybrid") {
+            key_paths["recipient-mlkem-pubkey"] = (key_dir / "public_enc_hybrid_mlkem.key").string();
+            key_paths["recipient-ecdh-pubkey"] = (key_dir / "public_enc_hybrid_ecdh.key").string();
+        } else if (mode == "ecc") {
+            key_paths["recipient-pubkey"] = (key_dir / "public_enc_ecc.key").string();
+        } else if (mode == "pqc") {
+            key_paths["recipient-pubkey"] = (key_dir / "public_enc_pqc.key").string();
+        }
+
+        try {
+            crypto_handler->encryptFileWithSync(input_filename, encrypted_filename, key_paths);
+        } catch (const std::exception& e) {
+            state.SkipWithError(("Sync encryption failed: " + std::string(e.what())).c_str());
+        }
+        
+        state.PauseTiming();
+        std::filesystem::remove(encrypted_filename);
+        state.ResumeTiming();
+    }
+}
+
+// 同期復号ベンチマーク
+static void BM_DecryptionSync(benchmark::State& state) {
+    const size_t file_size = state.range(0);
+    const std::string mode = state.range(1) == 0 ? "ecc" : (state.range(1) == 1 ? "pqc" : "hybrid");
+
+    std::filesystem::path key_dir = "./benchmark_keys";
+    std::string input_filename = dummy_input_file_paths[file_size];
+    std::string encrypted_filename = (dummy_input_files_dir / ("encrypted_" + std::to_string(file_size) + ".enc")).string();
+    std::string decrypted_filename = (dummy_input_files_dir / ("decrypted_" + std::to_string(file_size) + ".bin")).string();
+
+    // Setup
+    {
+        std::unique_ptr<nkCryptoToolBase> crypto_handler_enc;
+        if (mode == "ecc") {
+            crypto_handler_enc = std::make_unique<nkCryptoToolECC>();
+        } else if (mode == "pqc" || mode == "hybrid") {
+            crypto_handler_enc = std::make_unique<nkCryptoToolPQC>();
+        }
+        crypto_handler_enc->setKeyBaseDirectory(key_dir);
+        std::map<std::string, std::string> enc_key_paths;
+        if (mode == "hybrid") {
+            enc_key_paths["recipient-mlkem-pubkey"] = (key_dir / "public_enc_hybrid_mlkem.key").string();
+            enc_key_paths["recipient-ecdh-pubkey"] = (key_dir / "public_enc_hybrid_ecdh.key").string();
+        } else if (mode == "ecc") {
+            enc_key_paths["recipient-pubkey"] = (key_dir / "public_enc_ecc.key").string();
+        } else if (mode == "pqc") {
+            enc_key_paths["recipient-pubkey"] = (key_dir / "public_enc_pqc.key").string();
+        }
+        crypto_handler_enc->encryptFileWithSync(input_filename, encrypted_filename, enc_key_paths);
+    }
+
+    std::unique_ptr<nkCryptoToolBase> crypto_handler_dec;
+    if (mode == "ecc") {
+        crypto_handler_dec = std::make_unique<nkCryptoToolECC>();
+    } else if (mode == "pqc" || mode == "hybrid") {
+        crypto_handler_dec = std::make_unique<nkCryptoToolPQC>();
+    }
+    crypto_handler_dec->setKeyBaseDirectory(key_dir);
+
+    for (auto _ : state) {
+        state.PauseTiming();
+        std::filesystem::remove(decrypted_filename);
+        state.ResumeTiming();
+
+        std::map<std::string, std::string> dec_key_paths;
+        if (mode == "hybrid") {
+            dec_key_paths["recipient-mlkem-privkey"] = (key_dir / "private_enc_hybrid_mlkem.key").string();
+            dec_key_paths["recipient-ecdh-privkey"] = (key_dir / "private_enc_hybrid_ecdh.key").string();
+        } else if (mode == "ecc") {
+            dec_key_paths["user-privkey"] = (key_dir / "private_enc_ecc.key").string();
+        } else if (mode == "pqc") {
+            dec_key_paths["user-privkey"] = (key_dir / "private_enc_pqc.key").string();
+        }
+
+        try {
+            crypto_handler_dec->decryptFileWithSync(encrypted_filename, decrypted_filename, dec_key_paths);
+        } catch (const std::exception& e) {
+            state.SkipWithError(("Sync decryption failed: " + std::string(e.what())).c_str());
+        }
+        
+        state.PauseTiming();
+        std::filesystem::remove(decrypted_filename);
+        state.ResumeTiming();
+    }
+    std::filesystem::remove(encrypted_filename);
+}
+
+
 // ベンチマークの登録
 BENCHMARK(BM_Encryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1); // 1KB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1); // 1KB, ECC, PQC, Hybrid
 
+BENCHMARK(BM_EncryptionSync)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1);
+BENCHMARK(BM_DecryptionSync)->Args({1024, 0})->Args({1024, 1})->Args({1024, 2})->Repetitions(1);
+
 BENCHMARK(BM_Encryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1); // 1MB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1); // 1MB, ECC, PQC, Hybrid
+
+BENCHMARK(BM_EncryptionSync)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1);
+BENCHMARK(BM_DecryptionSync)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1})->Args({1024 * 1024, 2})->Repetitions(1);
 
 BENCHMARK(BM_Encryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1); // 10MB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1); // 10MB, ECC, PQC, Hybrid
 
+BENCHMARK(BM_EncryptionSync)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1);
+BENCHMARK(BM_DecryptionSync)->Args({1024 * 1024 * 10, 0})->Args({1024 * 1024 * 10, 1})->Args({1024 * 1024 * 10, 2})->Repetitions(1);
+
 BENCHMARK(BM_Encryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1); // ~6.7GB, ECC, PQC, Hybrid
 BENCHMARK(BM_Decryption)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1); // ~6.7GB, ECC, PQC, Hybrid
+
+BENCHMARK(BM_EncryptionSync)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1);
+BENCHMARK(BM_DecryptionSync)->Args({6719094784, 0})->Args({6719094784, 1})->Args({6719094784, 2})->Repetitions(1);
 
 // Function to setup dummy files
 void SetupDummyFiles() {

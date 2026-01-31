@@ -182,6 +182,8 @@ public:
         });
     }
 
+    void run_sync(const std::string& in_path, const std::string& out_path, uintmax_t read_offset, uintmax_t read_size);
+
 private:
     struct Task {
         std::vector<char> data;

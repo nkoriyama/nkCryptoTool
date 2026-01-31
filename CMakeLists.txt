@@ -71,6 +71,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # ソースファイルから実行可能ファイルを作成します。
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
+    PipelineManager.cpp
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
@@ -79,6 +80,7 @@ add_executable(nkCryptoTool
 
 add_executable(nkCryptoToolBenchmark
     nkCryptoToolBenchmark.cpp
+    PipelineManager.cpp
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
