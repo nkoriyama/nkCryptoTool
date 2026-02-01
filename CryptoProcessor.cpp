@@ -15,6 +15,10 @@ CryptoProcessor::CryptoProcessor(CryptoConfig config)
 
 CryptoProcessor::~CryptoProcessor() = default;
 
+void CryptoProcessor::set_progress_callback(ProgressCallback cb) {
+    progress_callback_ = cb;
+}
+
 std::future<void> CryptoProcessor::run() {
     std::promise<void> promise;
     auto future = promise.get_future();
@@ -59,7 +63,7 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                     crypto_handler->encryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths);
                     promise.set_value();
                 } else {
-                    crypto_handler->encryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler);
+                    crypto_handler->encryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
                     io_context.run();
                 }
                 break;
@@ -70,7 +74,7 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                     crypto_handler->decryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths);
                     promise.set_value();
                 } else {
-                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler);
+                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
                     io_context.run();
                 }
                 break;

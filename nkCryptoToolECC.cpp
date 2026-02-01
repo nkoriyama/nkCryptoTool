@@ -305,479 +305,246 @@ asio::awaitable<void> nkCryptoToolECC::handleFileReadForVerification(std::shared
 // --- パイプライン処理の実装 ---
 
 void nkCryptoToolECC::encryptFileWithPipeline(
-
     asio::io_context& io_context,
-
     const std::string& input_filepath,
-
     const std::string& output_filepath,
-
     const std::map<std::string, std::string>& key_paths,
-
-    std::function<void(std::error_code)> completion_handler
-
+    std::function<void(std::error_code)> completion_handler,
+    ProgressCallback progress_callback
 ) {
-
     try {
-
         auto manager = std::make_shared<PipelineManager>(io_context);
-
         auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
-
             completion_handler(ec);
-
         };
-
-
 
         // 鍵導出
-
         std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes;
-
         std::vector<unsigned char> secret;
 
-
-
         auto recipient_public_key_res = loadPublicKey(key_paths.at("recipient-pubkey"));
-
         if (!recipient_public_key_res) {
-
             throw std::runtime_error("Failed to load recipient public key: " + toString(recipient_public_key_res.error()));
-
         }
-
         auto recipient_public_key = std::move(*recipient_public_key_res);
 
-
-
         auto ephemeral_ecdh_key = generate_ephemeral_ec_key();
-
         if (!ephemeral_ecdh_key) { throw std::runtime_error("OpenSSL Error: Failed to generate ephemeral ECDH key."); }
-
         
-
         secret = ecdh_generate_shared_secret(ephemeral_ecdh_key.get(), recipient_public_key.get());
-
         if (secret.empty()) { throw std::runtime_error("OpenSSL Error: ECDH shared secret generation failed."); }
-
         
-
         std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new(BIO_s_mem()));
-
         if (!PEM_write_bio_PUBKEY(pub_bio.get(), ephemeral_ecdh_key.get())) { throw std::runtime_error("Failed to write ephemeral ECDH key to BIO."); }
-
         BUF_MEM *bio_buf; BIO_get_mem_ptr(pub_bio.get(), &bio_buf);
-
         ephemeral_ecdh_pubkey_bytes.assign(bio_buf->data, bio_buf->data + bio_buf->length);
 
-
-
         std::vector<unsigned char> salt(16), iv(GCM_IV_LEN);
-
         RAND_bytes(salt.data(), salt.size());
-
         RAND_bytes(iv.data(), iv.size());
-
         std::vector<unsigned char> encryption_key = hkdfDerive(secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256");
-
         if (encryption_key.empty()) throw std::runtime_error("Failed to derive encryption key with HKDF.");
 
-
-
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
-
         EVP_EncryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, encryption_key.data(), iv.data());
 
-
-
         // ファイル書き込み
-
         std::error_code ec;
-
         async_file_t output_file(io_context);
-
         output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
-
         if (ec) throw std::system_error(ec, "Failed to open output file for header writing");
 
-
-
         FileHeader header;
-
         memcpy(header.magic, MAGIC, sizeof(MAGIC));
-
         header.version = 1;
-
         header.reserved = 0; // Not hybrid
-
         asio::write(output_file.get(), asio::buffer(&header, sizeof(header)), ec); if(ec) throw std::system_error(ec, "Failed to write file header");
-
         
-
         uint32_t len;
-
         len = ephemeral_ecdh_pubkey_bytes.size(); asio::write(output_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec, "Failed to write ECDH key length");
-
         asio::write(output_file.get(), asio::buffer(ephemeral_ecdh_pubkey_bytes), ec); if(ec) throw std::system_error(ec, "Failed to write ECDH key");
-
         len = salt.size(); asio::write(output_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec, "Failed to write salt length");
-
         asio::write(output_file.get(), asio::buffer(salt), ec); if(ec) throw std::system_error(ec, "Failed to write salt");
-
         len = iv.size(); asio::write(output_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) throw std::system_error(ec, "Failed to write IV length");
-
         asio::write(output_file.get(), asio::buffer(iv), ec); if(ec) throw std::system_error(ec, "Failed to write IV");
-
         
-
         // パイプライン実行
-
         manager->add_stage([template_ctx](const std::vector<char>& data) {
-
             return ecc_process_chunk(data, template_ctx.get(), true);
-
         });
 
-
-
         PipelineManager::FinalizationFunc finalizer = [this, template_ctx](async_file_t& out_final) -> asio::awaitable<void> {
-
             auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
-
             auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
-
             int final_len = 0;
 
-
-
             if (EVP_EncryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) {
-
                 printOpenSSLErrors();
-
                 throw std::runtime_error("Failed to finalize encryption.");
-
             }
-
             final_block->resize(final_len);
 
-
-
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag->data()) <= 0) {
-
                 printOpenSSLErrors();
-
                 throw std::runtime_error("Failed to get GCM tag.");
-
             }
-
-
 
             if (!final_block->empty()) {
-
                 co_await asio::async_write(out_final.get(), asio::buffer(*final_block), asio::use_awaitable);
-
             }
-
             co_await asio::async_write(out_final.get(), asio::buffer(*tag), asio::use_awaitable);
-
         };
-
         
-
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
-
-        manager->run(input_filepath, std::move(output_file), 0, total_input_size, wrapped_handler, std::move(finalizer));
-
-
+        manager->run(input_filepath, std::move(output_file), 0, total_input_size, wrapped_handler, std::move(finalizer), progress_callback, total_input_size);
 
     } catch (const std::exception& e) {
-
         std::cerr << "\nPipeline encryption setup failed: " << e.what() << std::endl;
-
         completion_handler(std::make_error_code(std::errc::io_error));
-
     }
-
 }
 
 
 
 void nkCryptoToolECC::decryptFileWithPipeline(
-
     asio::io_context& io_context,
-
     const std::string& input_filepath,
-
     const std::string& output_filepath,
-
     const std::map<std::string, std::string>& key_paths,
-
-    std::function<void(std::error_code)> completion_handler
-
+    std::function<void(std::error_code)> completion_handler,
+    ProgressCallback progress_callback
 ) {
-
     try {
-
         auto manager = std::make_shared<PipelineManager>(io_context);
-
         auto wrapped_handler = [output_filepath, completion_handler, manager](const std::error_code& ec) {
-
             completion_handler(ec);
-
         };
-
-
 
         // ファイルヘッダー読み込みと鍵導出
-
         std::error_code ec;
-
         async_file_t input_file(io_context);
-
         input_file.open(input_filepath, O_RDONLY, ec);
-
         if (ec) throw std::system_error(ec, "Failed to open input file for header reading");
 
-
-
         FileHeader header; asio::read(input_file.get(), asio::buffer(&header, sizeof(header)), ec);
-
         if (ec || memcmp(header.magic, MAGIC, sizeof(MAGIC)) != 0 || header.version != 1) {
-
             throw std::runtime_error("Invalid file header");
-
         }
-
-
 
         uint32_t len;
-
         std::vector<unsigned char> ephemeral_ecdh_pubkey_bytes, salt, iv;
-
         asio::read(input_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) { throw std::runtime_error("Failed to read ECDH key length"); }
-
         ephemeral_ecdh_pubkey_bytes.resize(len);
-
         asio::read(input_file.get(), asio::buffer(ephemeral_ecdh_pubkey_bytes), ec); if(ec) { throw std::runtime_error("Failed to read ECDH key"); }
 
-
-
         asio::read(input_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) { throw std::runtime_error("Failed to read salt length"); }
-
         salt.resize(len);
-
         asio::read(input_file.get(), asio::buffer(salt), ec); if(ec) { throw std::runtime_error("Failed to read salt"); }
-
         asio::read(input_file.get(), asio::buffer(&len, sizeof(len)), ec); if(ec) { throw std::runtime_error("Failed to read IV length"); }
-
         iv.resize(len);
-
         asio::read(input_file.get(), asio::buffer(iv), ec); if(ec) { throw std::runtime_error("Failed to read IV"); }
-
         
-
         uintmax_t header_size = 0;
-
 #ifdef _WIN32
-
         header_size = input_file.get().seek(0, asio::file_base::seek_cur, ec);
-
 #else
-
         off_t pos = ::lseek(input_file.native_handle(), 0, SEEK_CUR);
-
         if (pos == (off_t)-1) {
-
             ec.assign(errno, std::system_category());
-
         } else {
-
             header_size = pos;
-
         }
-
 #endif
-
         if(ec) { throw std::system_error(ec); }
 
-
-
         auto user_private_key_res = loadPrivateKey(key_paths.at("user-privkey"), "ECC private key");
-
         if (!user_private_key_res) {
-
             throw std::runtime_error("Failed to load user private key: " + toString(user_private_key_res.error()));
-
         }
-
         auto user_private_key = std::move(*user_private_key_res);
-
         
-
         std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
-
         std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
-
         if(!ephemeral_pub_key) { throw std::runtime_error("OpenSSL Error: Failed to parse ephemeral ECDH key."); }
-
         
-
         std::vector<unsigned char> secret = ecdh_generate_shared_secret(user_private_key.get(), ephemeral_pub_key.get());
-
         if (secret.empty()) { throw std::runtime_error("OpenSSL Error: ECDH shared secret generation failed."); }
 
-
-
         std::vector<unsigned char> decryption_key = hkdfDerive(secret, 32, std::string(salt.begin(), salt.end()), "ecc-encryption", "SHA3-256");
-
         if (decryption_key.empty()) throw std::runtime_error("Failed to derive decryption key with HKDF.");
 
-
-
         auto template_ctx = std::shared_ptr<EVP_CIPHER_CTX>(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_Deleter());
-
         EVP_DecryptInit_ex(template_ctx.get(), EVP_aes_256_gcm(), nullptr, decryption_key.data(), iv.data());
 
-
-
         // パイプライン実行
-
         async_file_t output_file(io_context);
-
         output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
-
         if (ec) throw std::system_error(ec, "Failed to create output file");
 
-
-
         manager->add_stage([template_ctx](const std::vector<char>& data) {
-
             return ecc_process_chunk(data, template_ctx.get(), false);
-
         });
 
-
-
         PipelineManager::FinalizationFunc finalizer = [this, template_ctx, &io_context, input_filepath, header_size](async_file_t& out_final) -> asio::awaitable<void> {
-
             auto tag = std::make_shared<std::vector<unsigned char>>(GCM_TAG_LEN);
-
             auto final_block = std::make_shared<std::vector<unsigned char>>(EVP_MAX_BLOCK_LENGTH);
-
             int final_len = 0;
-
             
-
             async_file_t in_final(io_context);
-
             std::error_code final_ec;
-
             in_final.open(input_filepath, O_RDONLY, final_ec);
-
             if(final_ec) throw std::system_error(final_ec, "Failed to open input for finalization");
 
-
-
 #ifdef _WIN32
-
             uintmax_t file_size = in_final.get().size(final_ec);
-
             if (!final_ec) {
-
                 in_final.get().seek(file_size - GCM_TAG_LEN, asio::file_base::seek_set, final_ec);
-
             }
-
 #else
-
             struct stat stat_buf;
-
             uintmax_t file_size = 0;
-
             if (::fstat(in_final.native_handle(), &stat_buf) != -1) {
-
                 file_size = stat_buf.st_size;
-
             } else {
-
                 final_ec.assign(errno, std::system_category());
-
             }
-
-
 
             if (!final_ec) {
-
                 if (::lseek(in_final.native_handle(), file_size - GCM_TAG_LEN, SEEK_SET) == -1) {
-
                     final_ec.assign(errno, std::system_category());
-
                 }
-
             }
-
 #endif
-
             if(final_ec) { throw std::system_error(final_ec, "Failed to get size or seek input for finalization"); }
-
             
-
             co_await asio::async_read(in_final.get(), asio::buffer(*tag), asio::use_awaitable);
-
             in_final.close(); // Close after reading tag
-
             
-
             if (EVP_CIPHER_CTX_ctrl(template_ctx.get(), EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag->data()) <= 0) {
-
                  throw std::runtime_error("Failed to set GCM tag.");
-
             }
-
-
 
             if (EVP_DecryptFinal_ex(template_ctx.get(), final_block->data(), &final_len) <= 0) {
-
                 printOpenSSLErrors();
-
                 throw std::runtime_error("GCM tag verification failed. File may be corrupted or tampered with.");
-
             }
-
             final_block->resize(final_len);
-
             
-
             if (!final_block->empty()) {
-
                  co_await asio::async_write(out_final.get(), asio::buffer(*final_block), asio::use_awaitable);
-
             }
-
         };
 
-
-
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
-
         uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
-
         
-
-        manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, wrapped_handler, std::move(finalizer));
-
+        manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, wrapped_handler, std::move(finalizer), progress_callback, total_input_size);
         input_file.close();
 
-
-
     } catch (const std::exception& e) {
-
         std::cerr << "\nPipeline decryption setup failed: " << e.what() << std::endl;
-
         completion_handler(std::make_error_code(std::errc::io_error));
-
     }
-
 }
 
 

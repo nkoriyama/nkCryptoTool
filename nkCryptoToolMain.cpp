@@ -110,6 +110,19 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     return config;
 }
 
+auto progress_cb = [](double progress) {
+    const int bar_width = 50;
+    std::cout << "\r["; // \r で行頭に戻る
+    int pos = static_cast<int>(bar_width * progress);
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < pos) std::cout << "#";
+        else std::cout << "-";
+    }
+    std::cout << "] " << std::fixed << std::setprecision(1) 
+              << (progress * 100.0) << "% " << std::flush; // flush で即座に反映
+    
+    if (progress >= 1.0) std::cout << std::endl; // 完了時のみ改行
+};
 
 int main(int argc, char* argv[]) {
     OSSL_PROVIDER_load(nullptr, "default");
@@ -141,6 +154,8 @@ int main(int argc, char* argv[]) {
                     file_config.output_file = output_path.string();
                     
                     CryptoProcessor processor(std::move(file_config));
+                    processor.set_progress_callback(progress_cb); // コールバックを登録 [cite: 1, 18, 19]
+                                                                  //
                     auto future = processor.run();
                     try {
                         future.get(); // Wait for this file to complete
@@ -161,6 +176,8 @@ int main(int argc, char* argv[]) {
             }
         } else {
              CryptoProcessor processor(std::move(config));
+             // 【重要】ここに進捗コールバックの登録を追加します
+             processor.set_progress_callback(progress_cb);
              auto future = processor.run();
              future.get(); // Wait for the operation to complete
         }

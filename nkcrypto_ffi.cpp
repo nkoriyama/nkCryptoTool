@@ -9,6 +9,9 @@
 #include <filesystem> // For std::filesystem::path used in CryptoProcessor construction
 #include <asio.hpp> // For asio::io_context
 
+// FFI層で共有されるグローバルな進捗コールバック
+static ProgressCallback g_progress_callback = nullptr;
+
 // FFIでOperationを文字列から変換するヘルパー
 Operation get_operation_from_string(const std::string& op_str) {
     if (op_str == "encrypt") return Operation::Encrypt;
@@ -22,6 +25,10 @@ Operation get_operation_from_string(const std::string& op_str) {
 }
 
 extern "C" {
+
+void set_progress_callback(ProgressCallback cb) {
+    g_progress_callback = cb;
+}
 
 int run_crypto_op_json(const char* json_config_str) {
     nlohmann::json json_config;
@@ -115,6 +122,9 @@ int run_crypto_op_json(const char* json_config_str) {
         // CryptoProcessorは自身のio_contextを内部で管理し、run()が非同期操作を開始する。
         // nkCryptoToolMain.cppと同様に、io_contextはここで直接渡さない。
         CryptoProcessor processor(config);
+        if (g_progress_callback) {
+            processor.set_progress_callback(g_progress_callback);
+        }
         auto future = processor.run(); // このメソッドは新しいスレッドをデタッチして操作を実行する
         future.get(); // デタッチされたスレッドの完了を待機する
         return 0; // 成功

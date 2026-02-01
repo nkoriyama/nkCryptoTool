@@ -5,6 +5,16 @@
 extern "C" {
 #endif
 
+// 進捗通知用のコールバック関数ポインタ型
+typedef void (*ProgressCallback)(double progress);
+
+/**
+ * @brief FFI層で利用するグローバルな進捗コールバックを設定します。
+ *
+ * @param cb 他言語側で定義されたコールバック関数。
+ */
+void set_progress_callback(ProgressCallback cb);
+
 /**
  * @brief JSON設定文字列に基づいて暗号操作を実行します。
  *

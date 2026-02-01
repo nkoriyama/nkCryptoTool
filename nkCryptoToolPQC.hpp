@@ -58,7 +58,8 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::function<void(std::error_code)> completion_handler
+        std::function<void(std::error_code)> completion_handler,
+        ProgressCallback progress_callback = nullptr
     ) override;
 
     void decryptFileWithPipeline(
@@ -66,7 +67,8 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::function<void(std::error_code)> completion_handler
+        std::function<void(std::error_code)> completion_handler,
+        ProgressCallback progress_callback = nullptr
     ) override;
 
     void encryptFileWithSync(

@@ -301,7 +301,8 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
     const std::string& input_filepath,
     const std::string& output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::function<void(std::error_code)> completion_handler
+    std::function<void(std::error_code)> completion_handler,
+    ProgressCallback progress_callback
 ) {
     try {
         bool is_hybrid = key_paths.count("recipient-ecdh-pubkey");
@@ -403,7 +404,7 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
         };
         
         uintmax_t total_input_size = std::filesystem::file_size(input_filepath, ec); if(ec) throw std::system_error(ec);
-        manager->run(input_filepath, std::move(output_file), 0, total_input_size, wrapped_handler, std::move(finalizer));
+        manager->run(input_filepath, std::move(output_file), 0, total_input_size, wrapped_handler, std::move(finalizer), progress_callback, total_input_size);
 
     } catch (const std::exception& e) {
         std::cerr << "\nPipeline encryption setup failed: " << e.what() << std::endl;
@@ -416,7 +417,8 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
     const std::string& input_filepath,
     const std::string& output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::function<void(std::error_code)> completion_handler
+    std::function<void(std::error_code)> completion_handler,
+    ProgressCallback progress_callback
 ) {
     try {
         auto manager = std::make_shared<PipelineManager>(io_context);
@@ -548,7 +550,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
         uintmax_t ciphertext_size = total_input_size - header_size - GCM_TAG_LEN;
         
         // The input_file is moved here, its lifetime is managed by the PipelineManager
-        manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, wrapped_handler, std::move(finalizer));
+        manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, wrapped_handler, std::move(finalizer), progress_callback, total_input_size);
         input_file.close(); // Close the original handle after moving from it
 
     } catch (const std::exception& e) {
