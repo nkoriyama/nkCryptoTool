@@ -9,14 +9,18 @@ endif()
 # プロジェクト名を定義します。C++とCの両方を扱うことを明示します。
 project(nkCryptoTool CXX C)
 
+# Linux/MacでRPATHを設定し、実行ファイルが同じディレクトリにあるライブラリを見つけられるようにする
+if(UNIX)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+    set(CMAKE_INSTALL_RPATH "$ORIGIN")
+    # For macOS compatibility
+    list(APPEND CMAKE_INSTALL_RPATH "@loader_path")
+endif()
+
 # Add io_uring support for Asio on Linux
 if(UNIX AND NOT APPLE)
   add_compile_definitions(ASIO_HAS_IO_URING)
 endif()
-
-# 最適化フラグを追加
-# このターゲット固有の最適化フラグは、add_executable の後で設定する必要があります。
-# そのため、このブロックは後ほど移動します。
 
 # C++23標準を使用するように設定します。
 set(CMAKE_CXX_STANDARD 23)
@@ -45,7 +49,7 @@ FetchContent_MakeAvailable(cxxopts)
 FetchContent_Declare(
   benchmark
   GIT_REPOSITORY https://github.com/google/benchmark.git
-  GIT_TAG        v1.8.4 # v2はまだリリースされていないため、最新の安定版v1.8.4を使用
+  GIT_TAG        v1.8.4
 )
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable building benchmark's tests" FORCE)
 set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "Disable -Werror for benchmark" FORCE)
@@ -55,22 +59,14 @@ FetchContent_MakeAvailable(benchmark)
 find_package(Threads REQUIRED)
 
 # --- 依存関係の取得: OpenSSL ---
-# OpenSSLライブラリを検出します。
 find_package(OpenSSL REQUIRED)
-# If OpenSSL is found, OPENSSL_INCLUDE_DIR, OPENSSL_LIBRARIES will be set.
-# OPENSSL_LIBRARIES typically includes both SSL and Crypto.
-# For modern CMake, it's better to use imported targets like OpenSSL::SSL and OpenSSL::Crypto.
-# set(OPENSSL_ROOT_DIR "C:/msys64/mingw64") # MinGWのインストールパスに合わせて変更
-# set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
-# set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libssl.dll.a")
-# set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/libcrypto.dll.a")
 
-# 実行可能ファイルの出力ディレクトリを build/bin に設定します。
+# 実行可能ファイルとライブラリの出力ディレクトリを build/bin に設定します。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-# ソースファイルから実行可能ファイルを作成します。
-add_executable(nkCryptoTool
-    nkCryptoToolMain.cpp
+# 共有ライブラリのソースファイルを定義します。
+set(NKCRYPTO_SHARED_SOURCES
     PipelineManager.cpp
     CryptoProcessor.cpp
     nkCryptoToolBase.cpp
@@ -79,73 +75,64 @@ add_executable(nkCryptoTool
     nkCryptoToolUtils.cpp
 )
 
-add_executable(nkCryptoToolBenchmark
-    nkCryptoToolBenchmark.cpp
-    PipelineManager.cpp
-    CryptoProcessor.cpp
-    nkCryptoToolBase.cpp
-    nkCryptoToolECC.cpp
-    nkCryptoToolPQC.cpp
-    nkCryptoToolUtils.cpp
-)
+# 共有ライブラリ nkcrypto_shared を作成します。
+add_library(nkcrypto_shared SHARED ${NKCRYPTO_SHARED_SOURCES})
 
-target_link_libraries(nkCryptoToolBenchmark PRIVATE
-    benchmark
-    benchmark_main
-    Threads::Threads
-    OpenSSL::SSL
-    OpenSSL::Crypto
-)
+# FFI連携のためにPosition Independent Codeを有効化します。
+set_target_properties(nkcrypto_shared PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# Add uring library for io_uring support on Linux
-if(UNIX AND NOT APPLE)
-  target_link_libraries(nkCryptoToolBenchmark PRIVATE uring)
-endif()
-
-target_include_directories(nkCryptoToolBenchmark PRIVATE
-  ${asio_SOURCE_DIR}/asio/include
-  ${PROJECT_SOURCE_DIR}
-)
-
-target_compile_definitions(nkCryptoToolBenchmark PRIVATE BENCHMARK_STATIC_LIB)
-
-# add_executable の後に最適化フラグを設定します
+# 共有ライブラリに最適化フラグを適用します。
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(nkCryptoTool PRIVATE
+    target_compile_options(nkcrypto_shared PRIVATE
         -O3                # 最大最適化
         -march=native      # CPU固有の命令セット（AES-NI、AVX2など）
         -mtune=native      # CPUアーキテクチャに最適化
         -flto              # リンク時最適化（Link Time Optimization）
         -funroll-loops     # ループ展開（AES-256-GCMに有効）
     )
-    # デバッグ用にRelWithDebInfoで-gを有効
+    # デバッグ用にRelWithDebInfoで-gを有効にします。
     if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-        target_compile_options(nkCryptoTool PRIVATE -g)
+        target_compile_options(nkcrypto_shared PRIVATE -g)
     endif()
 endif()
 
-# インクルードディレクトリを追加します。
-target_include_directories(nkCryptoTool PRIVATE
+# 共有ライブラリに必要なインクルードディレクトリとライブラリをリンクします。
+target_include_directories(nkcrypto_shared PUBLIC
   ${PROJECT_SOURCE_DIR}
   ${asio_SOURCE_DIR}/asio/include
-  ${cxxopts_SOURCE_DIR}/include
 )
-
-# 実行可能ファイルにライブラリをリンクします。
-target_link_libraries(nkCryptoTool PRIVATE
+target_link_libraries(nkcrypto_shared PUBLIC
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
+)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(nkcrypto_shared PUBLIC uring)
+endif()
+
+# CLI実行可能ファイルを作成します。
+add_executable(nkCryptoTool nkCryptoToolMain.cpp)
+
+# ベンチマーク実行可能ファイルを作成します。
+add_executable(nkCryptoToolBenchmark nkCryptoToolBenchmark.cpp)
+
+# CLI実行可能ファイルにライブラリをリンクします。
+target_include_directories(nkCryptoTool PRIVATE ${cxxopts_SOURCE_DIR}/include)
+target_link_libraries(nkCryptoTool PRIVATE
+    nkcrypto_shared
+    # Note: The main executable links benchmark, which is unusual. Preserving for now.
     benchmark
     benchmark_main
 )
-
-# Add uring library for io_uring support on Linux
-if(UNIX AND NOT APPLE)
-  target_link_libraries(nkCryptoTool PRIVATE uring)
-endif()
-
 target_compile_definitions(nkCryptoTool PRIVATE BENCHMARK_STATIC_LIB)
+
+# ベンチマーク実行可能ファイルにライブラリをリンクします。
+target_link_libraries(nkCryptoToolBenchmark PRIVATE
+    nkcrypto_shared
+    benchmark
+    benchmark_main
+)
+target_compile_definitions(nkCryptoToolBenchmark PRIVATE BENCHMARK_STATIC_LIB)
 
 # Windows固有のライブラリを追加でリンクします。
 if(WIN32)
@@ -153,8 +140,8 @@ if(WIN32)
     target_link_libraries(nkCryptoToolBenchmark PRIVATE ws2_32)
 endif()
 
-# インストールルールを設定します（オプション）。
-install(TARGETS nkCryptoTool DESTINATION bin)
+# インストールルールに共有ライブラリも追加します。
+install(TARGETS nkCryptoTool nkcrypto_shared DESTINATION bin)
 
 # ==============================================================================
 # Testing Configuration (CTest)
@@ -179,8 +166,6 @@ add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF)
 add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF)
 add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF)
-
-
 
 # --- Run Signing Scenarios ---
 add_e2e_test(E2E_PQC_Signing pqc OFF OFF ON OFF OFF)
