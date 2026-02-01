@@ -72,6 +72,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
     PipelineManager.cpp
+    CryptoProcessor.cpp
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
@@ -81,6 +82,7 @@ add_executable(nkCryptoTool
 add_executable(nkCryptoToolBenchmark
     nkCryptoToolBenchmark.cpp
     PipelineManager.cpp
+    CryptoProcessor.cpp
     nkCryptoToolBase.cpp
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
