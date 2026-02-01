@@ -55,6 +55,14 @@ set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable building benchmark's tests"
 set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "Disable -Werror for benchmark" FORCE)
 FetchContent_MakeAvailable(benchmark)
 
+# --- 依存関係の取得: nlohmann/json ---
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3 # v3.11.3以降を指定
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # --- 依存関係の取得: Threads ---
 find_package(Threads REQUIRED)
 
@@ -73,6 +81,7 @@ set(NKCRYPTO_SHARED_SOURCES
     nkCryptoToolECC.cpp
     nkCryptoToolPQC.cpp
     nkCryptoToolUtils.cpp
+    nkcrypto_ffi.cpp # 新しいFFIブリッジファイルを追加
 )
 
 # 共有ライブラリ nkcrypto_shared を作成します。
@@ -105,6 +114,7 @@ target_link_libraries(nkcrypto_shared PUBLIC
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
+    nlohmann_json::nlohmann_json
 )
 if(UNIX AND NOT APPLE)
   target_link_libraries(nkcrypto_shared PUBLIC uring)
