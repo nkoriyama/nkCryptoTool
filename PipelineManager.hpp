@@ -42,6 +42,7 @@
 
 #include <asio/steady_timer.hpp>
 #include "async_file_types.hpp" // Use the new centralized header
+#include "nkcrypto_ffi.hpp" // For ProgressCallback
 
 // イベント駆動型キュー
 class AsyncOrderedQueue {
@@ -141,11 +142,17 @@ public:
         stages_.push_back(std::move(stage));
     }
 
-    void run(const std::string& in_path, async_file_t&& out_file, uintmax_t read_offset, uintmax_t read_size, std::function<void(std::error_code)> on_complete, FinalizationFunc on_finalize = nullptr) {
+    void run(const std::string& in_path, async_file_t&& out_file, uintmax_t read_offset, uintmax_t read_size, std::function<void(std::error_code)> on_complete, FinalizationFunc on_finalize = nullptr, ProgressCallback progress_callback = nullptr, uintmax_t total_input_size = 0) {
         log_message("Pipeline starting. Input: " + in_path);
         completion_handler_ = on_complete;
         finalization_handler_ = std::move(on_finalize);
         output_file_ = std::move(out_file);
+        progress_callback_ = progress_callback;
+        total_input_size_ = total_input_size;
+        // Set the first progress update point, e.g., 1% of the total size or a fixed chunk, whichever is larger.
+        if (total_input_size_ > 0 && progress_callback_) {
+            next_progress_update_point_ = std::max((uintmax_t)(total_input_size_ / 100), (uintmax_t)(1024 * 128));
+        }
 
         std::error_code ec;
 #ifdef _WIN32
@@ -172,6 +179,7 @@ public:
 
         total_to_read_ = read_size;
         total_read_ = 0;
+        total_written_ = 0;
 
         start_writer();
         asio::co_spawn(io_context_, reader_coroutine(), [this, self = shared_from_this()](std::exception_ptr p) {
@@ -227,6 +235,10 @@ private:
     void call_completion_handler(const std::error_code& ec) {
         bool already_called = completion_handler_called_.exchange(true);
         if (!already_called) {
+            // Final progress update to 100% on successful completion
+            if (!ec && progress_callback_ && total_input_size_ > 0) {
+                progress_callback_(1.0);
+            }
             asio::post(io_context_, [this, ec]() {
                 if (completion_handler_) completion_handler_(ec);
                 work_guard_.reset();
@@ -280,8 +292,9 @@ private:
             std::vector<char> data_to_write = co_await results_queue_.async_pop();
 
             if (!data_to_write.empty()) {
+                size_t bytes_written = 0;
                 try {
-                    size_t bytes_written = co_await asio::async_write(output_file_.get(), asio::buffer(data_to_write), asio::use_awaitable);
+                    bytes_written = co_await asio::async_write(output_file_.get(), asio::buffer(data_to_write), asio::use_awaitable);
                 } catch (const std::system_error& e) {
                     call_completion_handler(e.code());
                     co_return;
@@ -291,6 +304,18 @@ private:
 
                 tasks_completed_count_++;
                 next_order_to_write++;
+
+                // Progress callback logic
+                if (progress_callback_ && total_input_size_ > 0) {
+                    total_written_ += bytes_written;
+                    if (total_written_ >= next_progress_update_point_) {
+                        double progress = static_cast<double>(total_written_) / total_input_size_;
+                        progress_callback_(progress);
+                        // Set next update point to the next 1% or at least 128MB away
+                        uintmax_t increment = std::max((uintmax_t)(total_input_size_ / 100), (uintmax_t)(1024 * 128));
+                        next_progress_update_point_ = total_written_ + increment;
+                    }
+                }
             } else {
                 break;
             }
@@ -390,6 +415,10 @@ private:
 
     uintmax_t total_to_read_{0};
     uintmax_t total_read_{0};
+    uintmax_t total_written_{0};
+    uintmax_t total_input_size_{0};
+    uintmax_t next_progress_update_point_{0};
+    ProgressCallback progress_callback_ = nullptr;
 
     // [修正] 実績のある 64KB に戻す (SysTime削減とキャッシュ効率向上)
     static constexpr size_t CHUNK_SIZE = 1024 * 64;

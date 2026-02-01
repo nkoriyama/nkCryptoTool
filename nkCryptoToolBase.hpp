@@ -32,6 +32,7 @@
 #include <expected>
 #include "CryptoError.hpp"
 #include "async_file_types.hpp"
+#include "nkcrypto_ffi.hpp" // For ProgressCallback
 #include <asio/awaitable.hpp>
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
@@ -107,7 +108,8 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::function<void(std::error_code)> completion_handler
+        std::function<void(std::error_code)> completion_handler,
+        ProgressCallback progress_callback = nullptr
     ) = 0;
 
     virtual void decryptFileWithPipeline(
@@ -115,7 +117,8 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::function<void(std::error_code)> completion_handler
+        std::function<void(std::error_code)> completion_handler,
+        ProgressCallback progress_callback = nullptr
     ) = 0;
 
     virtual void encryptFileWithSync(
