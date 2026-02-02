@@ -39,15 +39,7 @@ void BIO_Deleter::operator()(BIO *b) const { BIO_free_all(b); }
 void EVP_KDF_Deleter::operator()(EVP_KDF *p) const { EVP_KDF_free(p); }
 void EVP_KDF_CTX_Deleter::operator()(EVP_KDF_CTX *p) const { EVP_KDF_CTX_free(p); }
 
-nkCryptoToolBase::nkCryptoToolBase() : key_base_directory("keys") {
-    try {
-        if (!std::filesystem::exists(key_base_directory)) {
-            std::filesystem::create_directories(key_base_directory);
-        }
-    } catch (const std::filesystem::filesystem_error& e) {
-        std::cerr << std::format("Error creating directory '{}': {}\n", key_base_directory.string(), e.what());
-    }
-}
+nkCryptoToolBase::nkCryptoToolBase() {}
 nkCryptoToolBase::~nkCryptoToolBase() {}
 
 nkCryptoToolBase::AsyncStateBase::AsyncStateBase(asio::io_context& io_context)

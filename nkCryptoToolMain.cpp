@@ -29,7 +29,7 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         ("gen-enc-key", "Generate a key pair for encryption")
         ("gen-sign-key", "Generate a key pair for signing")
         ("regenerate-pubkey", "Regenerate a public key from a private key. Expects <private_key_path> and <public_key_path> as positional arguments.")
-        ("key-dir", "Directory to save the generated keys (default: './keys')", cxxopts::value<std::string>())
+        ("key-dir", "Directory to save the generated keys (default: './keys')", cxxopts::value<std::string>()->default_value("./keys"))
         ("p,passphrase", "Passphrase for the private key. Use '' for no passphrase.", cxxopts::value<std::string>());
 
     options.add_options("Operations")
