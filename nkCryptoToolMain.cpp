@@ -46,7 +46,7 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         ("signing-privkey", "Your private key for signing", cxxopts::value<std::string>())
         ("signing-pubkey", "The signer's public key for verification", cxxopts::value<std::string>())
         ("signature", "Path to the signature file", cxxopts::value<std::string>())
-        ("digest-algo,digest", "Hashing algorithm (e.g., SHA256, SHA3-256)", cxxopts::value<std::string>()->default_value("SHA256"));
+        ("digest-algo,digest", "Hashing algorithm (e.g., SHA256, SHA3-512)", cxxopts::value<std::string>()->default_value("SHA3-512"));
     
     options.parse_positional({"input"});
     auto result = options.parse(argc, argv);
