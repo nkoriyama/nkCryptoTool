@@ -152,11 +152,11 @@ std::expected<void, CryptoError> nkCryptoToolECC::generateSigningKeyPair(const s
 }
 
 // --- ECC署名・検証 ---
-asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
+asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, const std::string& passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
-        auto private_key_res = loadPrivateKey(signing_private_key_path, "ECC signing private key");
+        auto private_key_res = loadPrivateKey(signing_private_key_path, passphrase);
         if (!private_key_res) {
             throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load ECC signing private key: " + toString(private_key_res.error()));
         }
@@ -411,6 +411,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
     const std::string& input_filepath,
     const std::string& output_filepath,
     const std::map<std::string, std::string>& key_paths,
+    const std::string& passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -457,7 +458,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
 #endif
         if(ec) { throw std::system_error(ec); }
 
-        auto user_private_key_res = loadPrivateKey(key_paths.at("user-privkey"), "ECC private key");
+        auto user_private_key_res = loadPrivateKey(key_paths.at("user-privkey"), passphrase);
         if (!user_private_key_res) {
             throw std::runtime_error("Failed to load user private key: " + toString(user_private_key_res.error()));
         }
@@ -755,7 +756,13 @@ void nkCryptoToolECC::decryptFileWithSync(
 
 
 
-    const std::map<std::string, std::string>& key_paths
+    const std::map<std::string, std::string>& key_paths,
+
+
+
+
+
+    const std::string& passphrase
 
 
 
@@ -899,7 +906,7 @@ void nkCryptoToolECC::decryptFileWithSync(
 
 
 
-        auto user_private_key_res = loadPrivateKey(key_paths.at("user-privkey"), "ECC private key");
+        auto user_private_key_res = loadPrivateKey(key_paths.at("user-privkey"), passphrase);
 
 
 

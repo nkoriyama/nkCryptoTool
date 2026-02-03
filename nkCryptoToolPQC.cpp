@@ -145,11 +145,11 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(const s
 
 
 // --- PQC署名・検証 ---
-asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo) {
+asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, const std::string& passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
-        auto private_key_res = loadPrivateKey(signing_private_key_path, "PQC signing private key");
+        auto private_key_res = loadPrivateKey(signing_private_key_path, passphrase);
         if (!private_key_res) {
             throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load PQC signing private key: " + toString(private_key_res.error()));
         }
@@ -417,6 +417,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
     const std::string& input_filepath,
     const std::string& output_filepath,
     const std::map<std::string, std::string>& key_paths,
+    const std::string& passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -465,7 +466,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
 
         std::vector<unsigned char> combined_secret;
         const auto& mlkem_priv_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-privkey" : "user-privkey");
-        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
+        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, passphrase);
         if (!recipient_mlkem_private_key_res) throw std::runtime_error("Failed to load user ML-KEM private key.");
         auto recipient_mlkem_private_key = std::move(*recipient_mlkem_private_key_res);
         std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> kem_ctx(EVP_PKEY_CTX_new(recipient_mlkem_private_key.get(), nullptr));
@@ -479,7 +480,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
         combined_secret = secret_mlkem;
         
         if(is_hybrid) {
-            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
+            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), passphrase);
             if (!recipient_ecdh_private_key_res) throw std::runtime_error("Failed to load user ECDH private key.");
             auto recipient_ecdh_private_key = std::move(*recipient_ecdh_private_key_res);
             std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
@@ -663,7 +664,8 @@ void nkCryptoToolPQC::encryptFileWithSync(
 void nkCryptoToolPQC::decryptFileWithSync(
     const std::string& input_filepath,
     const std::string& output_filepath,
-    const std::map<std::string, std::string>& key_paths
+    const std::map<std::string, std::string>& key_paths,
+    const std::string& passphrase
 ) {
     try {
         // 1. Read Header and Derive Key
@@ -696,7 +698,7 @@ void nkCryptoToolPQC::decryptFileWithSync(
 
         std::vector<unsigned char> combined_secret;
         const auto& mlkem_priv_key_path = key_paths.at(is_hybrid ? "recipient-mlkem-privkey" : "user-privkey");
-        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, "ML-KEM private key");
+        auto recipient_mlkem_private_key_res = loadPrivateKey(mlkem_priv_key_path, passphrase);
         if (!recipient_mlkem_private_key_res) throw std::runtime_error("Failed to load user ML-KEM private key.");
         auto recipient_mlkem_private_key = std::move(*recipient_mlkem_private_key_res);
         
@@ -709,7 +711,8 @@ void nkCryptoToolPQC::decryptFileWithSync(
         combined_secret = secret_mlkem;
         
         if (is_hybrid) {
-            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), "ECDH private key");
+            auto recipient_ecdh_private_key_res = loadPrivateKey(key_paths.at("recipient-ecdh-privkey"), passphrase);
+            if (!recipient_ecdh_private_key_res) throw std::runtime_error("Failed to load user ECDH private key.");
             auto recipient_ecdh_private_key = std::move(*recipient_ecdh_private_key_res);
             std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_mem_buf(ephemeral_ecdh_pubkey_bytes.data(), ephemeral_ecdh_pubkey_bytes.size()));
             std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_pub_key(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));

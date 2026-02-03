@@ -71,10 +71,10 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
             case Operation::Decrypt: {
                 std::cout << std::format("Starting {} decryption...\n", to_string(config_.mode));
                 if (config_.sync_mode) {
-                    crypto_handler->decryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths);
+                    crypto_handler->decryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase);
                     promise.set_value();
                 } else {
-                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
+                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
                     io_context.run();
                 }
                 break;
@@ -86,7 +86,8 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                     config_.input_files[0],
                     config_.signature_file,
                     config_.key_paths.at("signing-privkey"),
-                    config_.digest_algo
+                    config_.digest_algo,
+                    config_.passphrase
                 ), [&](std::exception_ptr p) {
                     if (p) {
                         promise.set_exception(p);

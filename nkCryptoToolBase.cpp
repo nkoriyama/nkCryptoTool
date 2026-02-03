@@ -131,13 +131,23 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const char* key_description) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const std::string& passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         return std::unexpected(CryptoError::FileReadError);
     }
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)key_description);
+
+    EVP_PKEY* pkey = nullptr;
+    if (passphrase.empty()) {
+        // No passphrase, so no callback.
+        pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, nullptr, nullptr);
+    } else {
+        // Passphrase provided, use the callback.
+        pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)passphrase.c_str());
+    }
+
     if (!pkey) { 
+        printOpenSSLErrors();
         ERR_clear_error(); 
         return std::unexpected(CryptoError::PrivateKeyLoadError);
     }

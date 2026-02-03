@@ -182,7 +182,7 @@ static void BM_Decryption(benchmark::State& state) {
         }
 
         std::error_code ec;
-        crypto_handler_dec->decryptFileWithPipeline(io_context, encrypted_filename, decrypted_filename, dec_key_paths, [&](std::error_code err){ ec = err; });
+        crypto_handler_dec->decryptFileWithPipeline(io_context, encrypted_filename, decrypted_filename, dec_key_paths, "", [&](std::error_code err){ ec = err; });
         io_context.run();
         
         if (ec) {
@@ -297,7 +297,7 @@ static void BM_DecryptionSync(benchmark::State& state) {
         }
 
         try {
-            crypto_handler_dec->decryptFileWithSync(encrypted_filename, decrypted_filename, dec_key_paths);
+            crypto_handler_dec->decryptFileWithSync(encrypted_filename, decrypted_filename, dec_key_paths, "");
         } catch (const std::exception& e) {
             state.SkipWithError(("Sync decryption failed: " + std::string(e.what())).c_str());
         }

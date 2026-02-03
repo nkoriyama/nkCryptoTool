@@ -112,21 +112,18 @@ std::string get_and_verify_passphrase(const std::string& prompt) {
 
 // OpenSSLが秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
-    (void)rwflag;
-    const char* key_description = static_cast<const char*>(userdata);
-    if (key_description && *key_description) {
-        std::cout << std::format("Enter passphrase for {}: ", key_description);
-    } else {
-        std::cout << "Enter passphrase for private key: ";
+    const char* passphrase = static_cast<const char*>(userdata);
+    if (passphrase != nullptr) {
+        int len = strlen(passphrase);
+        if (len >= size) {
+            // Buffer too small.
+            return 0;
+        }
+        // Copy the passphrase into the buffer.
+        strncpy(buf, passphrase, size);
+        buf[size - 1] = '\0';
+        return len;
     }
-    std::cout.flush();
-    std::string final_passphrase = get_masked_passphrase();
-    if (std::cin.eof()) { return 0; }
-    if (final_passphrase.length() >= (unsigned int)size) {
-        std::cerr << "\nError: Passphrase is too long." << std::endl;
-        return 0;
-    }
-    strncpy(buf, final_passphrase.c_str(), size);
-    buf[size - 1] = '\0';
-    return static_cast<int>(strlen(buf));
+    // No passphrase provided.
+    return 0;
 }
