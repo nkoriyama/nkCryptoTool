@@ -64,8 +64,8 @@ protected:
     };
     #pragma pack(pop)
 
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(const std::filesystem::path& public_key_path);
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(const std::filesystem::path& private_key_path, const std::string& passphrase);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(std::filesystem::path public_key_path);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, std::string passphrase);
 
     std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
                                           const std::string& salt, const std::string& info,
@@ -90,13 +90,13 @@ public:
     nkCryptoToolBase();
     virtual ~nkCryptoToolBase();
 
-    void setKeyBaseDirectory(const std::filesystem::path& dir);
+    void setKeyBaseDirectory(std::filesystem::path dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
-    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
-    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) = 0;
-    virtual asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, const std::string&) = 0;
-    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&) = 0;
+    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) = 0;
+    virtual asio::awaitable<void> signFile(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string, std::string) = 0;
+    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string) = 0;
     virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
     virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
     virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
@@ -105,8 +105,8 @@ public:
     // --- パイプライン処理インターフェース ---
     virtual void encryptFileWithPipeline(
         asio::io_context& io_context,
-        const std::string& input_filepath,
-        const std::string& output_filepath,
+        std::string input_filepath,
+        std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
@@ -114,25 +114,25 @@ public:
 
     virtual void decryptFileWithPipeline(
         asio::io_context& io_context,
-        const std::string& input_filepath,
-        const std::string& output_filepath,
+        std::string input_filepath,
+        std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        const std::string& passphrase,
+        std::string passphrase,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
     ) = 0;
 
     virtual void encryptFileWithSync(
-        const std::string& input_filepath,
-        const std::string& output_filepath,
+        std::string input_filepath,
+        std::string output_filepath,
         const std::map<std::string, std::string>& key_paths
     ) = 0;
 
     virtual void decryptFileWithSync(
-        const std::string& input_filepath,
-        const std::string& output_filepath,
+        std::string input_filepath,
+        std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        const std::string& passphrase
+        std::string passphrase
     ) = 0;
 
 
@@ -142,7 +142,7 @@ private:
 public:
     static void printOpenSSLErrors();
     // Corrected regeneratePublicKey declaration
-    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase);
+    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string passphrase);
 
     // Helper functions for ECDH key generation and shared secret derivation
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key();

@@ -107,7 +107,7 @@ std::filesystem::path nkCryptoToolECC::getEncryptionPublicKeyPath() const { retu
 std::filesystem::path nkCryptoToolECC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_ecc.key"; }
 
 // --- 鍵ペア生成 ---
-std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!pctx) return std::unexpected(CryptoError::KeyGenerationInitError);
 
@@ -147,12 +147,12 @@ std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(cons
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolECC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolECC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
     return generateEncryptionKeyPair(public_key_path, private_key_path, passphrase);
 }
 
 // --- ECC署名・検証 ---
-asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, const std::string& passphrase) {
+asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
@@ -231,7 +231,7 @@ asio::awaitable<void> nkCryptoToolECC::finishSigning(std::shared_ptr<SigningStat
 }
 
 
-asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolECC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
+asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolECC::verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo) {
     auto state = std::make_shared<VerificationState>(io_context);
 
     try {
@@ -306,8 +306,8 @@ asio::awaitable<void> nkCryptoToolECC::handleFileReadForVerification(std::shared
 
 void nkCryptoToolECC::encryptFileWithPipeline(
     asio::io_context& io_context,
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
@@ -408,10 +408,10 @@ void nkCryptoToolECC::encryptFileWithPipeline(
 
 void nkCryptoToolECC::decryptFileWithPipeline(
     asio::io_context& io_context,
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    const std::string& passphrase,
+    std::string passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -552,11 +552,19 @@ void nkCryptoToolECC::decryptFileWithPipeline(
 
 void nkCryptoToolECC::encryptFileWithSync(
 
-    const std::string& input_filepath,
 
-    const std::string& output_filepath,
+
+    std::string input_filepath,
+
+
+
+    std::string output_filepath,
+
+
 
     const std::map<std::string, std::string>& key_paths
+
+
 
 ) {
 
@@ -744,13 +752,13 @@ void nkCryptoToolECC::decryptFileWithSync(
 
 
 
-    const std::string& input_filepath,
+    std::string input_filepath,
 
 
 
 
 
-    const std::string& output_filepath,
+    std::string output_filepath,
 
 
 
@@ -762,7 +770,7 @@ void nkCryptoToolECC::decryptFileWithSync(
 
 
 
-    const std::string& passphrase
+    std::string passphrase
 
 
 
