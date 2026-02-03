@@ -57,7 +57,7 @@ public:
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) override;
 
-    asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&) override;
+    asio::awaitable<void> signFile(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&, const std::string&, const std::string&) override;
     asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, const std::filesystem::path&, const std::filesystem::path&, const std::filesystem::path&) override;
 
     std::filesystem::path getEncryptionPrivateKeyPath() const override;
@@ -80,6 +80,7 @@ public:
         const std::string& input_filepath,
         const std::string& output_filepath,
         const std::map<std::string, std::string>& key_paths,
+        const std::string& passphrase,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
     ) override;
@@ -93,7 +94,8 @@ public:
     void decryptFileWithSync(
         const std::string& input_filepath,
         const std::string& output_filepath,
-        const std::map<std::string, std::string>& key_paths
+        const std::map<std::string, std::string>& key_paths,
+        const std::string& passphrase
     ) override;
 };
 
