@@ -108,7 +108,7 @@ std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const { retu
 std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_pqc.key"; }
 
 // --- 鍵ペア生成 ---
-std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { return std::unexpected(CryptoError::KeyGenerationInitError); }
     EVP_PKEY* pkey = nullptr;
@@ -125,9 +125,12 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(cons
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(const std::filesystem::path& public_key_path, const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-DSA-87", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { return std::unexpected(CryptoError::KeyGenerationInitError); }
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) {
+// pctx が生成できなかった理由を標準エラーに出力します
+    ERR_print_errors_fp(stderr);
+      return std::unexpected(CryptoError::KeyGenerationInitError); }
     EVP_PKEY* pkey = nullptr;
     if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) { return std::unexpected(CryptoError::KeyGenerationError); }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> dsa_key(pkey);
@@ -145,7 +148,7 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(const s
 
 
 // --- PQC署名・検証 ---
-asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_private_key_path, const std::string& digest_algo, const std::string& passphrase) {
+asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
@@ -153,15 +156,16 @@ asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, co
         if (!private_key_res) {
             throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Failed to load PQC signing private key: " + toString(private_key_res.error()));
         }
-        auto private_key = std::move(*private_key_res);
+        state->private_key = std::move(*private_key_res);
         
         const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
         if (!md) {
             throw std::runtime_error("Invalid digest algorithm specified.");
         }
 
-        if (EVP_DigestSignInit(state->md_ctx.get(), nullptr, md, nullptr, private_key.get()) <= 0) {
-            throw std::runtime_error("OpenSSL Error: Failed to initialize digest signing.");
+        // Initialize md_ctx for hashing only
+        if (EVP_DigestInit_ex(state->md_ctx.get(), md, nullptr) <= 0) {
+            throw std::runtime_error("OpenSSL Error: Failed to initialize digest for hashing.");
         }
 
         std::error_code ec;
@@ -200,22 +204,43 @@ asio::awaitable<void> nkCryptoToolPQC::handleFileReadForSigning(std::shared_ptr<
     if (ec) {
         throw std::system_error(ec);
     }
-    EVP_DigestSignUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
+    EVP_DigestUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
     state->total_bytes_processed += bytes_transferred;
     co_await handleFileReadForSigning(state);
 }
 
 asio::awaitable<void> nkCryptoToolPQC::finishSigning(std::shared_ptr<SigningState> state) {
+    // Finalize the hash
+    unsigned int final_hash_len = EVP_MD_CTX_size(state->md_ctx.get());
+    state->final_hash.resize(final_hash_len);
+    if (EVP_DigestFinal_ex(state->md_ctx.get(), state->final_hash.data(), &final_hash_len) <= 0) {
+        throw std::runtime_error("OpenSSL Error: Failed to finalize digest for signing.");
+    }
+
+    // Now, perform the actual signing using EVP_DigestSign (one-shot)
+    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> sign_ctx(EVP_MD_CTX_new());
+    if (!sign_ctx) {
+        throw std::runtime_error("OpenSSL Error: Failed to create signing context.");
+    }
+
+    // Pass nullptr for the digest type for ML-DSA
+    if (EVP_DigestSignInit(sign_ctx.get(), nullptr, nullptr, nullptr, state->private_key.get()) <= 0) {
+        throw std::runtime_error("OpenSSL Error: Failed to initialize one-shot digest signing.");
+    }
+
     size_t sig_len = 0;
-    if (EVP_DigestSignFinal(state->md_ctx.get(), nullptr, &sig_len) <= 0) {
-        throw std::runtime_error("OpenSSL Error: Failed to get signature length.");
+    // Get signature length
+    if (EVP_DigestSign(sign_ctx.get(), nullptr, &sig_len, state->final_hash.data(), state->final_hash.size()) <= 0) {
+        throw std::runtime_error("OpenSSL Error: Failed to get one-shot signature length.");
     }
+
     std::vector<unsigned char> signature(sig_len);
-    if (EVP_DigestSignFinal(state->md_ctx.get(), signature.data(), &sig_len) <= 0) {
-        throw std::runtime_error("OpenSSL Error: Failed to finalize signature.");
+    // Generate signature
+    if (EVP_DigestSign(sign_ctx.get(), signature.data(), &sig_len, state->final_hash.data(), state->final_hash.size()) <= 0) {
+        throw std::runtime_error("OpenSSL Error: Failed to generate one-shot signature.");
     }
-    signature.resize(sig_len);
-    
+    signature.resize(sig_len); // Adjust size in case it was smaller than max
+
     asio::error_code ec;
     co_await asio::async_write(state->output_file.get(), asio::buffer(signature), asio::redirect_error(asio::use_awaitable, ec));
     if (ec) {
@@ -224,7 +249,7 @@ asio::awaitable<void> nkCryptoToolPQC::finishSigning(std::shared_ptr<SigningStat
 }
 
 
-asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolPQC::verifySignature(asio::io_context& io_context, const std::filesystem::path& input_filepath, const std::filesystem::path& signature_filepath, const std::filesystem::path& signing_public_key_path) {
+asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolPQC::verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo) {
     auto state = std::make_shared<VerificationState>(io_context);
 
     try {
@@ -232,9 +257,17 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolPQC::verifySignatu
         if (!public_key_res) {
             co_return std::unexpected(public_key_res.error());
         }
-        auto public_key = std::move(*public_key_res);
-        
-        if (EVP_DigestVerifyInit(state->md_ctx.get(), nullptr, nullptr, nullptr, public_key.get()) <= 0) {
+        state->public_key = std::move(*public_key_res);
+
+        // Initialize md_ctx for hashing only
+        // Get digest type from public key (e.g., for ML-DSA-87 it could be SHA3-512)
+        // For ML-DSA-87, assume SHA3-512 as the digest algorithm
+        const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
+        if (!md) {
+            md = EVP_sha3_512(); // フォールバック
+        }
+
+        if (EVP_DigestInit_ex(state->md_ctx.get(), md, nullptr) <= 0) {
             co_return std::unexpected(CryptoError::OpenSSLError);
         }
         
@@ -267,7 +300,27 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolPQC::verifySignatu
 
         co_await handleFileReadForVerification(state);
 
-        int result = EVP_DigestVerifyFinal(state->md_ctx.get(), state->signature.data(), state->signature.size());
+        // Finalize the hash
+        unsigned int final_hash_len = EVP_MD_CTX_size(state->md_ctx.get());
+        state->final_hash.resize(final_hash_len);
+        if (EVP_DigestFinal_ex(state->md_ctx.get(), state->final_hash.data(), &final_hash_len) <= 0) {
+            co_return std::unexpected(CryptoError::OpenSSLError);
+        }
+
+        // Now, perform the actual verification using EVP_DigestVerify (one-shot)
+        std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> verify_ctx(EVP_MD_CTX_new());
+        if (!verify_ctx) {
+            co_return std::unexpected(CryptoError::OpenSSLError);
+        }
+
+        // Pass nullptr for the digest type for ML-DSA
+        if (EVP_DigestVerifyInit(verify_ctx.get(), nullptr, nullptr, nullptr, state->public_key.get()) <= 0) {
+            co_return std::unexpected(CryptoError::OpenSSLError);
+        }
+
+        int result = EVP_DigestVerify(verify_ctx.get(),
+            state->signature.data(), state->signature.size(), 
+            state->final_hash.data(), state->final_hash.size());
         if (result == 1) {
             co_return std::expected<void, CryptoError>{};
         } else {
@@ -290,7 +343,7 @@ asio::awaitable<void> nkCryptoToolPQC::handleFileReadForVerification(std::shared
     if (ec) {
         throw std::system_error(ec);
     }
-    EVP_DigestVerifyUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
+    EVP_DigestUpdate(state->md_ctx.get(), state->input_buffer.data(), bytes_transferred);
     state->total_bytes_processed += bytes_transferred;
     co_await handleFileReadForVerification(state);
 }
@@ -298,8 +351,8 @@ asio::awaitable<void> nkCryptoToolPQC::handleFileReadForVerification(std::shared
 // --- パイプライン処理の実装 ---
 void nkCryptoToolPQC::encryptFileWithPipeline(
     asio::io_context& io_context,
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
@@ -414,10 +467,10 @@ void nkCryptoToolPQC::encryptFileWithPipeline(
 
 void nkCryptoToolPQC::decryptFileWithPipeline(
     asio::io_context& io_context,
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    const std::string& passphrase,
+    std::string passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -561,8 +614,8 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
 }
 
 void nkCryptoToolPQC::encryptFileWithSync(
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths
 ) {
     try {
@@ -662,10 +715,10 @@ void nkCryptoToolPQC::encryptFileWithSync(
 }
 
 void nkCryptoToolPQC::decryptFileWithSync(
-    const std::string& input_filepath,
-    const std::string& output_filepath,
+    std::string input_filepath,
+    std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    const std::string& passphrase
+    std::string passphrase
 ) {
     try {
         // 1. Read Header and Derive Key

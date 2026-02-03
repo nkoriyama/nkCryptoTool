@@ -59,7 +59,7 @@ struct CryptoConfig {
     // Options
     std::string passphrase;
     bool passphrase_was_provided = false;
-    std::string digest_algo = "SHA256";
+    std::string digest_algo = "SHA3-512";
     bool sync_mode = false;
     bool is_recursive = false;
 

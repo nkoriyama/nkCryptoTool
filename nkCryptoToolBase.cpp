@@ -58,7 +58,7 @@ nkCryptoToolBase::AsyncStateBase::~AsyncStateBase() {
     // 圧縮関連のクリーンアップを削除
 }
 
-void nkCryptoToolBase::setKeyBaseDirectory(const std::filesystem::path& dir) {
+void nkCryptoToolBase::setKeyBaseDirectory(std::filesystem::path dir) {
     key_base_directory = dir;
     try {
         if (!std::filesystem::exists(key_base_directory)) {
@@ -87,7 +87,7 @@ void nkCryptoToolBase::printOpenSSLErrors() {
     std::cerr << "OpenSSL Error: " << error_msg << std::endl;
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(const std::filesystem::path& private_key_path, const std::filesystem::path& public_key_path, const std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         printOpenSSLErrors();
@@ -114,7 +114,7 @@ std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(const std
     return {};
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPublicKey(const std::filesystem::path& public_key_path) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPublicKey(std::filesystem::path public_key_path) {
 //    std::cerr << "[DEBUG] Attempting to load public key from: " << public_key_path.string() << std::endl;
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "rb"));
     if (!pub_bio) {
@@ -131,7 +131,7 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(const std::filesystem::path& private_key_path, const std::string& passphrase) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path private_key_path, std::string passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         return std::unexpected(CryptoError::FileReadError);

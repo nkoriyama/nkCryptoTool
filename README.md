@@ -115,7 +115,7 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
 * PQCモード:  
   nkCryptoTool \--mode pqc \--sign \<input.txt\> \--signature \<file.sig\> \--signing-privkey \<private\_key.key\>
 
-**Note:** オプションで `--digest-algo <algorithm>` を追加することで、署名に使われるハッシュアルゴリズムを指定できます (例: `SHA256`, `SHA3-256`)。指定しない場合のデフォルトは `SHA256` です。
+**Note:** オプションで `--digest <algorithm>` を追加することで、署名に使われるハッシュアルゴリズムを指定できます (例: `SHA256`, `SHA3-256`)。指定しない場合のデフォルトは `SHA256` です。
 
 ### **署名検証**
 

@@ -41,7 +41,7 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
         }
 
         if (!config_.key_dir.empty()) {
-            crypto_handler->setKeyBaseDirectory(config_.key_dir);
+            crypto_handler->setKeyBaseDirectory(std::filesystem::path(config_.key_dir));
         }
 
         asio::io_context io_context;
@@ -60,10 +60,10 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
             case Operation::Encrypt: {
                 std::cout << std::format("Starting {} encryption...\n", to_string(config_.mode));
                 if (config_.sync_mode) {
-                    crypto_handler->encryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths);
+                    crypto_handler->encryptFileWithSync(config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths);
                     promise.set_value();
                 } else {
-                    crypto_handler->encryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
+                    crypto_handler->encryptFileWithPipeline(io_context, config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, completion_handler, progress_callback_);
                     io_context.run();
                 }
                 break;
@@ -71,10 +71,10 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
             case Operation::Decrypt: {
                 std::cout << std::format("Starting {} decryption...\n", to_string(config_.mode));
                 if (config_.sync_mode) {
-                    crypto_handler->decryptFileWithSync(config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase);
+                    crypto_handler->decryptFileWithSync(config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, config_.passphrase);
                     promise.set_value();
                 } else {
-                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
+                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
                     io_context.run();
                 }
                 break;
@@ -84,8 +84,8 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                  asio::co_spawn(io_context, crypto_handler->signFile(
                     io_context,
                     config_.input_files[0],
-                    config_.signature_file,
-                    config_.key_paths.at("signing-privkey"),
+                    std::filesystem::path(config_.signature_file),
+                    std::filesystem::path(config_.key_paths.at("signing-privkey")),
                     config_.digest_algo,
                     config_.passphrase
                 ), [&](std::exception_ptr p) {
@@ -104,8 +104,9 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                 asio::co_spawn(io_context, crypto_handler->verifySignature(
                     io_context,
                     config_.input_files[0],
-                    config_.signature_file,
-                    config_.key_paths.at("signing-pubkey")
+                    std::filesystem::path(config_.signature_file),
+                    std::filesystem::path(config_.key_paths.at("signing-pubkey")),
+                    config_.digest_algo
                 ), [&](std::exception_ptr p, std::expected<void, CryptoError> result) {
                     if (p) {
                         promise.set_exception(p);
@@ -163,7 +164,7 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
             case Operation::RegeneratePubKey:
                 {
                     std::string passphrase_to_use = config_.passphrase_was_provided ? config_.passphrase : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
-                    auto res = crypto_handler->regeneratePublicKey(config_.regenerate_privkey_path, config_.regenerate_pubkey_path, passphrase_to_use);
+                    auto res = crypto_handler->regeneratePublicKey(std::filesystem::path(config_.regenerate_privkey_path), std::filesystem::path(config_.regenerate_pubkey_path), passphrase_to_use);
                     if (res) {
                         std::cout << std::format("Public key successfully regenerated and saved to: {}\n", config_.regenerate_pubkey_path);
                         promise.set_value();
