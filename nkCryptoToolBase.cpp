@@ -87,7 +87,7 @@ void nkCryptoToolBase::printOpenSSLErrors() {
     std::cerr << "OpenSSL Error: " << error_msg << std::endl;
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string passphrase) {
+std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string& passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         printOpenSSLErrors();
@@ -95,6 +95,13 @@ std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::file
     }
 
     EVP_PKEY* pkey_raw = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)passphrase.c_str());
+    
+    // パスフレーズが不要になった時点で即座に消去
+    if (!passphrase.empty()) {
+        OPENSSL_cleanse(passphrase.data(), passphrase.size());
+        passphrase.clear();
+    }
+
     if (!pkey_raw) {
         printOpenSSLErrors();
         return std::unexpected(CryptoError::PrivateKeyLoadError);
@@ -131,7 +138,7 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path private_key_path, std::string passphrase) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path private_key_path, std::string& passphrase) {
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "rb"));
     if (!priv_bio) {
         return std::unexpected(CryptoError::FileReadError);
@@ -144,6 +151,10 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     } else {
         // Passphrase provided, use the callback.
         pkey = PEM_read_bio_PrivateKey(priv_bio.get(), nullptr, pem_passwd_cb, (void*)passphrase.c_str());
+        
+        // パスフレーズが不要になった時点で即座に消去
+        OPENSSL_cleanse(passphrase.data(), passphrase.size());
+        passphrase.clear();
     }
 
     if (!pkey) { 

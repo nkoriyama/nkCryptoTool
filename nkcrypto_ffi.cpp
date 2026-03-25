@@ -2,6 +2,7 @@
 #include "CryptoConfig.hpp"
 #include "CryptoProcessor.hpp"
 #include <nlohmann/json.hpp>
+#include <openssl/crypto.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -127,8 +128,20 @@ int run_crypto_op_json(const char* json_config_str) {
         }
         auto future = processor.run(); // このメソッドは新しいスレッドをデタッチして操作を実行する
         future.get(); // デタッチされたスレッドの完了を待機する
+
+        // パスフレーズの二重の安全策
+        if (!config.passphrase.empty()) {
+            OPENSSL_cleanse(config.passphrase.data(), config.passphrase.size());
+            config.passphrase.clear();
+        }
+
         return 0; // 成功
     } catch (const std::exception& e) {
+        // エラー時も消去を試みる
+        if (!config.passphrase.empty()) {
+            OPENSSL_cleanse(config.passphrase.data(), config.passphrase.size());
+            config.passphrase.clear();
+        }
         std::cerr << "CryptoProcessor execution error: " << e.what() << std::endl;
         return 4; // CryptoProcessor実行エラー
     }

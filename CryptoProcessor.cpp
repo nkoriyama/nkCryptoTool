@@ -139,6 +139,9 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                         if (config_.passphrase_was_provided) {
                             mlkem_passphrase = config_.passphrase;
                             ecdh_passphrase = config_.passphrase;
+                            // コピー元を消去
+                            OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
+                            config_.passphrase.clear();
                             std::cout << "Using provided passphrase for both ML-KEM and ECDH keys." << std::endl;
                         } else {
                             mlkem_passphrase = get_and_verify_passphrase("Enter passphrase for ML-KEM private key (press Enter to save unencrypted): ");
@@ -152,6 +155,10 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
                         handle_result(ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key", ecdh_passphrase), "Hybrid ECDH");
                     } else {
                         std::string passphrase_to_use = config_.passphrase_was_provided ? config_.passphrase : get_and_verify_passphrase("Enter passphrase to encrypt private key (press Enter to save unencrypted): ");
+                        if (config_.passphrase_was_provided) {
+                            OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
+                            config_.passphrase.clear();
+                        }
                         if (config_.operation == Operation::GenerateEncKey) {
                             handle_result(crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use), "Encryption");
                         } else {
@@ -164,6 +171,10 @@ void CryptoProcessor::run_internal(std::promise<void> promise) {
             case Operation::RegeneratePubKey:
                 {
                     std::string passphrase_to_use = config_.passphrase_was_provided ? config_.passphrase : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
+                    if (config_.passphrase_was_provided) {
+                        OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
+                        config_.passphrase.clear();
+                    }
                     auto res = crypto_handler->regeneratePublicKey(std::filesystem::path(config_.regenerate_privkey_path), std::filesystem::path(config_.regenerate_pubkey_path), passphrase_to_use);
                     if (res) {
                         std::cout << std::format("Public key successfully regenerated and saved to: {}\n", config_.regenerate_pubkey_path);

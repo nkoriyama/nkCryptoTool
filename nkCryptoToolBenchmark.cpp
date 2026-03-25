@@ -182,7 +182,8 @@ static void BM_Decryption(benchmark::State& state) {
         }
 
         std::error_code ec;
-        crypto_handler_dec->decryptFileWithPipeline(io_context, encrypted_filename, decrypted_filename, dec_key_paths, "", [&](std::error_code err){ ec = err; });
+        std::string empty_pass;
+        crypto_handler_dec->decryptFileWithPipeline(io_context, encrypted_filename, decrypted_filename, dec_key_paths, empty_pass, [&](std::error_code err){ ec = err; });
         io_context.run();
         
         if (ec) {
@@ -297,7 +298,8 @@ static void BM_DecryptionSync(benchmark::State& state) {
         }
 
         try {
-            crypto_handler_dec->decryptFileWithSync(encrypted_filename, decrypted_filename, dec_key_paths, "");
+            std::string empty_pass;
+            crypto_handler_dec->decryptFileWithSync(encrypted_filename, decrypted_filename, dec_key_paths, empty_pass);
         } catch (const std::exception& e) {
             state.SkipWithError(("Sync decryption failed: " + std::string(e.what())).c_str());
         }
@@ -359,7 +361,8 @@ void SetupKeys() {
 
     nkCryptoToolECC ecc_handler;
     ecc_handler.setKeyBaseDirectory(key_dir);
-    if (ecc_handler.generateEncryptionKeyPair(ecc_handler.getEncryptionPublicKeyPath(), ecc_handler.getEncryptionPrivateKeyPath(), "")) {
+    std::string empty_pass;
+    if (ecc_handler.generateEncryptionKeyPair(ecc_handler.getEncryptionPublicKeyPath(), ecc_handler.getEncryptionPrivateKeyPath(), empty_pass)) {
         std::cout << "ECC keys generated successfully." << std::endl << std::flush;
     } else {
         std::cerr << "Error: Failed to generate ECC keys." << std::endl << std::flush;
@@ -368,8 +371,9 @@ void SetupKeys() {
 
     nkCryptoToolPQC pqc_handler;
     pqc_handler.setKeyBaseDirectory(key_dir);
+    std::string empty_pass_pqc;
     try {
-        if (pqc_handler.generateEncryptionKeyPair(pqc_handler.getEncryptionPublicKeyPath(), pqc_handler.getEncryptionPrivateKeyPath(), "")) {
+        if (pqc_handler.generateEncryptionKeyPair(pqc_handler.getEncryptionPublicKeyPath(), pqc_handler.getEncryptionPrivateKeyPath(), empty_pass_pqc)) {
             std::cout << "PQC keys generated successfully." << std::endl << std::flush;
         } else {
             std::cerr << "Error: Failed to generate PQC keys." << std::endl << std::flush;
@@ -383,8 +387,9 @@ void SetupKeys() {
 
     // Hybridモード用のキーペアも生成 (PQCとECCの組み合わせ)
     // PQCはML-KEM、ECCはECDHとして扱う
+    std::string empty_pass_hybrid_mlkem;
     try {
-        if (pqc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_mlkem.key", key_dir / "private_enc_hybrid_mlkem.key", "")) {
+        if (pqc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_mlkem.key", key_dir / "private_enc_hybrid_mlkem.key", empty_pass_hybrid_mlkem)) {
             std::cout << "Hybrid ML-KEM keys generated successfully." << std::endl << std::flush;
         } else {
             std::cerr << "Error: Failed to generate Hybrid ML-KEM keys." << std::endl << std::flush;
@@ -395,7 +400,8 @@ void SetupKeys() {
         nkCryptoToolBase::printOpenSSLErrors();
         throw;
     }
-    if (ecc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_ecdh.key", key_dir / "private_enc_hybrid_ecdh.key", "")) {
+    std::string empty_pass_hybrid_ecdh;
+    if (ecc_handler.generateEncryptionKeyPair(key_dir / "public_enc_hybrid_ecdh.key", key_dir / "private_enc_hybrid_ecdh.key", empty_pass_hybrid_ecdh)) {
         std::cout << "Hybrid ECDH keys generated successfully." << std::endl << std::flush;
     } else {
         std::cerr << "Error: Failed to generate Hybrid ECDH keys." << std::endl << std::flush;
