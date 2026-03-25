@@ -107,7 +107,7 @@ std::filesystem::path nkCryptoToolECC::getEncryptionPublicKeyPath() const { retu
 std::filesystem::path nkCryptoToolECC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_ecc.key"; }
 
 // --- 鍵ペア生成 ---
-std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
+std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!pctx) return std::unexpected(CryptoError::KeyGenerationInitError);
 
@@ -136,6 +136,10 @@ std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(std:
         success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
     } else {
         success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0;
+        
+        // パスフレーズが不要になった時点で即座に消去
+        OPENSSL_cleanse(passphrase.data(), passphrase.size());
+        passphrase.clear();
     }
     if (!success) return std::unexpected(CryptoError::PrivateKeyWriteError);
     
@@ -147,12 +151,12 @@ std::expected<void, CryptoError> nkCryptoToolECC::generateEncryptionKeyPair(std:
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolECC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
+std::expected<void, CryptoError> nkCryptoToolECC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) {
     return generateEncryptionKeyPair(public_key_path, private_key_path, passphrase);
 }
 
 // --- ECC署名・検証 ---
-asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string passphrase) {
+asio::awaitable<void> nkCryptoToolECC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string& passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
@@ -411,7 +415,7 @@ void nkCryptoToolECC::decryptFileWithPipeline(
     std::string input_filepath,
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::string passphrase,
+    std::string& passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -770,7 +774,7 @@ void nkCryptoToolECC::decryptFileWithSync(
 
 
 
-    std::string passphrase
+    std::string& passphrase
 
 
 

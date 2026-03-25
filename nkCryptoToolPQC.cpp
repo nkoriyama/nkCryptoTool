@@ -108,7 +108,7 @@ std::filesystem::path nkCryptoToolPQC::getEncryptionPublicKeyPath() const { retu
 std::filesystem::path nkCryptoToolPQC::getSigningPublicKeyPath() const { return getKeyBaseDirectory() / "public_sign_pqc.key"; }
 
 // --- 鍵ペア生成 ---
-std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-KEM-1024", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) { return std::unexpected(CryptoError::KeyGenerationInitError); }
     EVP_PKEY* pkey = nullptr;
@@ -117,15 +117,23 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateEncryptionKeyPair(std:
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
     if (!priv_bio) { return std::unexpected(CryptoError::FileCreationError); }
     bool success = false;
-    if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
-    } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
+    if (passphrase.empty()) { 
+        std::cout << "Saving private key without encryption." << std::endl; 
+        success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
+    } else { 
+        success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), kem_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; 
+        
+        // パスフレーズが不要になった時点で即座に消去
+        OPENSSL_cleanse(passphrase.data(), passphrase.size());
+        passphrase.clear();
+    }
     if (!success) { return std::unexpected(CryptoError::PrivateKeyWriteError); }
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
     if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), kem_key.get()) <= 0) { return std::unexpected(CryptoError::PublicKeyWriteError); }
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) {
+std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "ML-DSA-87", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) {
 // pctx が生成できなかった理由を標準エラーに出力します
@@ -137,8 +145,16 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(std::fi
     std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(private_key_path.string().c_str(), "wb"));
     if (!priv_bio) { return std::unexpected(CryptoError::FileCreationError); }
     bool success = false;
-    if (passphrase.empty()) { std::cout << "Saving private key without encryption." << std::endl; success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
-    } else { success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; }
+    if (passphrase.empty()) { 
+        std::cout << "Saving private key without encryption." << std::endl; 
+        success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), nullptr, nullptr, 0, nullptr, nullptr) > 0;
+    } else { 
+        success = PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), dsa_key.get(), EVP_aes_256_cbc(), (const char*)passphrase.c_str(), passphrase.length(), nullptr, nullptr) > 0; 
+        
+        // パスフレーズが不要になった時点で即座に消去
+        OPENSSL_cleanse(passphrase.data(), passphrase.size());
+        passphrase.clear();
+    }
     if (!success) { return std::unexpected(CryptoError::PrivateKeyWriteError); }
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(public_key_path.string().c_str(), "wb"));
     if (!pub_bio || PEM_write_bio_PUBKEY(pub_bio.get(), dsa_key.get()) <= 0) { return std::unexpected(CryptoError::PublicKeyWriteError); }
@@ -148,7 +164,7 @@ std::expected<void, CryptoError> nkCryptoToolPQC::generateSigningKeyPair(std::fi
 
 
 // --- PQC署名・検証 ---
-asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string passphrase) {
+asio::awaitable<void> nkCryptoToolPQC::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string& passphrase) {
     auto state = std::make_shared<SigningState>(io_context);
 
     try {
@@ -470,7 +486,7 @@ void nkCryptoToolPQC::decryptFileWithPipeline(
     std::string input_filepath,
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::string passphrase,
+    std::string& passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -718,7 +734,7 @@ void nkCryptoToolPQC::decryptFileWithSync(
     std::string input_filepath,
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::string passphrase
+    std::string& passphrase
 ) {
     try {
         // 1. Read Header and Derive Key

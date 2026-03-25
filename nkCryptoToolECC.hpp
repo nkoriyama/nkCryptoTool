@@ -54,10 +54,10 @@ public:
     nkCryptoToolECC();
     virtual ~nkCryptoToolECC();
 
-    std::expected<void, CryptoError> generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) override;
-    std::expected<void, CryptoError> generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string passphrase) override;
+    std::expected<void, CryptoError> generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) override;
+    std::expected<void, CryptoError> generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) override;
 
-    asio::awaitable<void> signFile(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string, std::string) override;
+    asio::awaitable<void> signFile(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string, std::string&) override;
     asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string) override;
 
     std::filesystem::path getEncryptionPrivateKeyPath() const override;
@@ -80,7 +80,7 @@ public:
         std::string input_filepath,
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::string passphrase,
+        std::string& passphrase,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
     ) override;
@@ -95,7 +95,7 @@ public:
         std::string input_filepath,
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::string passphrase
+        std::string& passphrase
     ) override;
 };
 
