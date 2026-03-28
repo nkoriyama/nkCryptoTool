@@ -78,10 +78,11 @@ set(NKCRYPTO_SHARED_SOURCES
     PipelineManager.cpp
     CryptoProcessor.cpp
     nkCryptoToolBase.cpp
-    nkCryptoToolECC.cpp
-    nkCryptoToolPQC.cpp
+    ECCStrategy.cpp
+    PQCStrategy.cpp
+    HybridStrategy.cpp
     nkCryptoToolUtils.cpp
-    nkcrypto_ffi.cpp # 新しいFFIブリッジファイルを追加
+    nkcrypto_ffi.cpp
 )
 
 # 共有ライブラリ nkcrypto_shared を作成します。
@@ -163,6 +164,23 @@ enable_testing()
 # E2Eテスト用のダミー入力ファイルを作成
 set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
 file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
+
+# E2Eテスト用のヘルパーマクロ
+macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECURSIVE)
+    add_test(NAME ${TEST_NAME}
+        COMMAND ${CMAKE_COMMAND}
+            -DNK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
+            -DTEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
+            -DTEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/tests/${TEST_NAME}
+            -DSCENARIO_MODE=${MODE}
+            -DSCENARIO_PARALLEL=${PARALLEL}
+            -DSCENARIO_SIGNING=${SIGNING}
+            -DSCENARIO_REGENERATE_PUBKEY=${REGEN_PUB}
+            -DSCENARIO_REGENERATE_SIGN_PUBKEY=${REGEN_SIGN_PUB}
+            -DSCENARIO_RECURSIVE=${RECURSIVE}
+            -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
+    )
+endmacro()
 
 # Include the E2E test definitions
 include("${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake")

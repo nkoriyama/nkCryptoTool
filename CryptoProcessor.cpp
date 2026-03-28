@@ -1,7 +1,8 @@
 #include "CryptoProcessor.hpp"
 #include "nkCryptoToolBase.hpp"
-#include "nkCryptoToolECC.hpp"
-#include "nkCryptoToolPQC.hpp"
+#include "ECCStrategy.hpp"
+#include "PQCStrategy.hpp"
+#include "HybridStrategy.hpp"
 #include "nkCryptoToolUtils.hpp"
 
 #include <asio.hpp>
@@ -10,187 +11,144 @@
 #include <iostream>
 #include <format>
 
-CryptoProcessor::CryptoProcessor(CryptoConfig config)
-    : config_(std::move(config)) {}
+CryptoProcessor::CryptoProcessor(CryptoConfig config) : config_(std::move(config)), io_context_() {}
 
-CryptoProcessor::~CryptoProcessor() = default;
-
-void CryptoProcessor::set_progress_callback(ProgressCallback cb) {
-    progress_callback_ = cb;
+CryptoProcessor::~CryptoProcessor() {
+    io_context_.stop();
 }
 
 std::future<void> CryptoProcessor::run() {
-    std::promise<void> promise;
-    auto future = promise.get_future();
-
-    // Run the actual processing in a separate thread to not block the caller
-    std::thread([this, p = std::move(promise)]() mutable {
-        run_internal(std::move(p));
-    }).detach();
-
-    return future;
+    return std::async(std::launch::async, [this]() {
+        run_internal();
+        if (thread_exception_) {
+            std::rethrow_exception(thread_exception_);
+        }
+    });
 }
 
-void CryptoProcessor::run_internal(std::promise<void> promise) {
+void CryptoProcessor::set_progress_callback(ProgressCallback callback) {
+    progress_callback_ = callback;
+}
+
+void CryptoProcessor::run_internal() {
     try {
-        std::unique_ptr<nkCryptoToolBase> crypto_handler;
-        if (config_.mode == CryptoMode::ECC) {
-            crypto_handler = std::make_unique<nkCryptoToolECC>();
-        } else { // PQC or Hybrid
-            crypto_handler = std::make_unique<nkCryptoToolPQC>();
-        }
-
-        if (!config_.key_dir.empty()) {
-            crypto_handler->setKeyBaseDirectory(std::filesystem::path(config_.key_dir));
-        }
-
-        asio::io_context io_context;
-        auto work_guard = asio::make_work_guard(io_context.get_executor());
+        io_context_.restart();
+        auto work_guard = asio::make_work_guard(io_context_.get_executor());
+        auto work_ptr = std::make_shared<decltype(work_guard)>(std::move(work_guard));
         
-        auto completion_handler = [&](std::error_code ec) {
+        std::shared_ptr<ICryptoStrategy> strategy;
+        if (config_.mode == CryptoMode::ECC) strategy = std::make_shared<ECCStrategy>();
+        else if (config_.mode == CryptoMode::PQC) strategy = std::make_shared<PQCStrategy>();
+        else strategy = std::make_shared<HybridStrategy>();
+
+        current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
+
+        auto completion_handler = [this, work_ptr](std::error_code ec) mutable {
             if (ec) {
-                promise.set_exception(std::make_exception_ptr(std::system_error(ec, "Operation failed")));
-            } else {
-                promise.set_value();
+                thread_exception_ = std::make_exception_ptr(std::system_error(ec, "Operation failed"));
             }
-            work_guard.reset();
+            work_ptr->reset();
         };
 
         switch (config_.operation) {
-            case Operation::Encrypt: {
-                std::cout << std::format("Starting {} encryption...\n", to_string(config_.mode));
-                if (config_.sync_mode) {
-                    crypto_handler->encryptFileWithSync(config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths);
-                    promise.set_value();
-                } else {
-                    crypto_handler->encryptFileWithPipeline(io_context, config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, completion_handler, progress_callback_);
-                    io_context.run();
-                }
+            case Operation::Encrypt:
+                std::cout << std::format("Starting {} encryption...", to_string(config_.mode)) << std::endl;
+                current_handler_->encryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
                 break;
-            }
-            case Operation::Decrypt: {
-                std::cout << std::format("Starting {} decryption...\n", to_string(config_.mode));
-                if (config_.sync_mode) {
-                    crypto_handler->decryptFileWithSync(config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, config_.passphrase);
-                    promise.set_value();
-                } else {
-                    crypto_handler->decryptFileWithPipeline(io_context, config_.input_files[0], std::filesystem::path(config_.output_file), config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
-                    io_context.run();
-                }
+            case Operation::Decrypt:
+                std::cout << std::format("Starting {} decryption...", to_string(config_.mode)) << std::endl;
+                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
                 break;
-            }
-            case Operation::Sign: {
-                 std::cout << "Starting file signing...\n";
-                 asio::co_spawn(io_context, crypto_handler->signFile(
-                    io_context,
-                    config_.input_files[0],
-                    std::filesystem::path(config_.signature_file),
-                    std::filesystem::path(config_.key_paths.at("signing-privkey")),
-                    config_.digest_algo,
-                    config_.passphrase
-                ), [&](std::exception_ptr p) {
-                    if (p) {
-                        promise.set_exception(p);
-                    } else {
-                        promise.set_value();
-                    }
-                    work_guard.reset();
+            case Operation::Sign:
+                asio::co_spawn(io_context_, current_handler_->signFile(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-privkey"), config_.digest_algo, config_.passphrase, progress_callback_), 
+                [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
                 });
-                io_context.run();
                 break;
-            }
-             case Operation::Verify: {
-                std::cout << "Starting signature verification...\n";
-                asio::co_spawn(io_context, crypto_handler->verifySignature(
-                    io_context,
-                    config_.input_files[0],
-                    std::filesystem::path(config_.signature_file),
-                    std::filesystem::path(config_.key_paths.at("signing-pubkey")),
-                    config_.digest_algo
-                ), [&](std::exception_ptr p, std::expected<void, CryptoError> result) {
-                    if (p) {
-                        promise.set_exception(p);
-                    } else if (!result) {
-                        promise.set_exception(std::make_exception_ptr(std::runtime_error("Signature verification failed: " + toString(result.error()))));
-                    } else {
-                        std::cout << "Signature verified successfully." << std::endl;
-                        promise.set_value();
-                    }
-                    work_guard.reset();
+            case Operation::Verify:
+                asio::co_spawn(io_context_, current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-pubkey"), config_.digest_algo, progress_callback_),
+                [completion_handler](std::exception_ptr p, std::expected<void, CryptoError> result) mutable {
+                    if (p || !result) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
                 });
-                io_context.run();
                 break;
-            }
             case Operation::GenerateEncKey:
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    auto res = current_handler_->generateEncryptionKeyPair(config_.key_paths, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to generate encryption key pair");
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
+                });
+                break;
             case Operation::GenerateSignKey:
-                 // Key generation is synchronous and simple, so we can do it directly.
-                // Complex user interaction (passphrase) is handled here for now.
-                {
-                    auto handle_result = [&](const std::expected<void, CryptoError>& res, const std::string& key_type) {
-                        if (res) {
-                            std::cout << std::format("{} keys generated successfully in {}\n", key_type, crypto_handler->getKeyBaseDirectory().string());
-                        } else {
-                            throw std::runtime_error(std::format("Error: {} key generation failed. Reason: {}", key_type, toString(res.error())));
-                        }
-                    };
-
-                    if (config_.mode == CryptoMode::Hybrid && config_.operation == Operation::GenerateEncKey) {
-                        std::string mlkem_passphrase, ecdh_passphrase;
-                        if (config_.passphrase_was_provided) {
-                            mlkem_passphrase = config_.passphrase;
-                            ecdh_passphrase = config_.passphrase;
-                            // コピー元を消去
-                            OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
-                            config_.passphrase.clear();
-                            std::cout << "Using provided passphrase for both ML-KEM and ECDH keys." << std::endl;
-                        } else {
-                            mlkem_passphrase = get_and_verify_passphrase("Enter passphrase for ML-KEM private key (press Enter to save unencrypted): ");
-                            ecdh_passphrase = get_and_verify_passphrase("Enter passphrase for ECDH private key (press Enter to save unencrypted): ");
-                        }
-                        auto pqc_handler = static_cast<nkCryptoToolPQC*>(crypto_handler.get());
-                        handle_result(pqc_handler->generateEncryptionKeyPair(pqc_handler->getKeyBaseDirectory() / "public_enc_hybrid_mlkem.key", pqc_handler->getKeyBaseDirectory() / "private_enc_hybrid_mlkem.key", mlkem_passphrase), "Hybrid ML-KEM");
-                        
-                        nkCryptoToolECC ecc_handler;
-                        ecc_handler.setKeyBaseDirectory(crypto_handler->getKeyBaseDirectory());
-                        handle_result(ecc_handler.generateEncryptionKeyPair(ecc_handler.getKeyBaseDirectory() / "public_enc_hybrid_ecdh.key", ecc_handler.getKeyBaseDirectory() / "private_enc_hybrid_ecdh.key", ecdh_passphrase), "Hybrid ECDH");
-                    } else {
-                        std::string passphrase_to_use = config_.passphrase_was_provided ? config_.passphrase : get_and_verify_passphrase("Enter passphrase to encrypt private key (press Enter to save unencrypted): ");
-                        if (config_.passphrase_was_provided) {
-                            OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
-                            config_.passphrase.clear();
-                        }
-                        if (config_.operation == Operation::GenerateEncKey) {
-                            handle_result(crypto_handler->generateEncryptionKeyPair(crypto_handler->getEncryptionPublicKeyPath(), crypto_handler->getEncryptionPrivateKeyPath(), passphrase_to_use), "Encryption");
-                        } else {
-                            handle_result(crypto_handler->generateSigningKeyPair(crypto_handler->getSigningPublicKeyPath(), crypto_handler->getSigningPrivateKeyPath(), passphrase_to_use), "Signing");
-                        }
-                    }
-                    promise.set_value();
-                }
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    auto res = current_handler_->generateSigningKeyPair(config_.key_paths, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to generate signing key pair");
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
+                });
                 break;
             case Operation::RegeneratePubKey:
-                {
-                    std::string passphrase_to_use = config_.passphrase_was_provided ? config_.passphrase : get_and_verify_passphrase("Enter passphrase for private key (press Enter if unencrypted): ");
-                    if (config_.passphrase_was_provided) {
-                        OPENSSL_cleanse(config_.passphrase.data(), config_.passphrase.size());
-                        config_.passphrase.clear();
-                    }
-                    auto res = crypto_handler->regeneratePublicKey(std::filesystem::path(config_.regenerate_privkey_path), std::filesystem::path(config_.regenerate_pubkey_path), passphrase_to_use);
-                    if (res) {
-                        std::cout << std::format("Public key successfully regenerated and saved to: {}\n", config_.regenerate_pubkey_path);
-                        promise.set_value();
-                    } else {
-                        throw std::runtime_error("Failed to regenerate public key. Reason: " + toString(res.error()));
-                    }
-                }
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    auto res = current_handler_->regeneratePublicKey(config_.regenerate_privkey_path, config_.regenerate_pubkey_path, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to regenerate public key");
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
+                });
                 break;
-            case Operation::None:
-                // No operation specified, should be handled by CLI logic before calling processor.
-                promise.set_value();
+            case Operation::WrapKey:
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    std::filesystem::path raw_priv(config_.input_files[0]);
+                    std::filesystem::path wrapped_priv = raw_priv;
+                    wrapped_priv.replace_extension(".tpmkey");
+                    
+                    std::cout << "Wrapping " << raw_priv.filename() << " into " << wrapped_priv.filename() << "..." << std::endl;
+                    auto res = current_handler_->wrapPrivateKey(raw_priv, wrapped_priv, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to wrap private key with TPM");
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
+                });
+                break;
+            case Operation::UnwrapKey:
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    std::filesystem::path wrapped_priv(config_.input_files[0]);
+                    std::filesystem::path raw_priv = wrapped_priv;
+                    raw_priv.replace_extension(".rawkey");
+                    
+                    std::cout << "Unwrapping " << wrapped_priv.filename().string() << " into " << raw_priv.filename().string() << "..." << std::endl;
+                    auto res = current_handler_->unwrapPrivateKey(wrapped_priv, raw_priv, config_.passphrase);
+                    if (!res) {
+                        std::cerr << "Unwrap failed: " << toString(res.error()) << std::endl;
+                        throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to unwrap private key from TPM");
+                    }
+                    std::cout << "Successfully unwrapped: " << raw_priv.string() << std::endl;
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) {
+                        try { std::rethrow_exception(p); } catch(const std::exception& e) { std::cerr << "Exception: " << e.what() << std::endl; }
+                        completion_handler(std::make_error_code(std::errc::io_error));
+                    }
+                    else completion_handler({});
+                });
+                break;
+            default:
+                work_ptr->reset();
                 break;
         }
+        
+        io_context_.run();
+        current_handler_.reset();
 
-    } catch (const std::exception& e) {
-        promise.set_exception(std::current_exception());
+    } catch (...) {
+        thread_exception_ = std::current_exception();
     }
 }

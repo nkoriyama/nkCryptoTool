@@ -36,6 +36,7 @@
 * **Ninja**: (推奨ビルドシステム)  
 * **OpenSSL**: 3.0 以降  
   * **PQC機能を使用する場合**: OpenSSL 3.5 以降を推奨します。(標準PQCアルゴリズムをサポートしているため)
+  * **TPM機能を使用する場合**: `tpm2-openssl` プロバイダがインストールされ、OpenSSLから利用可能である必要があります。
 
 **ビルド手順:**
 
@@ -63,6 +64,34 @@
 `nkCryptoToolBenchmark`は、暗号化・復号、署名・検証のパフォーマンスを測定するための**独立した**ベンチマークプログラムです。
 
     build/bin/nkCryptoToolBenchmark
+
+## **TPM による秘密鍵の保護**
+
+本ツールは、TPM (Trusted Platform Module) を使用して秘密鍵を安全にラッピング（暗号化）して保存する機能を備えています。
+
+### **特徴**
+* **独自ラッピング方式**: ECCおよびPQCの秘密鍵を `-----BEGIN TPM WRAPPED PRIVATE KEY-----` という独自ヘッダーを持つ形式で保存します。
+* **ポータビリティの確保**: 秘密鍵をTPM内部で生成するのではなく、ソフトウェアで生成した鍵をTPMでシールドする方式を採用しています。これにより、原本（生鍵）を安全に保管しておけば、故障時や他環境への移行時に再ラッピングが可能です。
+* **自動認識**: 復号や署名時、`--tpm` フラグが指定されていれば、入力された鍵がTPM保護されているかを自動的に判別し、適切に処理します。
+
+### **TPM関連の操作**
+
+* **TPM保護された鍵ペアの生成**:  
+  鍵生成コマンドに `--tpm` を追加します。  
+  nkCryptoTool \--mode pqc \--tpm \--gen-enc-key \--key-dir ~/.keys
+* **既存の生鍵をTPMでラッピングする**:  
+  原本の生鍵を現在のマシンのTPMで保護します。  
+  nkCryptoTool \--mode ecc \--tpm \--wrap-existing \<raw\_private\_key.key\>  
+  (出力: `<鍵名>.tpmkey`)
+* **TPM保護鍵を解除（アンラップ）する**:  
+  TPM保護された鍵を標準的な秘密鍵に戻します（原本の取り出し）。  
+  nkCryptoTool \--mode ecc \--tpm \--unwrap-key \<tpm\_wrapped\_key.key\>  
+  (出力: `<鍵名>.rawkey`)
+
+### **注意点 (Linux)**
+Linux環境では、TPMデバイス（`/dev/tpmrm0` など）へのアクセス権限が必要です。通常、これらのデバイスは `tss` グループに属しているため、TPM機能を利用するには以下のいずれかが必要です。
+* `sudo` による実行（root権限）
+* 実行ユーザーを `tss` グループに追加 (`sudo usermod -aG tss $USER` を実行後、再ログイン)
 
 ## **使用法**
 
@@ -104,6 +133,8 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
   nkCryptoTool \--mode ecc \--decrypt \--user-privkey \<private\_key.key\> \-o \<decrypted.txt\> \<encrypted.bin\>  
 * PQCモード:  
   nkCryptoTool \--mode pqc \--decrypt \--user-privkey \<private\_key.key\> \-o \<decrypted.txt\> \<encrypted.bin\>  
+* TPM保護鍵を使用する場合:  
+  上記のコマンドに `--tpm` フラグを追加してください。自動的にラッピングが解除されます。
 * Hybridモード:  
   RFC 9180の設計思想に基づき、PQC (ML-KEM)とECC (ECDH)を組み合わせたハイブリッド暗号を復号します。  
   nkCryptoTool \--mode hybrid \--decrypt \--recipient-mlkem-privkey \<mlkem\_priv.key\> \--recipient-ecdh-privkey \<ecdh\_priv.key\> \-o \<decrypted.txt\> \<encrypted.bin\>
