@@ -76,6 +76,7 @@ std::string get_masked_passphrase() {
 #else
     if (!isatty(STDIN_FILENO)) {
         std::getline(std::cin, passphrase_input);
+        std::cout << std::endl;
         return passphrase_input;
     }
     termios oldt;

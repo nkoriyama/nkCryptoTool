@@ -15,6 +15,8 @@ enum class Operation {
     GenerateEncKey,
     GenerateSignKey,
     RegeneratePubKey,
+    WrapKey,
+    UnwrapKey,
     None
 };
 
@@ -59,7 +61,10 @@ struct CryptoConfig {
     // Options
     std::string passphrase;
     bool passphrase_was_provided = false;
+    bool use_tpm = false;
     std::string digest_algo = "SHA3-512";
+    std::string pqc_kem_algo = "ML-KEM-1024";
+    std::string pqc_dsa_algo = "ML-DSA-87";
     bool sync_mode = false;
     bool is_recursive = false;
 

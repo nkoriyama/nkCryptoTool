@@ -1,21 +1,7 @@
-// nkCryptoToolBase.hpp
 /*
- * Copyright (c) 2024-2025 Naohiro KORIYAMA <nkoriyama@gmail.com>
+ * Copyright (c) 2024-2026 Naohiro KORIYAMA <nkoriyama@gmail.com>
  *
  * This file is part of nkCryptoTool.
- *
- * nkCryptoTool is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * nkCryptoTool is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with nkCryptoTool. If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef NKCRYPTOTOOLBASE_HPP
@@ -23,7 +9,6 @@
 
 #include <string>
 #include <vector>
-#include <stdexcept>
 #include <filesystem>
 #include <functional>
 #include <system_error>
@@ -32,87 +17,34 @@
 #include <expected>
 #include "CryptoError.hpp"
 #include "async_file_types.hpp"
-#include "nkcrypto_ffi.hpp" // For ProgressCallback
+#include "nkcrypto_ffi.hpp" 
 #include <asio/awaitable.hpp>
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
 
+#include "ICryptoStrategy.hpp"
+
 namespace asio { class io_context; }
 
-struct EVP_PKEY_Deleter { void operator()(EVP_PKEY *p) const; };
-struct EVP_PKEY_CTX_Deleter { void operator()(EVP_PKEY_CTX *p) const; };
-struct EVP_CIPHER_CTX_Deleter { void operator()(EVP_CIPHER_CTX *p) const; };
-struct EVP_MD_CTX_Deleter { void operator()(EVP_MD_CTX *p) const; };
-struct BIO_Deleter { void operator()(BIO *b) const; };
-struct EVP_KDF_Deleter { void operator()(EVP_KDF *p) const; };
-struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const; };
-
-class nkCryptoToolBase {
+class nkCryptoToolBase : public std::enable_shared_from_this<nkCryptoToolBase> {
 public:
-protected:
-    static constexpr int CHUNK_SIZE = 4096;
-    static constexpr int GCM_IV_LEN = 12;
-    static constexpr int GCM_TAG_LEN = 16;
-    static constexpr char MAGIC[4] = {'N', 'K', 'C', '1'};
-
-    #pragma pack(push, 1)
-    struct FileHeader {
-        char magic[4];
-        uint8_t version;
-        uint16_t reserved;
-    };
-    #pragma pack(pop)
-
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(std::filesystem::path public_key_path);
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, std::string& passphrase);
-
-    std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len,
-                                          const std::string& salt, const std::string& info,
-                                          const std::string& digest_algo);
-    
-    struct AsyncStateBase {
-        async_file_t input_file;
-        async_file_t output_file;
-        std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx;
-        std::vector<unsigned char> input_buffer;
-        std::vector<unsigned char> output_buffer;
-        std::vector<unsigned char> tag;
-        size_t bytes_read;
-        uintmax_t total_bytes_processed;
-        std::function<void(std::error_code)> completion_handler;
-
-        AsyncStateBase(asio::io_context& io_context);
-        virtual ~AsyncStateBase();
-    };
-    
-public:
-    nkCryptoToolBase();
+    explicit nkCryptoToolBase(std::shared_ptr<ICryptoStrategy> strategy);
     virtual ~nkCryptoToolBase();
 
     void setKeyBaseDirectory(std::filesystem::path dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
-    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) = 0;
-    virtual std::expected<void, CryptoError> generateSigningKeyPair(std::filesystem::path public_key_path, std::filesystem::path private_key_path, std::string& passphrase) = 0;
-    virtual asio::awaitable<void> signFile(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string, std::string&) = 0;
-    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string) = 0;
-    virtual std::filesystem::path getEncryptionPrivateKeyPath() const = 0;
-    virtual std::filesystem::path getSigningPrivateKeyPath() const = 0;
-    virtual std::filesystem::path getEncryptionPublicKeyPath() const = 0;
-    virtual std::filesystem::path getSigningPublicKeyPath() const = 0;
-
-    // --- パイプライン処理インターフェース ---
-    virtual void encryptFileWithPipeline(
+    void encryptFileWithPipeline(
         asio::io_context& io_context,
         std::string input_filepath,
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
-    ) = 0;
+    );
 
-    virtual void decryptFileWithPipeline(
+    void decryptFileWithPipeline(
         asio::io_context& io_context,
         std::string input_filepath,
         std::string output_filepath,
@@ -120,32 +52,27 @@ public:
         std::string& passphrase,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
-    ) = 0;
+    );
 
-    virtual void encryptFileWithSync(
-        std::string input_filepath,
-        std::string output_filepath,
-        const std::map<std::string, std::string>& key_paths
-    ) = 0;
+    virtual asio::awaitable<void> signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string& passphrase, ProgressCallback progress_callback = nullptr);
+    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback = nullptr);
 
-    virtual void decryptFileWithSync(
-        std::string input_filepath,
-        std::string output_filepath,
-        const std::map<std::string, std::string>& key_paths,
-        std::string& passphrase
-    ) = 0;
+    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase);
+    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase);
 
-
-private:
-    std::filesystem::path key_base_directory;
-
-public:
-    static void printOpenSSLErrors();
-    // Corrected regeneratePublicKey declaration
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(std::filesystem::path public_key_path);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, std::string& passphrase);
     std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string& passphrase);
+    std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv_path, std::filesystem::path wrapped_priv_path, std::string& passphrase);
+    std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, std::string& passphrase);
+    static bool isPrivateKeyEncrypted(const std::filesystem::path& path);
+    static std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len, const std::string& salt, const std::string& info, const std::string& digest_algo);
+    static void printOpenSSLErrors();
 
-    // Helper functions for ECDH key generation and shared secret derivation
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> generate_ephemeral_ec_key();
-    std::vector<unsigned char> ecdh_generate_shared_secret(EVP_PKEY* private_key, EVP_PKEY* peer_public_key);
+protected:
+    std::shared_ptr<ICryptoStrategy> strategy_;
+    std::filesystem::path key_base_directory;
+    static constexpr int CHUNK_SIZE = 65536;
 };
+
 #endif // NKCRYPTOTOOLBASE_HPP
