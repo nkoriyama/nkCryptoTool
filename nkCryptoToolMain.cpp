@@ -134,7 +134,7 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
 
     if (config.operation == Operation::RegeneratePubKey && config.input_files.size() >= 2) {
         config.regenerate_privkey_path = resolve_key_path(config.input_files[0]);
-        config.regenerate_pubkey_path = std::filesystem::absolute(config.input_files[1]).string();
+        config.regenerate_pubkey_path = resolve_key_path(config.input_files[1]);
     }
     
     if (config.operation == Operation::GenerateEncKey) {
