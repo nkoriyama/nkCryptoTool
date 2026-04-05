@@ -160,125 +160,154 @@ nkCryptoToolプログラムは、ECCモード (--mode ecc)、PQCモード (--mod
 
 ## **処理フロー**
 
-### **暗号化鍵ペア生成シーケンス**
+### **鍵ペア生成シーケンスの比較**
+
+#### **1. ECC モデル (標準)**
+TPMを使用する場合でも、楕円曲線暗号（secp256k1など）を用いた標準的なフローです。
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant nkcryptotool as nkcryptotoolプログラム
-    participant FileSystem as ファイルシステム
-    participant OpenSSL as OpenSSLライブラリ
+    participant nkcryptotool as nkcryptotool
+    participant TPM as TPM (Hardware)
+    participant FS as File System
 
-    User->>nkcryptotool: 暗号化鍵ペア生成コマンド実行<br>(公開鍵ファイル名)
-    nkcryptotool->>User: パスフレーズ入力要求
-    User->>nkcryptotool: パスフレーズ入力
-    alt パスフレーズ入力あり
-        nkcryptotool->>User: パスフレーズ確認入力要求
-        User->>nkcryptotool: パスフレーズ確認入力
-        alt パスフレーズ一致
-            nkcryptotool->>FileSystem: 鍵ディレクトリ存在確認/作成
-            FileSystem-->>nkcryptotool: 確認/作成結果
-            nkcryptotool->>OpenSSL: ECC鍵生成コンテキスト作成要求
-            OpenSSL-->>nkcryptotool: ECC鍵生成コンテキスト
-            nkcryptotool->>OpenSSL: 鍵生成初期化要求
-            OpenSSL-->>nkcryptotool: 初期化結果
-            nkcryptotool->>OpenSSL: ECCカーブ設定要求<br>(secp256k1)
-            OpenSSL-->>nkcryptotool: 設定結果
-            nkcryptotool->>OpenSSL: ECC鍵ペア生成要求
-            OpenSSL-->>nkcryptotool: ECC鍵ペアオブジェクト
-            nkcryptotool->>FileSystem: 指定されたファイルに公開鍵書き込み
-            FileSystem-->>nkcryptotool: 書き込み完了
-            nkcryptotool->>FileSystem: デフォルトパスにパスフレーズ付き秘密鍵書き込み<br>(暗号化用)
-            FileSystem-->>nkcryptotool: 書き込み完了
-            nkcryptotool->>FileSystem: 秘密鍵ファイル権限設定
-            FileSystem-->>nkcryptotool: 設定結果
-            nkcryptotool-->>User: 鍵ペア生成完了通知<br>(公開鍵/秘密鍵のパス表示)
-        else パスフレーズ不一致
-            nkcryptotool-->>User: エラー通知 (パスフレーズ不一致)
-        end
-    else パスフレーズ入力なし
-        nkcryptotool->>FileSystem: 鍵ディレクトリ存在確認/作成
-        FileSystem-->>nkcryptotool: 確認/作成結果
-        nkcryptotool->>OpenSSL: ECC鍵生成コンテキスト作成要求
-        OpenSSL-->>nkcryptotool: ECC鍵生成コンテキスト
-        nkcryptotool->>OpenSSL: 鍵生成初期化要求
-        OpenSSL-->>nkcryptotool: 初期化結果
-        nkcryptotool->>OpenSSL: ECCカーブ設定要求<br>(secp256k1)
-        OpenSSL-->>nkcryptotool: 設定結果
-        nkcryptotool->>OpenSSL: ECC鍵ペア生成要求
-        OpenSSL-->>nkcryptotool: ECC鍵ペアオブジェクト
-        nkcryptotool->>FileSystem: 指定されたファイルに公開鍵書き込み
-        FileSystem-->>nkcryptotool: 書き込み完了
-        nkcryptotool->>FileSystem: デフォルトパスにパスフレーズなし秘密鍵書き込み<br>(暗号化用)
-        FileSystem-->>nkcryptotool: 書き込み完了
-        nkcryptotool->>FileSystem: 秘密鍵ファイル権限設定
-        FileSystem-->>nkcryptotool: 設定結果
-        nkcryptotool-->>User: 鍵ペア生成完了通知<br>(公開鍵/秘密鍵のパス表示)<br>+ 警告 (パスフレーズなし)
+    User->>nkcryptotool: ECC鍵生成コマンド (--mode ecc)
+    nkcryptotool->>nkcryptotool: ソフトウェアでEC秘密鍵を生成
+    alt TPM保護あり (--tpm)
+        nkcryptotool->>TPM: 秘密鍵をインポート & シールド要求
+        TPM-->>nkcryptotool: TPMラップ済みデータ (TSS2形式)
+        nkcryptotool->>FS: -----BEGIN TPM WRAPPED PRIVATE KEY----- として保存
+    else TPM保護なし
+        nkcryptotool->>FS: 標準 PKCS#8 形式で保存
     end
+    nkcryptotool-->>User: 完了通知
 ```
 
-### **暗号化シーケンス (Sender \-\> Recipient)**
+#### **2. PQC モデル (次世代・耐量子)**
+TPMが直接サポートしていない ML-KEM 等の秘密鍵を、独自のラッピングロジックで保護する先進的なフローです。
 
 ```mermaid
 sequenceDiagram
-    actor Sender
-    participant Sender_nkcryptotool as nkcryptotool (送信者側)
-    participant FileSystem as ファイルシステム
-    participant OpenSSL as OpenSSLライブラリ
+    actor User
+    participant nkcryptotool as nkcryptotool
+    participant TPM as TPM (Hardware)
+    participant FS as File System
 
-    Sender->>Sender_nkcryptotool: 暗号化コマンド実行<br>(入力ファイル, 受信者公開鍵ファイル, 出力ファイル)
-    Sender_nkcryptotool->>FileSystem: 受信者公開鍵読み込み
-    FileSystem-->>Sender_nkcryptotool: 受信者公開鍵データ
-    Sender_nkcryptotool->>FileSystem: 平文入力ファイル読み込み
-    FileSystem-->>Sender_nkcryptotool: 平文データ
-    Sender_nkcryptotool->>OpenSSL: 共通秘密確立要求<br>(ECC: ECDH, PQC: KEM, HYBRID: ECDH+KEM)
-    OpenSSL-->>Sender_nkcryptotool: カプセル化された共通鍵 (KEM Ciphertext, PQC/HYBRIDモード), 共通秘密
-    Sender_nkcryptotool->>OpenSSL: HKDF鍵導出要求<br>(共通秘密 -> AES鍵/IV)
-    OpenSSL-->>Sender_nkcryptotool: AES鍵, IV
-    Sender_nkcryptotool->>OpenSSL: AES-256-GCM暗号化要求<br>(AES鍵, IV, 平文データ)
-    OpenSSL-->>Sender_nkcryptotool: 暗号文, GCMタグ
-    Sender_nkcryptotool->>FileSystem: 出力ファイル書き込み<br>(カプセル化された共通鍵(PQCのみ), IV, 暗号文, GCMタグ)
-    FileSystem-->>Sender_nkcryptotool: 書き込み完了
-    Sender_nkcryptotool-->>Sender: 暗号化完了通知
-    Sender->>Recipient: 暗号化ファイル受け渡し (物理/ネットワーク)
+    User->>nkcryptotool: PQC鍵生成コマンド (--mode pqc)
+    nkcryptotool->>nkcryptotool: ソフトウェアで ML-KEM 秘密鍵を生成
+    alt TPM保護あり (--tpm)
+        nkcryptotool->>TPM: 秘密鍵(DER)をシールド要求
+        TPM-->>nkcryptotool: ハードウェア紐付け暗号化データ
+        nkcryptotool->>FS: -----BEGIN TPM WRAPPED PRIVATE KEY----- として保存
+    else TPM保護なし
+        nkcryptotool->>FS: 標準 PKCS#8 形式で保存
+    end
+    nkcryptotool-->>User: 完了通知 (約4.4KBの巨大な秘密鍵を安全に保護)
 ```
 
-### **復号シーケンス (Recipient \<- Sender)**
+#### **3. Hybrid モデル (最高機密・RFC 9180準拠)**
+PQC と ECC の両方を同時に生成・管理する、最も複雑で堅牢なフローです。
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant nkcryptotool as nkcryptotool
+    participant TPM as TPM (Hardware)
+    participant FS as File System
+
+    User->>nkcryptotool: Hybrid鍵生成コマンド (--mode hybrid)
+    par PQC鍵の生成
+        nkcryptotool->>nkcryptotool: ML-KEM 鍵ペア生成
+    and ECC鍵の生成
+        nkcryptotool->>nkcryptotool: ECDH 鍵ペア生成
+    end
+    alt TPM保護あり (--tpm)
+        nkcryptotool->>TPM: 両方の秘密鍵を個別にシールド
+        TPM-->>nkcryptotool: それぞれのラップ済みデータ
+        nkcryptotool->>FS: 2つの .tpmkey ファイルを出力
+    else TPM保護なし
+        nkcryptotool->>FS: 2つの標準 PKCS#8 ファイルを出力
+    end
+    nkcryptotool-->>User: 統合管理された鍵セットの生成完了
+```
+
+### **暗号化・復号シーケンスの技術モデル**
+
+#### **1. ECC モデル (楕円曲線ディフィー・ヘルマン鍵共有)**
+ECDH を用いて共通鍵を生成する、最も広く使われている標準的なフローです。
 
 ```mermaid
 sequenceDiagram
     actor Sender
     actor Recipient
-    participant Recipient_nkcryptotool as nkcryptotool (受信者側)
-    participant FileSystem as ファイルシステム
-    participant OpenSSL as OpenSSLライブラリ
+    participant FS as File System
+    participant OS as OpenSSL
 
-    Sender->>Recipient: 暗号化ファイル受け渡し (物理/ネットワーク)
-    Recipient->>Recipient_nkcryptotool: 復号コマンド実行<br>(入力ファイル, 出力ファイル, 自身の秘密鍵ファイル, 送信者公開鍵ファイル)
-    Recipient_nkcryptotool->>User: パスフレーズ入力要求
-    User->>Recipient_nkcryptotool: パスフレーズ入力
-    alt 秘密鍵読み込み成功
-        Recipient_nkcryptotool->>FileSystem: 自身の秘密鍵読み込み
-        FileSystem-->>Recipient_nkcryptotool: 自身の秘密鍵データ<br>(復号済み)
-        Recipient_nkcryptotool->>FileSystem: 暗号化ファイル読み込み<br>(カプセル化された共通鍵(PQC/HYBRID), IV, 暗号文, GCMタグ)
-        FileSystem-->>Recipient_nkcryptotool: 暗号化データ
-        Recipient_nkcryptotool->>OpenSSL: 共通秘密復元要求<br>(ECC: ECDH, PQC: KEM HYBRID: ECDH+KEM)
-        OpenSSL-->>Recipient_nkcryptotool: 共通秘密
-        Recipient_nkcryptotool->>OpenSSL: HKDF鍵導出要求<br>(共通秘密 -> AES鍵/IV)
-        OpenSSL-->>Recipient_nkcryptotool: AES鍵, IV
-        Recipient_nkcryptotool->>OpenSSL: AES-256-GCM復号/認証要求<br>(AES鍵, IV, 暗号文, 受信GCMタグ)
-        OpenSSL-->>Recipient_nkcryptotool: 復号結果 (平文), タグ検証結果
-        alt タグ検証成功
-            Recipient_nkcryptotool->>FileSystem: 平文出力ファイル書き込み
-            FileSystem-->>Recipient_nkcryptotool: 書き込み完了
-            Recipient_nkcryptotool-->>Recipient: 復号成功通知
-        else タグ検証失敗
-            Recipient_nkcryptotool-->>Recipient: 復号失敗通知 (改ざん検出)
-        end
-    else 秘密鍵読み込み失敗 (パスフレーズ間違いまたはファイル破損等)
-        FileSystem-->>Recipient_nkcryptotool: エラー通知
-        Recipient_nkcryptotool-->>Recipient: 復号失敗通知 (秘密鍵ロードエラー)
-    end
+    Note over Sender, Recipient: 暗号化 (Sender)
+    Sender->>FS: 受信者の公開鍵をロード
+    Sender->>OS: エフェメラル鍵ペアを生成 & 受信者公開鍵と ECDH 実行
+    OS-->>Sender: 共有秘密 (Shared Secret)
+    Sender->>OS: HKDF で 共有秘密から AES鍵/IV を導出
+    Sender->>FS: 暗号文 + エフェメラル公開鍵を出力
+
+    Note over Sender, Recipient: 復号 (Recipient)
+    Recipient->>FS: 自身の秘密鍵をロード (TPM/Passphrase保護)
+    Recipient->>FS: ファイルからエフェメラル公開鍵をロード
+    Recipient->>OS: 秘密鍵とエフェメラル公開鍵で ECDH 実行
+    OS-->>Recipient: 共有秘密 (Senderと同じもの)
+    Recipient->>OS: HKDF で AES鍵/IV を導出
+    Recipient->>OS: AES-256-GCM でデータを復号
+```
+
+#### **2. PQC モデル (鍵カプセル化メカニズム - KEM)**
+耐量子計算機暗号特有の **KEM (Key Encapsulation Mechanism)** 方式を採用した、次世代の暗号フローです。
+
+```mermaid
+sequenceDiagram
+    actor Sender
+    actor Recipient
+    participant FS as File System
+    participant OS as OpenSSL
+
+    Note over Sender, Recipient: 暗号化 (Sender)
+    Sender->>FS: 受信者の ML-KEM 公開鍵をロード
+    Sender->>OS: Encapsulate (カプセル化) 実行
+    OS-->>Sender: 共有秘密 & 暗号化された鍵 (Ciphertext)
+    Sender->>OS: HKDF で AES鍵/IV を導出
+    Sender->>FS: 暗号文 + KEM Ciphertext (約1.5KB) を出力
+
+    Note over Sender, Recipient: 復号 (Recipient)
+    Recipient->>FS: 自身の ML-KEM 秘密鍵をロード (TPMで保護)
+    Recipient->>FS: ファイルから KEM Ciphertext をロード
+    Recipient->>OS: Decapsulate (カプセル化解除) 実行
+    OS-->>Recipient: 共有秘密 (Senderと同じもの)
+    Recipient->>OS: HKDF で AES鍵/IV を導出
+    Recipient->>OS: AES-256-GCM でデータを復号
+```
+
+#### **3. Hybrid モデル (RFC 9180 準拠・二重防壁)**
+PQC (ML-KEM) と ECC (ECDH) を組み合わせ、**両方の暗号が同時に破られない限り安全**な、究極の機密性を実現するフローです。
+
+```mermaid
+sequenceDiagram
+    actor Sender
+    actor Recipient
+    participant OS as OpenSSL
+
+    Note over Sender, Recipient: 暗号化 (Sender)
+    Sender->>OS: ML-KEM カプセル化実行 => 共有秘密 A
+    Sender->>OS: ECDH 鍵共有実行 => 共有秘密 B
+    Sender->>OS: 2つの共有秘密 (A + B) を連結
+    Sender->>OS: HKDF (SHA3-256) で 1つの強力な AES鍵 を導出
+    Sender-->>Recipient: 暗号文 + [KEM CT + EC PubKey] を送信
+
+    Note over Sender, Recipient: 復号 (Recipient)
+    Recipient->>OS: ML-KEM カプセル化解除 => 共有秘密 A
+    Recipient->>OS: ECDH 鍵共有実行 => 共有秘密 B
+    Recipient->>OS: A + B から同じ AES鍵 を導出
+    Recipient->>OS: AES-256-GCM でデータを復号
+    Note right of OS: 片方のアルゴリズムに脆弱性が見つかっても<br/>機密性は維持されます
 ```
 
 ### **デジタル署名シーケンス (Signer \-\> Verifier)**
