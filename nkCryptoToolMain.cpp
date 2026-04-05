@@ -75,10 +75,16 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     auto resolve_key_path = [&](const std::string& key_path_arg) -> std::string {
         if (key_path_arg.empty()) return "";
         std::filesystem::path key_path(key_path_arg);
-        if (std::filesystem::exists(key_path)) return std::filesystem::absolute(key_path).string();
+        
+        // If it's a relative path and we have a key_dir, try to resolve it within key_dir first
         if (key_path.is_relative() && !key_dir.empty()) {
-            return std::filesystem::absolute(std::filesystem::path(key_dir) / key_path).string();
+            std::filesystem::path combined = std::filesystem::path(key_dir) / key_path;
+            // For reading (private key), we check if it exists. 
+            // For writing (public key during regeneration), we want it to go to key_dir regardless.
+            return std::filesystem::absolute(combined).string();
         }
+        
+        // Absolute path or no key_dir: use as is
         return std::filesystem::absolute(key_path).string();
     };
 
