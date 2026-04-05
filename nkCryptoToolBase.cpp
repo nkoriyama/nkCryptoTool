@@ -229,8 +229,15 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
 }
 
 std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, std::string& passphrase) {
-    std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(path.string().c_str(), "rb"));
-    if (!bio) return std::unexpected(CryptoError::FileReadError);
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::FileReadError);
+    std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    if (pem_content.find(TPMUtils::TPM_WRAPPED_HEADER) != std::string::npos || pem_content.find(TPMUtils::TPM_WRAPPED_ENC_HEADER) != std::string::npos) {
+        return TPMUtils::unwrapKey(pem_content, passphrase);
+    }
+
+    std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
     void* pwd = passphrase.empty() ? nullptr : (void*)passphrase.c_str();
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, pem_passwd_cb, pwd);
     if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
