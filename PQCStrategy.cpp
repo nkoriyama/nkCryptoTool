@@ -14,7 +14,10 @@
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
 PQCStrategy::PQCStrategy() : cipher_ctx_(EVP_CIPHER_CTX_new()), md_ctx_(EVP_MD_CTX_new()) {}
-PQCStrategy::~PQCStrategy() {}
+PQCStrategy::~PQCStrategy() {
+    if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
+    if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
+}
 
 size_t PQCStrategy::getHeaderSize() const { return 4 + encapsulated_key_.size() + 4 + salt_.size() + 4 + iv_.size(); }
 size_t PQCStrategy::getTagSize() const { return 16; }
@@ -127,6 +130,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<s
     size_t slen, elen; EVP_PKEY_encapsulate(kem_ctx.get(), nullptr, &elen, nullptr, &slen);
     std::vector<unsigned char> secret(slen); encapsulated_key_.resize(elen);
     EVP_PKEY_encapsulate(kem_ctx.get(), encapsulated_key_.data(), &elen, secret.data(), &slen);
+    shared_secret_ = secret;
     salt_.resize(16); iv_.resize(12); RAND_bytes(salt_.data(), 16); RAND_bytes(iv_.data(), 12);
     encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "pqc-encryption", "SHA3-256");
     if (!cipher_ctx_ || EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
@@ -159,6 +163,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<s
     if (EVP_PKEY_decapsulate(kem_ctx.get(), nullptr, &slen, encapsulated_key_.data(), encapsulated_key_.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     std::vector<unsigned char> secret(slen);
     if (EVP_PKEY_decapsulate(kem_ctx.get(), secret.data(), &slen, encapsulated_key_.data(), encapsulated_key_.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    shared_secret_ = secret;
     
     encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "pqc-encryption", "SHA3-256");
     if (!cipher_ctx_ || EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);

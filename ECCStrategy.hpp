@@ -47,6 +47,7 @@ public:
     void setSalt(const std::vector<unsigned char>& s) { salt_ = s; }
     std::vector<unsigned char> getIV() const { return iv_; }
     void setIV(const std::vector<unsigned char>& i) { iv_ = i; }
+    std::vector<unsigned char> getSharedSecret() const { return shared_secret_; }
 
 private:
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx_;
@@ -57,6 +58,7 @@ private:
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
     std::vector<unsigned char> salt_;
+    std::vector<unsigned char> shared_secret_;
     std::vector<unsigned char> ephemeral_pubkey_;
     std::vector<unsigned char> decrypt_buffer_;
 };
