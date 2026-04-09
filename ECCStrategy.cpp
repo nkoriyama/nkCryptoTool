@@ -14,7 +14,10 @@
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
 ECCStrategy::ECCStrategy() : cipher_ctx_(EVP_CIPHER_CTX_new()), md_ctx_(EVP_MD_CTX_new()) {}
-ECCStrategy::~ECCStrategy() {}
+ECCStrategy::~ECCStrategy() {
+    if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
+    if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
+}
 
 size_t ECCStrategy::getHeaderSize() const { return 4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size(); }
 size_t ECCStrategy::getTagSize() const { return 16; }
@@ -89,6 +92,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     EVP_PKEY_derive_init(ecdh_ctx.get()); EVP_PKEY_derive_set_peer(ecdh_ctx.get(), recipient_pub.get());
     size_t slen; EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen);
     std::vector<unsigned char> secret(slen); EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen);
+    shared_secret_ = secret;
     std::unique_ptr<BIO, BIO_Deleter> mem_bio(BIO_new(BIO_s_mem()));
     PEM_write_bio_PUBKEY(mem_bio.get(), ephemeral_key.get());
     BUF_MEM *bio_buf; BIO_get_mem_ptr(mem_bio.get(), &bio_buf);
@@ -151,6 +155,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     if (EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     std::vector<unsigned char> secret(slen); 
     if (EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    shared_secret_ = secret;
     
     encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "ecc-encryption", "SHA3-256");
     if (!cipher_ctx_ || EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
