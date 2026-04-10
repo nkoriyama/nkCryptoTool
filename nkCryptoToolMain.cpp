@@ -40,6 +40,7 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         ("decrypt", "Decrypt the input file")
         ("sign", "Sign the input file")
         ("verify", "Verify the signature of the input file")
+        ("info", "Show information about the encrypted file")
         ("recipient-pubkey", "Recipient's public key file", cxxopts::value<std::string>())
         ("user-privkey", "Your private key file", cxxopts::value<std::string>())
         ("recipient-mlkem-pubkey", "Recipient's ML-KEM public key file (Hybrid)", cxxopts::value<std::string>())
@@ -62,9 +63,6 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         exit(0);
     }
 
-    // First, determine the crypto mode
-    config.mode = get_mode_from_string(result["mode"].as<std::string>());
-
     std::string key_dir = result.count("key-dir") ? result["key-dir"].as<std::string>() : "./keys";
     config.key_dir = key_dir;
     if (!key_dir.empty()) {
@@ -75,24 +73,19 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     auto resolve_key_path = [&](const std::string& key_path_arg) -> std::string {
         if (key_path_arg.empty()) return "";
         std::filesystem::path key_path(key_path_arg);
-        
-        // If it's a relative path and we have a key_dir, try to resolve it within key_dir first
         if (key_path.is_relative() && !key_dir.empty()) {
             std::filesystem::path combined = std::filesystem::path(key_dir) / key_path;
-            // For reading (private key), we check if it exists. 
-            // For writing (public key during regeneration), we want it to go to key_dir regardless.
             return std::filesystem::absolute(combined).string();
         }
-        
-        // Absolute path or no key_dir: use as is
         return std::filesystem::absolute(key_path).string();
     };
 
-    // Determine operation
+    // 1. Determine operation
     if (result.count("encrypt")) config.operation = Operation::Encrypt;
     else if (result.count("decrypt")) config.operation = Operation::Decrypt;
     else if (result.count("sign")) config.operation = Operation::Sign;
     else if (result.count("verify")) config.operation = Operation::Verify;
+    else if (result.count("info")) config.operation = Operation::Info;
     else if (result.count("gen-enc-key")) config.operation = Operation::GenerateEncKey;
     else if (result.count("gen-sign-key")) config.operation = Operation::GenerateSignKey;
     else if (result.count("regenerate-pubkey")) config.operation = Operation::RegeneratePubKey;
@@ -103,8 +96,41 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     else if (result.count("unwrap-key")) {
         config.operation = Operation::UnwrapKey;
         config.input_files.push_back(resolve_key_path(result["unwrap-key"].as<std::string>()));
+    }
+    else config.operation = Operation::None;
+
+    // 2. Populate input and signature files (needed for mode detection)
+    if (result.count("input") && config.input_files.empty()) {
+        config.input_files = result["input"].as<std::vector<std::string>>();
+    }
+    if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
+
+    // 3. Determine crypto mode (auto-detect for info/decrypt/verify if mode not explicitly provided)
+    bool mode_provided = result.count("mode") > 0;
+    if (!mode_provided && (!config.input_files.empty() || !config.signature_file.empty())) {
+        std::filesystem::path detect_target;
+        if (config.operation == Operation::Verify && !config.signature_file.empty()) {
+            detect_target = config.signature_file;
+        } else if (!config.input_files.empty()) {
+            detect_target = config.input_files[0];
+        }
+
+        if (!detect_target.empty() && (config.operation == Operation::Info || config.operation == Operation::Decrypt || config.operation == Operation::Verify)) {
+            auto detected = nkCryptoToolBase::detectStrategyType(detect_target);
+            if (detected) {
+                switch (*detected) {
+                    case StrategyType::ECC: config.mode = CryptoMode::ECC; break;
+                    case StrategyType::PQC: config.mode = CryptoMode::PQC; break;
+                    case StrategyType::Hybrid: config.mode = CryptoMode::Hybrid; break;
+                }
+            } else {
+                config.mode = get_mode_from_string(result["mode"].as<std::string>());
+            }
+        } else {
+            config.mode = get_mode_from_string(result["mode"].as<std::string>());
+        }
     } else {
-        config.operation = Operation::None;
+        config.mode = get_mode_from_string(result["mode"].as<std::string>());
     }
 
     // Populate common config

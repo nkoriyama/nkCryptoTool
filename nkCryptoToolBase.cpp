@@ -174,14 +174,23 @@ asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, s
     auto sig = strategy->signHash();
     if (!sig) throw std::runtime_error("Failed to sign hash");
 
+    auto header = strategy->serializeSignatureHeader();
     std::ofstream out(signature_filepath, std::ios::binary);
     if (!out) throw std::runtime_error("Failed to open signature file for writing");
-    out.write(sig->data(), sig->size());
+    out.write(header.data(), (std::streamsize)header.size());
+    out.write(sig->data(), (std::streamsize)sig->size());
     co_return;
 }
 
 asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback) {
     auto strategy = strategy_;
+
+    std::ifstream sig_in(signature_filepath, std::ios::binary);
+    if (!sig_in) co_return std::unexpected(CryptoError::FileReadError);
+    std::vector<char> sig_data((std::istreambuf_iterator<char>(sig_in)), std::istreambuf_iterator<char>());
+    auto header_pos_res = strategy->deserializeSignatureHeader(sig_data);
+    if (!header_pos_res) co_return std::unexpected(header_pos_res.error());
+
     auto res = strategy->prepareVerification(signing_public_key_path, digest_algo);
     if (!res) co_return std::unexpected(res.error());
 
@@ -209,14 +218,17 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignat
         }
     }
 
-    std::ifstream sig_in(signature_filepath, std::ios::binary);
-    if (!sig_in) co_return std::unexpected(CryptoError::FileReadError);
-    std::vector<char> sig((std::istreambuf_iterator<char>(sig_in)), std::istreambuf_iterator<char>());
-
-    auto result = strategy->verifyHash(sig);
-    if (!result) co_return std::unexpected(result.error());
-    if (*result) co_return std::expected<void, CryptoError>{};
-    else co_return std::unexpected(CryptoError::SignatureVerificationError);
+    std::vector<char> raw_sig(sig_data.begin() + *header_pos_res, sig_data.end());
+    auto result = strategy->verifyHash(raw_sig);
+    if (!result) {
+        co_return std::unexpected(result.error());
+    }
+    if (*result) {
+        std::cout << "\nSignature verified successfully." << std::endl;
+        co_return std::expected<void, CryptoError>{};
+    } else {
+        co_return std::unexpected(CryptoError::SignatureVerificationError);
+    }
 }
 
 // --- ユーティリティ ---
@@ -306,6 +318,24 @@ bool nkCryptoToolBase::isPrivateKeyEncrypted(const std::filesystem::path& path) 
     return password_required;
 }
 
+std::expected<StrategyType, CryptoError> nkCryptoToolBase::detectStrategyType(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) return std::unexpected(CryptoError::FileReadError);
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::FileReadError);
+    
+    char buf[7];
+    ifs.read(buf, 7);
+    if (ifs.gcount() < 7) return std::unexpected(CryptoError::FileReadError);
+    
+    std::string magic(buf, 4);
+    if (magic != "NKCT" && magic != "NKCS") return std::unexpected(CryptoError::FileReadError);
+    uint16_t version; memcpy(&version, buf + 4, 2);
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    
+    uint8_t type = (uint8_t)buf[6];
+    return static_cast<StrategyType>(type);
+}
+
 std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len, const std::string& salt, const std::string& info, const std::string& digest_algo) {
     std::unique_ptr<EVP_KDF, EVP_KDF_Deleter> kdf(EVP_KDF_fetch(nullptr, "HKDF", nullptr));
     std::unique_ptr<EVP_KDF_CTX, EVP_KDF_CTX_Deleter> kctx(EVP_KDF_CTX_new(kdf.get()));
@@ -321,3 +351,33 @@ std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsign
 }
 
 void nkCryptoToolBase::printOpenSSLErrors() { ERR_print_errors_fp(stderr); }
+
+asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> 
+nkCryptoToolBase::inspectFile(asio::io_context&, std::filesystem::path input_filepath, ProgressCallback) {
+    if (!std::filesystem::exists(input_filepath)) co_return std::unexpected(CryptoError::FileReadError);
+    
+    std::ifstream in(input_filepath, std::ios::binary);
+    if (!in) co_return std::unexpected(CryptoError::FileReadError);
+    
+    std::vector<char> header_peek(16384);
+    in.read(header_peek.data(), (std::streamsize)header_peek.size());
+    std::streamsize read_bytes = in.gcount();
+    if (read_bytes < 7) co_return std::unexpected(CryptoError::FileReadError);
+    
+    header_peek.resize(static_cast<size_t>(read_bytes));
+    
+    std::string magic(header_peek.data(), 4);
+    if (magic == "NKCT") {
+        auto res = strategy_->deserializeHeader(header_peek);
+        if (!res) co_return std::unexpected(res.error());
+    } else if (magic == "NKCS") {
+        auto res = strategy_->deserializeSignatureHeader(header_peek);
+        if (!res) co_return std::unexpected(res.error());
+    } else {
+        co_return std::unexpected(CryptoError::FileReadError);
+    }
+    
+    auto metadata = strategy_->getMetadata();
+    metadata["File-Format"] = (magic == "NKCT" ? "NKCT (Encrypted Data)" : "NKCS (Digital Signature)");
+    co_return metadata;
+}

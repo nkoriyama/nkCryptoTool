@@ -19,24 +19,78 @@ ECCStrategy::~ECCStrategy() {
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
 }
 
-size_t ECCStrategy::getHeaderSize() const { return 4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size(); }
+std::map<std::string, std::string> ECCStrategy::getMetadata() const {
+    return {
+        {"Strategy", "ECC"},
+        {"Curve-Name", curve_name_},
+        {"Digest-Algorithm", digest_algo_}
+    };
+}
+
+size_t ECCStrategy::getHeaderSize() const {
+    return 4 + 2 + 1 + 
+           4 + curve_name_.size() + 
+           4 + digest_algo_.size() + 
+           4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size();
+}
+
 size_t ECCStrategy::getTagSize() const { return 16; }
 
 std::vector<char> ECCStrategy::serializeHeader() const {
     std::vector<char> header;
+    // Magic "NKCT"
+    header.insert(header.end(), {'N', 'K', 'C', 'T'});
+    // Version 1
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    // Strategy ECC = 1
+    uint8_t type = (uint8_t)getStrategyType();
+    header.push_back((char)type);
+
+    auto add_string = [&](const std::string& s) {
+        uint32_t len = (uint32_t)s.size();
+        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        header.insert(header.end(), s.begin(), s.end());
+    };
     auto add_vec = [&](const std::vector<unsigned char>& vec) {
         uint32_t len = (uint32_t)vec.size();
         header.insert(header.end(), (char*)&len, (char*)&len + 4);
         header.insert(header.end(), vec.begin(), vec.end());
     };
-    add_vec(ephemeral_pubkey_); add_vec(salt_); add_vec(iv_);
+    add_string(curve_name_);
+    add_string(digest_algo_);
+    add_vec(ephemeral_pubkey_);
+    add_vec(salt_);
+    add_vec(iv_);
     return header;
 }
 
 std::expected<void, CryptoError> ECCStrategy::deserializeHeader(const std::vector<char>& data) {
     size_t pos = 0;
-    auto read_vec = [&](std::vector<unsigned char>& vec) -> bool { if (pos + 4 > data.size()) return false; uint32_t len; memcpy(&len, &data[pos], 4); pos += 4; if (pos + len > data.size()) return false; vec.assign(data.begin() + pos, data.begin() + pos + len); pos += len; return true; };
-    if (!read_vec(ephemeral_pubkey_) || !read_vec(salt_) || !read_vec(iv_)) return std::unexpected(CryptoError::FileReadError);
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+
+    auto read_string = [&](std::string& s) -> bool {
+        if (pos + 4 > data.size()) return false;
+        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
+        return true;
+    };
+    auto read_vec = [&](std::vector<unsigned char>& vec) -> bool { 
+        if (pos + 4 > data.size()) return false; 
+        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4; 
+        if (pos + len > data.size()) return false; 
+        vec.assign(data.begin() + pos, data.begin() + pos + len); pos += len; 
+        return true;
+    };
+    if (!read_string(curve_name_) || !read_string(digest_algo_) || 
+        !read_vec(ephemeral_pubkey_) || !read_vec(salt_) || !read_vec(iv_)) return std::unexpected(CryptoError::FileReadError);
     return {};
 }
 
@@ -76,6 +130,8 @@ std::expected<void, CryptoError> ECCStrategy::generateSigningKeyPair(const std::
 
 
 std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
+    if (key_paths.count("digest-algo")) digest_algo_ = key_paths.at("digest-algo");
+    if (!key_paths.count("recipient-pubkey")) return std::unexpected(CryptoError::PublicKeyLoadError);
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(key_paths.at("recipient-pubkey").c_str(), "rb"));
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
@@ -181,6 +237,7 @@ std::expected<void, CryptoError> ECCStrategy::finalizeDecryption(const std::vect
 }
 
 std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesystem::path& priv_key_path, std::string& passphrase, const std::string& digest_algo) {
+    digest_algo_ = digest_algo;
     std::ifstream ifs(priv_key_path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -206,6 +263,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesyst
 }
 
 std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::filesystem::path& pub_key_path, const std::string& digest_algo) {
+    digest_algo_ = digest_algo;
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pub_key_path.string().c_str(), "rb"));
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
     verify_key_.reset(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
@@ -235,4 +293,45 @@ std::expected<bool, CryptoError> ECCStrategy::verifyHash(const std::vector<char>
     if (res == 1) return true;
     if (res == 0) return false;
     return std::unexpected(CryptoError::OpenSSLError);
+}
+
+std::vector<char> ECCStrategy::serializeSignatureHeader() const {
+    std::vector<char> header;
+    // Magic "NKCS"
+    header.insert(header.end(), {'N', 'K', 'C', 'S'});
+    // Version 1
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    // Strategy ECC = 1
+    header.push_back((char)getStrategyType());
+
+    auto add_string = [&](const std::string& s) {
+        uint32_t len = (uint32_t)s.size();
+        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        header.insert(header.end(), s.begin(), s.end());
+    };
+    add_string(curve_name_);
+    add_string(digest_algo_);
+    return header;
+}
+
+std::expected<size_t, CryptoError> ECCStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
+    size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+
+    auto read_string = [&](std::string& s) -> bool {
+        if (pos + 4 > data.size()) return false;
+        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
+        return true;
+    };
+    if (!read_string(curve_name_) || !read_string(digest_algo_)) return std::unexpected(CryptoError::FileReadError);
+    return pos;
 }

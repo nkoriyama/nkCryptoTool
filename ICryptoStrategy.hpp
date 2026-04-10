@@ -28,10 +28,20 @@ struct BIO_Deleter { void operator()(BIO *b) const { if(b) BIO_free_all(b); } };
 struct EVP_KDF_Deleter { void operator()(EVP_KDF *p) const { if(p) EVP_KDF_free(p); } };
 struct EVP_KDF_CTX_Deleter { void operator()(EVP_KDF_CTX *p) const { if(p) EVP_KDF_CTX_free(p); } };
 
+// ストラテジーのタイプ識別子
+enum class StrategyType : uint8_t {
+    ECC = 1,
+    PQC = 2,
+    Hybrid = 3
+};
+
 // 暗号化・署名のアルゴリズム固有ロジックを分離するインターフェース
 class ICryptoStrategy {
 public:
     virtual ~ICryptoStrategy() = default;
+
+    // --- ストラテジーの種類 ---
+    virtual StrategyType getStrategyType() const = 0;
 
     // --- 鍵生成 ---
     virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) = 0;
@@ -52,7 +62,12 @@ public:
     virtual std::expected<std::vector<char>, CryptoError> signHash() = 0;
     virtual std::expected<bool, CryptoError> verifyHash(const std::vector<char>& signature) = 0;
     
+    // 署名ヘッダー情報
+    virtual std::vector<char> serializeSignatureHeader() const = 0;
+    virtual std::expected<size_t, CryptoError> deserializeSignatureHeader(const std::vector<char>& data) = 0;
+    
     // ヘッダー情報
+    virtual std::map<std::string, std::string> getMetadata() const = 0;
     virtual size_t getHeaderSize() const = 0;
     virtual std::vector<char> serializeHeader() const = 0;
     virtual std::expected<void, CryptoError> deserializeHeader(const std::vector<char>& data) = 0;

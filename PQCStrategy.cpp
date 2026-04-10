@@ -19,22 +19,70 @@ PQCStrategy::~PQCStrategy() {
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
 }
 
-size_t PQCStrategy::getHeaderSize() const { return 4 + encapsulated_key_.size() + 4 + salt_.size() + 4 + iv_.size(); }
+std::map<std::string, std::string> PQCStrategy::getMetadata() const {
+    return {
+        {"Strategy", "PQC"},
+        {"KEM-Algorithm", kem_algo_},
+        {"DSA-Algorithm", dsa_algo_},
+        {"Digest-Algorithm", digest_algo_}
+    };
+}
+
+size_t PQCStrategy::getHeaderSize() const {
+    return 4 + 2 + 1 + 
+           4 + kem_algo_.size() + 
+           4 + digest_algo_.size() + 
+           4 + encapsulated_key_.size() + 4 + salt_.size() + 4 + iv_.size();
+}
+
 size_t PQCStrategy::getTagSize() const { return 16; }
 
 std::vector<char> PQCStrategy::serializeHeader() const {
     std::vector<char> header;
+    // Magic "NKCT"
+    header.insert(header.end(), {'N', 'K', 'C', 'T'});
+    // Version 1
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    // Strategy PQC = 2
+    uint8_t type = (uint8_t)getStrategyType();
+    header.push_back((char)type);
+
+    auto add_string = [&](const std::string& s) {
+        uint32_t len = (uint32_t)s.size();
+        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        header.insert(header.end(), s.begin(), s.end());
+    };
     auto add_vec = [&](const std::vector<unsigned char>& vec) {
         uint32_t len = (uint32_t)vec.size();
         header.insert(header.end(), (char*)&len, (char*)&len + 4);
         header.insert(header.end(), vec.begin(), vec.end());
     };
-    add_vec(encapsulated_key_); add_vec(salt_); add_vec(iv_);
+    add_string(kem_algo_);
+    add_string(digest_algo_);
+    add_vec(encapsulated_key_);
+    add_vec(salt_);
+    add_vec(iv_);
     return header;
 }
 
 std::expected<void, CryptoError> PQCStrategy::deserializeHeader(const std::vector<char>& data) {
     size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+
+    auto read_string = [&](std::string& s) -> bool {
+        if (pos + 4 > data.size()) return false;
+        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
+        return true;
+    };
     auto read_vec = [&](std::vector<unsigned char>& vec) -> bool { 
         if (pos + 4 > data.size()) return false; 
         uint32_t len; memcpy(&len, &data[pos], 4); pos += 4; 
@@ -42,7 +90,8 @@ std::expected<void, CryptoError> PQCStrategy::deserializeHeader(const std::vecto
         vec.assign(data.begin() + pos, data.begin() + pos + len); pos += len; 
         return true;
     };
-    if (!read_vec(encapsulated_key_) || !read_vec(salt_) || !read_vec(iv_)) return std::unexpected(CryptoError::FileReadError);
+    if (!read_string(kem_algo_) || !read_string(digest_algo_) || 
+        !read_vec(encapsulated_key_) || !read_vec(salt_) || !read_vec(iv_)) return std::unexpected(CryptoError::FileReadError);
     return {};
 }
 
@@ -119,6 +168,10 @@ std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::
 }
 
 std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
+    kem_algo_ = "ML-KEM-1024";
+    if (key_paths.count("pqc-kem-algo")) kem_algo_ = key_paths.at("pqc-kem-algo");
+    if (key_paths.count("digest-algo")) digest_algo_ = key_paths.at("digest-algo");
+
     if (!key_paths.count("recipient-pubkey")) return std::unexpected(CryptoError::PublicKeyLoadError);
     std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(key_paths.at("recipient-pubkey").c_str(), "rb"));
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
@@ -209,6 +262,7 @@ std::expected<void, CryptoError> PQCStrategy::finalizeDecryption(const std::vect
 }
 
 std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesystem::path& priv_key_path, std::string& passphrase, const std::string& digest_algo) {
+    digest_algo_ = digest_algo;
     std::ifstream ifs(priv_key_path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -263,4 +317,45 @@ std::expected<bool, CryptoError> PQCStrategy::verifyHash(const std::vector<char>
     if (res == 1) return true;
     if (res == 0) return false;
     return std::unexpected(CryptoError::OpenSSLError);
+}
+
+std::vector<char> PQCStrategy::serializeSignatureHeader() const {
+    std::vector<char> header;
+    // Magic "NKCS"
+    header.insert(header.end(), {'N', 'K', 'C', 'S'});
+    // Version 1
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    // Strategy PQC = 2
+    header.push_back((char)getStrategyType());
+
+    auto add_string = [&](const std::string& s) {
+        uint32_t len = (uint32_t)s.size();
+        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        header.insert(header.end(), s.begin(), s.end());
+    };
+    add_string(dsa_algo_);
+    add_string(digest_algo_);
+    return header;
+}
+
+std::expected<size_t, CryptoError> PQCStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
+    size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+
+    auto read_string = [&](std::string& s) -> bool {
+        if (pos + 4 > data.size()) return false;
+        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
+        return true;
+    };
+    if (!read_string(dsa_algo_) || !read_string(digest_algo_)) return std::unexpected(CryptoError::FileReadError);
+    return pos;
 }

@@ -15,6 +15,9 @@ public:
     ECCStrategy();
     ~ECCStrategy() override;
 
+    // ストラテジーの種類
+    StrategyType getStrategyType() const override { return StrategyType::ECC; }
+
     // 鍵生成
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) override;
@@ -34,7 +37,12 @@ public:
     std::expected<std::vector<char>, CryptoError> signHash() override;
     std::expected<bool, CryptoError> verifyHash(const std::vector<char>& signature) override;
 
+    // 署名ヘッダー情報
+    std::vector<char> serializeSignatureHeader() const override;
+    std::expected<size_t, CryptoError> deserializeSignatureHeader(const std::vector<char>& data) override;
+
     // ヘッダー情報
+    std::map<std::string, std::string> getMetadata() const override;
     size_t getHeaderSize() const override;
     std::vector<char> serializeHeader() const override;
     std::expected<void, CryptoError> deserializeHeader(const std::vector<char>& data) override;
@@ -55,6 +63,8 @@ private:
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sign_key_;
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> verify_key_;
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> encryption_priv_key_;
+    std::string curve_name_ = "prime256v1";
+    std::string digest_algo_ = "SHA3-512";
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
     std::vector<unsigned char> salt_;
