@@ -67,7 +67,7 @@ public:
     virtual std::expected<size_t, CryptoError> deserializeSignatureHeader(const std::vector<char>& data) = 0;
     
     // ヘッダー情報
-    virtual std::map<std::string, std::string> getMetadata() const = 0;
+    virtual std::map<std::string, std::string> getMetadata(const std::string& magic = "") const = 0;
     virtual size_t getHeaderSize() const = 0;
     virtual std::vector<char> serializeHeader() const = 0;
     virtual std::expected<void, CryptoError> deserializeHeader(const std::vector<char>& data) = 0;

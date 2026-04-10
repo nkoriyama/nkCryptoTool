@@ -42,7 +42,7 @@ public:
     std::expected<size_t, CryptoError> deserializeSignatureHeader(const std::vector<char>& data) override;
 
     // ヘッダー情報
-    std::map<std::string, std::string> getMetadata() const override;
+    std::map<std::string, std::string> getMetadata(const std::string& magic = "") const override;
     size_t getHeaderSize() const override;
     std::vector<char> serializeHeader() const override;
     std::expected<void, CryptoError> deserializeHeader(const std::vector<char>& data) override;

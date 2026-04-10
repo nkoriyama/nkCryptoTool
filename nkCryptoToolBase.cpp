@@ -377,7 +377,7 @@ nkCryptoToolBase::inspectFile(asio::io_context&, std::filesystem::path input_fil
         co_return std::unexpected(CryptoError::FileReadError);
     }
     
-    auto metadata = strategy_->getMetadata();
+    auto metadata = strategy_->getMetadata(magic);
     metadata["File-Format"] = (magic == "NKCT" ? "NKCT (Encrypted Data)" : "NKCS (Digital Signature)");
     co_return metadata;
 }

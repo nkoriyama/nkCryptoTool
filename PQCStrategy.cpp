@@ -19,13 +19,17 @@ PQCStrategy::~PQCStrategy() {
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
 }
 
-std::map<std::string, std::string> PQCStrategy::getMetadata() const {
-    return {
-        {"Strategy", "PQC"},
-        {"KEM-Algorithm", kem_algo_},
-        {"DSA-Algorithm", dsa_algo_},
-        {"Digest-Algorithm", digest_algo_}
-    };
+std::map<std::string, std::string> PQCStrategy::getMetadata(const std::string& magic) const {
+    std::map<std::string, std::string> res;
+    res["Strategy"] = "PQC";
+    if (magic.empty() || magic == "NKCT") {
+        res["KEM-Algorithm"] = kem_algo_;
+    }
+    if (magic.empty() || magic == "NKCS") {
+        res["DSA-Algorithm"] = dsa_algo_;
+    }
+    res["Digest-Algorithm"] = digest_algo_;
+    return res;
 }
 
 size_t PQCStrategy::getHeaderSize() const {
