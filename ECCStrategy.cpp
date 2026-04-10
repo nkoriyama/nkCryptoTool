@@ -19,12 +19,12 @@ ECCStrategy::~ECCStrategy() {
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
 }
 
-std::map<std::string, std::string> ECCStrategy::getMetadata() const {
-    return {
-        {"Strategy", "ECC"},
-        {"Curve-Name", curve_name_},
-        {"Digest-Algorithm", digest_algo_}
-    };
+std::map<std::string, std::string> ECCStrategy::getMetadata(const std::string& magic) const {
+    std::map<std::string, std::string> res;
+    res["Strategy"] = "ECC";
+    res["Curve-Name"] = curve_name_;
+    res["Digest-Algorithm"] = digest_algo_;
+    return res;
 }
 
 size_t ECCStrategy::getHeaderSize() const {

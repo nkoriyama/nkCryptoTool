@@ -161,9 +161,9 @@ void HybridStrategy::updateHash(const std::vector<char>& d) { pqc_strategy_->upd
 std::expected<std::vector<char>, CryptoError> HybridStrategy::signHash() { return pqc_strategy_->signHash(); }
 std::expected<bool, CryptoError> HybridStrategy::verifyHash(const std::vector<char>& s) { return pqc_strategy_->verifyHash(s); }
 
-std::map<std::string, std::string> HybridStrategy::getMetadata() const {
-    auto m1 = pqc_strategy_->getMetadata();
-    auto m2 = ecc_strategy_->getMetadata();
+std::map<std::string, std::string> HybridStrategy::getMetadata(const std::string& magic) const {
+    auto m1 = pqc_strategy_->getMetadata(magic);
+    auto m2 = ecc_strategy_->getMetadata(magic);
     std::map<std::string, std::string> res;
     res["Strategy"] = "Hybrid (PQC + ECC)";
     for (auto const& [k, v] : m1) { if (k != "Strategy") res["PQC-" + k] = v; }
