@@ -83,6 +83,71 @@ function(run_encryption_scenario MODE USE_PARALLEL)
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
+# --- Scenario Definition: Info Inspection ---
+function(run_info_scenario MODE)
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
+    message(STATUS "\n=============================================")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Info Inspection")
+    message(STATUS "=============================================")
+
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
+    set(KEY_DIR "${SCENARIO_DIR}/keys")
+    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted.bin")
+    file(REMOVE_RECURSE "${SCENARIO_DIR}")
+    file(MAKE_DIRECTORY "${KEY_DIR}")
+
+    # --- Key Generation ---
+    message(STATUS "  -> Generating ${MODE} keys...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase "" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Encryption ---
+    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        list(APPEND ENCRYPT_ARGS --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key")
+        list(APPEND ENCRYPT_ARGS --recipient-ecdh-pubkey "${KEY_DIR}/public_enc_hybrid_ecdh.key")
+    else()
+        list(APPEND ENCRYPT_ARGS --recipient-pubkey "${KEY_DIR}/public_enc_${MODE}.key")
+    endif()
+    list(APPEND ENCRYPT_ARGS "${TEST_INPUT_FILE}")
+
+    message(STATUS "  -> Encrypting file...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" ${ENCRYPT_ARGS} RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Info Inspection ---
+    message(STATUS "  -> Inspecting encrypted file...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --info "${ENCRYPTED_FILE}" OUTPUT_VARIABLE info_output RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} info inspection failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Verification of output ---
+    message(STATUS "  -> Verifying info output...")
+    # Using a case-insensitive match by converting output to uppercase for comparison
+    string(TOUPPER "${info_output}" info_output_upper)
+    if(NOT info_output_upper MATCHES "STRATEGY:.*${SCENARIO_NAME_UPPERCASE}")
+        message(STATUS "  [FAILED] Info output does not contain correct strategy/mode: ${info_output}")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Info Inspection")
+    set(TEST_RESULT 0 PARENT_SCOPE)
+endfunction()
+
 # --- Scenario Definition: Signing/Verification ---
 function(run_signing_scenario MODE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
@@ -270,6 +335,8 @@ if(DEFINED SCENARIO_MODE)
         run_regenerate_pubkey_test(${SCENARIO_MODE})
     elseif(SCENARIO_REGENERATE_SIGN_PUBKEY)
         run_regenerate_sign_pubkey_test(${SCENARIO_MODE})
+    elseif(SCENARIO_INFO)
+        run_info_scenario(${SCENARIO_MODE})
     else()
         run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL})
     endif()
