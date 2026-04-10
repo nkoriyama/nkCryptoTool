@@ -166,7 +166,7 @@ set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
 file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
 
 # E2Eテスト用のヘルパーマクロ
-macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECURSIVE INFO)
+macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECURSIVE INFO TPM WRAP)
     add_test(NAME ${TEST_NAME}
         COMMAND ${CMAKE_COMMAND}
             -DNK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
@@ -179,6 +179,8 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECU
             -DSCENARIO_REGENERATE_SIGN_PUBKEY=${REGEN_SIGN_PUB}
             -DSCENARIO_RECURSIVE=${RECURSIVE}
             -DSCENARIO_INFO=${INFO}
+            -DSCENARIO_TPM=${TPM}
+            -DSCENARIO_WRAP=${WRAP}
             -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
     )
 endmacro()
@@ -187,36 +189,35 @@ endmacro()
 include("${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake")
 
 # --- Run Standard Encryption Scenarios ---
-add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF OFF OFF)
-add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF OFF OFF)
-add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF OFF OFF OFF)
 
 # --- Run Parallel Encryption Scenarios ---
-add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF OFF)
-add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF OFF)
-add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF OFF OFF OFF)
 
 # --- Run Signing Scenarios ---
-add_e2e_test(E2E_PQC_Signing pqc OFF ON OFF OFF OFF OFF)
-add_e2e_test(E2E_ECC_Signing ecc OFF ON OFF OFF OFF OFF)
+add_e2e_test(E2E_PQC_Signing pqc OFF ON OFF OFF OFF OFF OFF OFF)
+add_e2e_test(E2E_ECC_Signing ecc OFF ON OFF OFF OFF OFF OFF OFF)
 
 # --- Run Regenerate Public Key Tests ---
-# Note: There's no separate regenerate pubkey test scenario function,
-# this seems to be a slight mismatch between test names and implementation.
-# The regenerate signing pubkey test covers this. Let's keep these pointing
-# to a valid (if not perfectly named) test for now.
-add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF)
-add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF OFF ON OFF)
-
+add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF OFF OFF)
+add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF OFF ON OFF OFF OFF)
 
 # --- Run Regenerate Signing Public Key Tests ---
-add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON OFF)
-add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF ON OFF)
+add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON OFF OFF OFF)
+add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF ON OFF OFF OFF)
 
 # --- Run Info Inspection Tests ---
-add_e2e_test(E2E_Hybrid_Info hybrid OFF OFF OFF OFF OFF ON)
-add_e2e_test(E2E_PQC_Info    pqc    OFF OFF OFF OFF OFF ON)
-add_e2e_test(E2E_ECC_Info    ecc    OFF OFF OFF OFF OFF ON)
+add_e2e_test(E2E_Hybrid_Info hybrid OFF OFF OFF OFF OFF ON OFF OFF)
+add_e2e_test(E2E_PQC_Info    pqc    OFF OFF OFF OFF OFF ON OFF OFF)
+add_e2e_test(E2E_ECC_Info    ecc    OFF OFF OFF OFF OFF ON OFF OFF)
+
+# --- Run TPM Scenarios (Only ECC currently supports direct TPM wrapping/unwrapping) ---
+add_e2e_test(E2E_ECC_TPM_Encryption ecc OFF OFF OFF OFF OFF OFF ON OFF)
+add_e2e_test(E2E_ECC_TPM_WrapUnwrap ecc OFF OFF OFF OFF OFF OFF OFF ON)
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)

@@ -33,7 +33,8 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         ("wrap-existing", "Wrap an existing raw private key with TPM.", cxxopts::value<std::string>())
         ("unwrap-key", "Unwrap a TPM-protected key back to a raw private key.", cxxopts::value<std::string>())
         ("key-dir", "Directory to save the generated keys (default: './keys')", cxxopts::value<std::string>()->default_value("./keys"))
-        ("p,passphrase", "Passphrase for the private key. Use '' for no passphrase.", cxxopts::value<std::string>());
+        ("p,passphrase", "Passphrase for the private key. Use '' for no passphrase.", cxxopts::value<std::string>())
+        ("no-passphrase", "Explicitly use no passphrase (skips prompt)");
 
     options.add_options("Operations")
         ("encrypt", "Encrypt the input file")
@@ -150,6 +151,10 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
     if (result.count("passphrase")) {
         config.passphrase = result["passphrase"].as<std::string>();
+        config.passphrase_was_provided = true;
+    }
+    if (result.count("no-passphrase")) {
+        config.passphrase = "";
         config.passphrase_was_provided = true;
     }
 
