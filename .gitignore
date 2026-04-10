@@ -35,3 +35,14 @@ encrypt.bin
 # Benchmark specific generated files
 benchmark_keys/
 benchmark_data/
+
+# Test files and keys
+test*
+test_keys/
+test_keys_real_tpm/
+test_keys_tpm/
+test_decrypted.txt
+test_decrypted_tpm.txt
+test_encrypted.enc
+test_encrypted_tpm.enc
+test_input.txt
