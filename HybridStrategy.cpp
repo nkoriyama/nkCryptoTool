@@ -161,28 +161,87 @@ void HybridStrategy::updateHash(const std::vector<char>& d) { pqc_strategy_->upd
 std::expected<std::vector<char>, CryptoError> HybridStrategy::signHash() { return pqc_strategy_->signHash(); }
 std::expected<bool, CryptoError> HybridStrategy::verifyHash(const std::vector<char>& s) { return pqc_strategy_->verifyHash(s); }
 
+std::map<std::string, std::string> HybridStrategy::getMetadata() const {
+    auto m1 = pqc_strategy_->getMetadata();
+    auto m2 = ecc_strategy_->getMetadata();
+    std::map<std::string, std::string> res;
+    res["Strategy"] = "Hybrid (PQC + ECC)";
+    for (auto const& [k, v] : m1) { if (k != "Strategy") res["PQC-" + k] = v; }
+    for (auto const& [k, v] : m2) { if (k != "Strategy") res["ECC-" + k] = v; }
+    return res;
+}
+
 size_t HybridStrategy::getHeaderSize() const { 
-    // PQCヘッダーサイズは動的なので、ここでは固定値を返さず、常にPQCに依存させる
-    return pqc_strategy_->getHeaderSize() + ecc_strategy_->getHeaderSize(); 
+    return 4 + 2 + 1 + pqc_strategy_->getHeaderSize() + ecc_strategy_->getHeaderSize(); 
 }
 size_t HybridStrategy::getTagSize() const { return pqc_strategy_->getTagSize(); }
 
 std::vector<char> HybridStrategy::serializeHeader() const {
+    std::vector<char> header;
+    // Magic "NKCT"
+    header.insert(header.end(), {'N', 'K', 'C', 'T'});
+    // Version 1
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    // Strategy Hybrid = 3
+    header.push_back((char)getStrategyType());
+
     auto h1 = pqc_strategy_->serializeHeader();
     auto h2 = ecc_strategy_->serializeHeader();
-    h1.insert(h1.end(), h2.begin(), h2.end());
-    return h1;
+    header.insert(header.end(), h1.begin(), h1.end());
+    header.insert(header.end(), h2.begin(), h2.end());
+    return header;
 }
 
 std::expected<void, CryptoError> HybridStrategy::deserializeHeader(const std::vector<char>& data) {
-    // 1. PQCにまず読ませる。PQCは自分のサイズを知っているので、正確に消費する。
-    auto res1 = pqc_strategy_->deserializeHeader(data);
-    if (!res1) return res1;
+    size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
 
-    // 2. PQCが消費した後の残りをECCに読ませる。
-    size_t pqc_consumed = pqc_strategy_->getHeaderSize();
-    if (data.size() < pqc_consumed) return std::unexpected(CryptoError::FileReadError);
+    std::vector<char> pqc_data(data.begin() + pos, data.end());
+    auto res1 = pqc_strategy_->deserializeHeader(pqc_data);
+    if (!res1) return res1;
+    pos += pqc_strategy_->getHeaderSize();
+
+    if (pos >= data.size()) return std::unexpected(CryptoError::FileReadError);
+    std::vector<char> ecc_data(data.begin() + pos, data.end());
+    auto res2 = ecc_strategy_->deserializeHeader(ecc_data);
+    if (!res2) return res2;
     
-    std::vector<char> remaining(data.begin() + pqc_consumed, data.end());
-    return ecc_strategy_->deserializeHeader(remaining);
+    salt_ = pqc_strategy_->getSalt();
+    iv_ = pqc_strategy_->getIV();
+    return {};
+}
+
+std::vector<char> HybridStrategy::serializeSignatureHeader() const {
+    std::vector<char> header;
+    header.insert(header.end(), {'N', 'K', 'C', 'S'});
+    uint16_t version = 1;
+    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    header.push_back((char)getStrategyType());
+    
+    auto h = pqc_strategy_->serializeSignatureHeader();
+    header.insert(header.end(), h.begin(), h.end());
+    return header;
+}
+
+std::expected<size_t, CryptoError> HybridStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
+    size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; memcpy(&version, data.data() + pos, 2); pos += 2;
+    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+    
+    std::vector<char> pqc_data(data.begin() + pos, data.end());
+    auto res = pqc_strategy_->deserializeSignatureHeader(pqc_data);
+    if (!res) return std::unexpected(res.error());
+    return pos + *res;
 }

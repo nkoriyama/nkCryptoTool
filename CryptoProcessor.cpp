@@ -140,6 +140,24 @@ void CryptoProcessor::run_internal() {
                     else completion_handler({});
                 });
                 break;
+            case Operation::Info:
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    std::cout << "Inspecting file: " << config_.input_files[0] << std::endl;
+                    auto res = co_await current_handler_->inspectFile(io_context_, config_.input_files[0], progress_callback_);
+                    if (res) {
+                        std::cout << "File Information:" << std::endl;
+                        for (auto const& [k, v] : *res) {
+                            std::cout << "  " << k << ": " << v << std::endl;
+                        }
+                    } else {
+                        std::cerr << "Failed to inspect file: " << toString(res.error()) << std::endl;
+                    }
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    else completion_handler({});
+                });
+                break;
             default:
                 work_ptr->reset();
                 break;

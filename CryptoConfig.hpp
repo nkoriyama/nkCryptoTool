@@ -17,6 +17,7 @@ enum class Operation {
     RegeneratePubKey,
     WrapKey,
     UnwrapKey,
+    Info,
     None
 };
 
