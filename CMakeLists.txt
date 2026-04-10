@@ -240,6 +240,8 @@ add_e2e_test(E2E_PQC_TPM_Signing       pqc    OFF ON  OFF OFF OFF OFF ON OFF "")
 
 add_e2e_test(E2E_ECC_TPM_WrapUnwrap    ecc    OFF OFF OFF OFF OFF OFF OFF ON "")
 add_e2e_test(E2E_ECC_TPM_WrapUnwrap_Pass ecc    OFF OFF OFF OFF OFF OFF OFF ON "wrappass")
+add_e2e_test(E2E_PQC_TPM_WrapUnwrap    pqc    OFF OFF OFF OFF OFF OFF OFF ON "")
+add_e2e_test(E2E_PQC_TPM_WrapUnwrap_Pass pqc    OFF OFF OFF OFF OFF OFF OFF ON "wrappass")
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)
