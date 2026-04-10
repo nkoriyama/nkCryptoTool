@@ -4,20 +4,28 @@
 # ===================================================================
 
 # --- Generic Encryption/Decryption Scenario Function ---
-function(run_encryption_scenario MODE USE_PARALLEL)
+function(run_encryption_scenario MODE USE_PARALLEL PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
     if(USE_PARALLEL)
         set(SCENARIO_VARIANT " (in parallel)")
-        set(SCENARIO_SUFFIX "_parallel")
+        set(PARALLEL_FLAG "--parallel")
     else()
         set(SCENARIO_VARIANT "")
-        set(SCENARIO_SUFFIX "")
+        set(PARALLEL_FLAG "")
+    endif()
+
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
     endif()
 
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption${SCENARIO_VARIANT}")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption${SCENARIO_VARIANT}${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -29,7 +37,7 @@ function(run_encryption_scenario MODE USE_PARALLEL)
 
     # --- Key Generation ---
     message(STATUS "  -> Generating ${MODE} keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -37,8 +45,8 @@ function(run_encryption_scenario MODE USE_PARALLEL)
     endif()
 
     # --- Build command arguments ---
-    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
-    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}")
+    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}" ${PARALLEL_FLAG})
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}" ${PARALLEL_FLAG} ${PASS_ARGS})
 
     if("${MODE}" STREQUAL "hybrid")
         list(APPEND ENCRYPT_ARGS --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key")
@@ -149,12 +157,20 @@ function(run_info_scenario MODE)
 endfunction()
 
 # --- Scenario Definition: TPM Encryption/Decryption ---
-function(run_tpm_encryption_scenario MODE)
+function(run_tpm_encryption_scenario MODE PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} TPM Encryption/Decryption")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} TPM Encryption/Decryption${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -166,7 +182,7 @@ function(run_tpm_encryption_scenario MODE)
 
     # --- Key Generation with TPM ---
     message(STATUS "  -> Generating ${MODE} keys with TPM...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --tpm --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --tpm --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} TPM key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -197,7 +213,7 @@ function(run_tpm_encryption_scenario MODE)
     endif()
 
     # --- Decryption with TPM ---
-    set(DECRYPT_ARGS --mode "${MODE}" --decrypt --tpm -o "${DECRYPTED_FILE_ABS}")
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt --tpm -o "${DECRYPTED_FILE_ABS}" ${PASS_ARGS})
     if("${MODE}" STREQUAL "hybrid")
         list(APPEND DECRYPT_ARGS --recipient-mlkem-privkey "${KEY_DIR_ABS}/private_enc_hybrid_mlkem.key")
         list(APPEND DECRYPT_ARGS --recipient-ecdh-privkey "${KEY_DIR_ABS}/private_enc_hybrid_ecdh.key")
@@ -228,12 +244,20 @@ function(run_tpm_encryption_scenario MODE)
 endfunction()
 
 # --- Scenario Definition: TPM Wrap/Unwrap ---
-function(run_tpm_wrap_unwrap_scenario MODE)
+function(run_tpm_wrap_unwrap_scenario MODE PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} TPM Wrap/Unwrap")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} TPM Wrap/Unwrap${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -243,7 +267,7 @@ function(run_tpm_wrap_unwrap_scenario MODE)
 
     # --- 1. Generate Raw Keys ---
     message(STATUS "  -> Generating raw ${MODE} keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] Raw key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -256,7 +280,7 @@ function(run_tpm_wrap_unwrap_scenario MODE)
 
     # --- 2. Wrap the Key with TPM ---
     message(STATUS "  -> Wrapping key with TPM...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --wrap-existing "${RAW_PRIV}" --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --wrap-existing "${RAW_PRIV}" --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] Key wrapping failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -271,7 +295,7 @@ function(run_tpm_wrap_unwrap_scenario MODE)
 
     # --- 3. Unwrap the Key from TPM ---
     message(STATUS "  -> Unwrapping key from TPM...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --unwrap-key "${WRAPPED_PRIV}" --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --unwrap-key "${WRAPPED_PRIV}" --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] Key unwrapping failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -294,17 +318,33 @@ function(run_tpm_wrap_unwrap_scenario MODE)
         return()
     endif()
 
-    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} TPM Wrap/Unwrap")
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} TPM Wrap/Unwrap${PASS_DESC}")
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
 # --- Scenario Definition: Signing/Verification ---
-function(run_signing_scenario MODE)
+function(run_signing_scenario MODE USE_TPM PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    if(USE_TPM)
+        set(SCENARIO_VARIANT " (with TPM)")
+        set(TPM_FLAG "--tpm")
+    else()
+        set(SCENARIO_VARIANT "")
+        set(TPM_FLAG "")
+    endif()
+
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Signing/Verification${SCENARIO_VARIANT}${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -313,9 +353,13 @@ function(run_signing_scenario MODE)
     file(REMOVE_RECURSE "${SCENARIO_DIR}")
     file(MAKE_DIRECTORY "${KEY_DIR}")
 
+    get_filename_component(KEY_DIR_ABS "${KEY_DIR}" ABSOLUTE)
+    get_filename_component(SIGNATURE_FILE_ABS "${SIGNATURE_FILE}" ABSOLUTE)
+    get_filename_component(TEST_INPUT_FILE_ABS "${TEST_INPUT_FILE}" ABSOLUTE)
+
     # --- Key Generation ---
-    message(STATUS "  -> Generating ${MODE} signing keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    message(STATUS "  -> Generating ${MODE} signing keys${SCENARIO_VARIANT}...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-sign-key ${TPM_FLAG} --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -323,10 +367,10 @@ function(run_signing_scenario MODE)
     endif()
 
     # --- Signing ---
-    message(STATUS "  -> Signing file...")
+    message(STATUS "  -> Signing file${SCENARIO_VARIANT}...")
     execute_process(
-        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_${MODE}.key" "${TEST_INPUT_FILE}"
-        RESULT_VARIABLE res)
+        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --sign ${TPM_FLAG} --signature "${SIGNATURE_FILE_ABS}" --signing-privkey "${KEY_DIR_ABS}/private_sign_${MODE}.key" "${TEST_INPUT_FILE_ABS}"
+        ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -335,24 +379,32 @@ function(run_signing_scenario MODE)
 
     message(STATUS "  -> Verifying signature...")
     execute_process(
-        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_${MODE}.key" "${TEST_INPUT_FILE}"
+        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --verify --signature "${SIGNATURE_FILE_ABS}" --signing-pubkey "${KEY_DIR_ABS}/public_sign_${MODE}.key" "${TEST_INPUT_FILE_ABS}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signature verification failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
         return()
     endif()
-    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification")
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification${SCENARIO_VARIANT}${PASS_DESC}")
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
 # --- Scenario Definition: Regenerate Public Key and Use for Decryption ---
-function(run_regenerate_pubkey_test MODE)
+function(run_regenerate_pubkey_test MODE PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption (Regen Pubkey)${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -368,7 +420,7 @@ function(run_regenerate_pubkey_test MODE)
 
     # --- Key Generation ---
     message(STATUS "  -> Generating ${MODE} keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -377,7 +429,7 @@ function(run_regenerate_pubkey_test MODE)
 
     # --- Regenerate Public Key ---
     message(STATUS "  -> Regenerating public key from private key...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --regenerate-pubkey "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --regenerate-pubkey "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} public key regeneration failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -395,7 +447,7 @@ function(run_regenerate_pubkey_test MODE)
 
     # --- Decryption ---
     message(STATUS "  -> Decrypting file...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}" --user-privkey "${PRIVATE_KEY}" "${ENCRYPTED_FILE}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}" --user-privkey "${PRIVATE_KEY}" ${PASS_ARGS} "${ENCRYPTED_FILE}" RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -411,17 +463,25 @@ function(run_regenerate_pubkey_test MODE)
         return()
     endif()
 
-    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption")
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption (Regen Pubkey)${PASS_DESC}")
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
 # --- Scenario Definition: Regenerate Signing Public Key and Use for Verification ---
-function(run_regenerate_sign_pubkey_test MODE)
+function(run_regenerate_sign_pubkey_test MODE PASSPHRASE)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
 
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
     message(STATUS "\n=============================================")
-    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Signing/Verification (Regen Pubkey)${PASS_DESC}")
     message(STATUS "=============================================")
 
     set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
@@ -436,7 +496,7 @@ function(run_regenerate_sign_pubkey_test MODE)
 
     # --- Key Generation ---
     message(STATUS "  -> Generating ${MODE} signing keys...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing key generation failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -445,7 +505,7 @@ function(run_regenerate_sign_pubkey_test MODE)
 
     # --- Regenerate Public Key ---
     message(STATUS "  -> Regenerating signing public key from private key...")
-    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --regenerate-pubkey "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" RESULT_VARIABLE res)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --regenerate-pubkey "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" ${PASS_ARGS} RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing public key regeneration failed.")
         set(TEST_RESULT 1 PARENT_SCOPE)
@@ -455,7 +515,7 @@ function(run_regenerate_sign_pubkey_test MODE)
     # --- Signing ---
     message(STATUS "  -> Signing file...")
     execute_process(
-        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${PRIVATE_KEY}" "${TEST_INPUT_FILE}"
+        COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${PRIVATE_KEY}" ${PASS_ARGS} "${TEST_INPUT_FILE}"
         RESULT_VARIABLE res)
     if(NOT res EQUAL 0)
         message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} signing failed.")
@@ -473,26 +533,30 @@ function(run_regenerate_sign_pubkey_test MODE)
         set(TEST_RESULT 1 PARENT_SCOPE)
         return()
     endif()
-    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption")
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification (Regen Pubkey)${PASS_DESC}")
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
 # Logic to execute a specific scenario when called via cmake -P
 if(DEFINED SCENARIO_MODE)
+    if(NOT DEFINED SCENARIO_PASSPHRASE)
+        set(SCENARIO_PASSPHRASE "")
+    endif()
+
     if(SCENARIO_SIGNING)
-        run_signing_scenario(${SCENARIO_MODE})
+        run_signing_scenario(${SCENARIO_MODE} ${SCENARIO_TPM} "${SCENARIO_PASSPHRASE}")
     elseif(SCENARIO_REGENERATE_PUBKEY)
-        run_regenerate_pubkey_test(${SCENARIO_MODE})
+        run_regenerate_pubkey_test(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
     elseif(SCENARIO_REGENERATE_SIGN_PUBKEY)
-        run_regenerate_sign_pubkey_test(${SCENARIO_MODE})
+        run_regenerate_sign_pubkey_test(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
     elseif(SCENARIO_INFO)
         run_info_scenario(${SCENARIO_MODE})
     elseif(SCENARIO_TPM)
-        run_tpm_encryption_scenario(${SCENARIO_MODE})
+        run_tpm_encryption_scenario(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
     elseif(SCENARIO_WRAP)
-        run_tpm_wrap_unwrap_scenario(${SCENARIO_MODE})
+        run_tpm_wrap_unwrap_scenario(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
     else()
-        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL})
+        run_encryption_scenario(${SCENARIO_MODE} ${SCENARIO_PARALLEL} "${SCENARIO_PASSPHRASE}")
     endif()
     # Exit with the test result
     if(TEST_RESULT EQUAL 0)
