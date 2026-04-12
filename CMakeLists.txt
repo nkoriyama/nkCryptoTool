@@ -229,6 +229,10 @@ add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey_Pass pqc OFF OFF OFF OFF ON OFF OFF 
 add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF ON OFF "" "enc")
 add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF ON OFF "tpmpass" "enc")
 
+# --- Run TPM Regenerate Signing Public Key Tests ---
+add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON OFF ON OFF "" "sign")
+add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF ON OFF "tpmpass" "sign")
+
 # --- Run Info Inspection Tests ---
 add_e2e_test(E2E_Hybrid_Info hybrid OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
 add_e2e_test(E2E_PQC_Info    pqc    OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
