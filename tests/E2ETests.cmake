@@ -538,6 +538,15 @@ function(run_regenerate_sign_pubkey_test MODE PASSPHRASE)
         return()
     endif()
 
+    # --- Compare original and regenerated public keys ---
+    message(STATUS "  -> Verifying regenerated public key matches original...")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${ORIGINAL_PUBLIC_KEY}" "${REGENERATED_PUBLIC_KEY}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] Verification failed: Regenerated public key does not match original.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
     # --- Signing ---
     message(STATUS "  -> Signing file...")
     execute_process(
@@ -559,7 +568,133 @@ function(run_regenerate_sign_pubkey_test MODE PASSPHRASE)
         set(TEST_RESULT 1 PARENT_SCOPE)
         return()
     endif()
+
+    # --- Verify signing metadata ---
+    message(STATUS "  -> Verifying signing metadata...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --info "${SIGNATURE_FILE}" OUTPUT_VARIABLE info_output RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} info inspection failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # Using a case-insensitive match by converting output to uppercase for comparison
+    string(TOUPPER "${info_output}" info_output_upper)
+    if(NOT info_output_upper MATCHES "STRATEGY:.*${SCENARIO_NAME_UPPERCASE}")
+        message(STATUS "  [FAILED] Info output does not contain correct strategy/mode: ${info_output}")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
     message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Signing/Verification (Regen Pubkey)${PASS_DESC}")
+    set(TEST_RESULT 0 PARENT_SCOPE)
+endfunction()
+
+# --- Scenario Definition: TPM Regenerate Public Key and Use for Decryption ---
+function(run_tpm_regenerate_pubkey_test MODE PASSPHRASE)
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
+    if("${PASSPHRASE}" STREQUAL "")
+        set(PASS_ARGS "--no-passphrase")
+        set(PASS_DESC " [No Passphrase]")
+    else()
+        set(PASS_ARGS "--passphrase=${PASSPHRASE}")
+        set(PASS_DESC " [With Passphrase]")
+    endif()
+
+    message(STATUS "\n=============================================")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption (TPM Regen Pubkey)${PASS_DESC}")
+    message(STATUS "=============================================")
+
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
+    set(KEY_DIR "${SCENARIO_DIR}/keys")
+    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted.bin")
+    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted.txt")
+    set(ORIGINAL_PUBLIC_KEY "${KEY_DIR}/public_enc_${MODE}.key")
+    set(REGENERATED_PUBLIC_KEY "${KEY_DIR}/public_enc_${MODE}_regenerated.key")
+    set(PRIVATE_KEY "${KEY_DIR}/private_enc_${MODE}.key")
+
+    file(REMOVE_RECURSE "${SCENARIO_DIR}")
+    file(MAKE_DIRECTORY "${KEY_DIR}")
+
+    # --- Key Generation with TPM ---
+    message(STATUS "  -> Generating ${MODE} keys with TPM...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --tpm --key-dir "${KEY_DIR}" ${PASS_ARGS} RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} TPM key generation failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    get_filename_component(KEY_DIR_ABS "${KEY_DIR}" ABSOLUTE)
+    get_filename_component(ENCRYPTED_FILE_ABS "${ENCRYPTED_FILE}" ABSOLUTE)
+    get_filename_component(DECRYPTED_FILE_ABS "${DECRYPTED_FILE}" ABSOLUTE)
+    get_filename_component(TEST_INPUT_FILE_ABS "${TEST_INPUT_FILE}" ABSOLUTE)
+
+    # --- Regenerate Public Key with TPM ---
+    message(STATUS "  -> Regenerating public key from private key with TPM...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --regenerate-pubkey --tpm "${PRIVATE_KEY}" "${REGENERATED_PUBLIC_KEY}" ${PASS_ARGS} RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} public key regeneration failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Compare original and regenerated public keys ---
+    message(STATUS "  -> Verifying regenerated public key matches original...")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${ORIGINAL_PUBLIC_KEY}" "${REGENERATED_PUBLIC_KEY}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] Verification failed: Regenerated public key does not match original.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Encryption with regenerated key ---
+    message(STATUS "  -> Encrypting file using regenerated key...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE_ABS}" --recipient-pubkey "${REGENERATED_PUBLIC_KEY}" "${TEST_INPUT_FILE_ABS}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} encryption failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Decryption ---
+    message(STATUS "  -> Decrypting file with TPM...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --decrypt --tpm -o "${DECRYPTED_FILE_ABS}" --user-privkey "${PRIVATE_KEY}" ${PASS_ARGS} "${ENCRYPTED_FILE_ABS}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} decryption failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Verification ---
+    message(STATUS "  -> Verifying file content...")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${TEST_INPUT_FILE}" "${DECRYPTED_FILE}" RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] Verification failed: Decrypted file does not match original.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # --- Verify encryption metadata ---
+    message(STATUS "  -> Verifying encryption metadata...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --info "${ENCRYPTED_FILE_ABS}" OUTPUT_VARIABLE info_output RESULT_VARIABLE res)
+    if(NOT res EQUAL 0)
+        message(STATUS "  [FAILED] ${SCENARIO_NAME_UPPERCASE} info inspection failed.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    # Using a case-insensitive match by converting output to uppercase for comparison
+    string(TOUPPER "${info_output}" info_output_upper)
+    if(NOT info_output_upper MATCHES "STRATEGY:.*${SCENARIO_NAME_UPPERCASE}")
+        message(STATUS "  [FAILED] Info output does not contain correct strategy/mode: ${info_output}")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Encryption/Decryption (TPM Regen Pubkey)${PASS_DESC}")
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
@@ -578,7 +713,11 @@ if(DEFINED SCENARIO_MODE)
     elseif(SCENARIO_INFO)
         run_info_scenario(${SCENARIO_MODE})
     elseif(SCENARIO_TPM)
-        run_tpm_encryption_scenario(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
+        if(SCENARIO_REGENERATE_PUBKEY)
+            run_tpm_regenerate_pubkey_test(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
+        else()
+            run_tpm_encryption_scenario(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}")
+        endif()
     elseif(SCENARIO_WRAP)
         if(NOT DEFINED SCENARIO_KEY_TYPE)
             set(SCENARIO_KEY_TYPE "enc")
