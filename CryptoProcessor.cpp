@@ -57,12 +57,19 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::Decrypt:
                 std::cout << std::format("Starting {} decryption...", to_string(config_.mode)) << std::endl;
-                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
+                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, [completion_handler](std::error_code ec) mutable {
+                    if (ec) {
+                        std::cerr << "DEBUG: Decryption failed with ec: " << ec.message() << std::endl;
+                    }
+                    completion_handler(ec);
+                }, progress_callback_);
                 break;
             case Operation::Sign:
                 asio::co_spawn(io_context_, current_handler_->signFile(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-privkey"), config_.digest_algo, config_.passphrase, progress_callback_), 
                 [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        completion_handler(std::make_error_code(std::errc::io_error));
+                    }
                     else completion_handler({});
                 });
                 break;
@@ -133,10 +140,7 @@ void CryptoProcessor::run_internal() {
                     std::cout << "Successfully unwrapped: " << raw_priv.string() << std::endl;
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) {
-                        try { std::rethrow_exception(p); } catch(const std::exception& e) { std::cerr << "Exception: " << e.what() << std::endl; }
-                        completion_handler(std::make_error_code(std::errc::io_error));
-                    }
+                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
                     else completion_handler({});
                 });
                 break;

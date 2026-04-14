@@ -15,6 +15,7 @@
 #include <memory>
 #include <map>
 #include <expected>
+#include "SecureMemory.hpp"
 #include "CryptoError.hpp"
 #include "async_file_types.hpp"
 #include "nkcrypto_ffi.hpp" 
@@ -22,7 +23,6 @@
 #include <asio/buffer.hpp>
 #include <openssl/evp.h>
 #include <openssl/bio.h>
-
 #include "ICryptoStrategy.hpp"
 
 namespace asio { class io_context; }
@@ -49,23 +49,23 @@ public:
         std::string input_filepath,
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::string& passphrase,
+        SecureString& passphrase,
         std::function<void(std::error_code)> completion_handler,
         ProgressCallback progress_callback = nullptr
     );
 
-    virtual asio::awaitable<void> signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string& passphrase, ProgressCallback progress_callback = nullptr);
+    virtual asio::awaitable<void> signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback = nullptr);
     virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback = nullptr);
     virtual asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> inspectFile(asio::io_context& io_context, std::filesystem::path input_filepath, ProgressCallback progress_callback = nullptr);
 
-    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase);
-    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase);
+    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
+    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
 
     std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(std::filesystem::path public_key_path);
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, std::string& passphrase);
-    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, std::string& passphrase);
-    std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv_path, std::filesystem::path wrapped_priv_path, std::string& passphrase);
-    static std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, std::string& passphrase);
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, SecureString& passphrase);
+    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, SecureString& passphrase);
+    std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv_path, std::filesystem::path wrapped_priv_path, SecureString& passphrase);
+    static std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, SecureString& passphrase);
     static std::expected<StrategyType, CryptoError> detectStrategyType(const std::filesystem::path& path);
     static bool isPrivateKeyEncrypted(const std::filesystem::path& path);
 

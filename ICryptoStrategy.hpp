@@ -12,6 +12,7 @@
 #include <map>
 #include <expected>
 #include <filesystem>
+#include "SecureMemory.hpp"
 #include "CryptoError.hpp"
 #include <openssl/evp.h>
 #include <openssl/bio.h>
@@ -44,19 +45,19 @@ public:
     virtual StrategyType getStrategyType() const = 0;
 
     // --- 鍵生成 ---
-    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) = 0;
-    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
 
     // --- 暗号化・復号のパイプライン処理用 ---
     virtual std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) = 0;
-    virtual std::expected<void, CryptoError> prepareDecryption(const std::map<std::string, std::string>& key_paths, std::string& passphrase) = 0;
+    virtual std::expected<void, CryptoError> prepareDecryption(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
     virtual std::vector<char> encryptTransform(const std::vector<char>& data) = 0;
     virtual std::vector<char> decryptTransform(const std::vector<char>& data) = 0;
     virtual std::expected<void, CryptoError> finalizeEncryption(std::vector<char>& out_final) = 0;
     virtual std::expected<void, CryptoError> finalizeDecryption(const std::vector<char>& tag) = 0;
 
     // --- 署名・検証 ---
-    virtual std::expected<void, CryptoError> prepareSigning(const std::filesystem::path& priv_key_path, std::string& passphrase, const std::string& digest_algo) = 0;
+    virtual std::expected<void, CryptoError> prepareSigning(const std::filesystem::path& priv_key_path, SecureString& passphrase, const std::string& digest_algo) = 0;
     virtual std::expected<void, CryptoError> prepareVerification(const std::filesystem::path& pub_key_path, const std::string& digest_algo) = 0;
     virtual void updateHash(const std::vector<char>& data) = 0;
     virtual std::expected<std::vector<char>, CryptoError> signHash() = 0;
@@ -70,7 +71,7 @@ public:
     virtual std::map<std::string, std::string> getMetadata(const std::string& magic = "") const = 0;
     virtual size_t getHeaderSize() const = 0;
     virtual std::vector<char> serializeHeader() const = 0;
-    virtual std::expected<void, CryptoError> deserializeHeader(const std::vector<char>& data) = 0;
+    virtual std::expected<size_t, CryptoError> deserializeHeader(const std::vector<char>& data) = 0;
     virtual size_t getTagSize() const = 0;
 };
 

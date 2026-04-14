@@ -88,7 +88,12 @@ int run_crypto_op_json(const char* json_config_str) {
 
         // Options
         if (json_config.contains("passphrase")) {
-            config.passphrase = json_config["passphrase"].get<std::string>();
+            std::string pass = json_config["passphrase"].get<std::string>();
+            config.passphrase.assign(pass.begin(), pass.end());
+            // Clear the temporary string from nlohmann::json if possible, 
+            // though nlohmann::json doesn't provide a direct way to wipe its internal strings.
+            // At least our config.passphrase is now secure.
+            OPENSSL_cleanse(pass.data(), pass.size());
             config.passphrase_was_provided = true;
         }
         if (json_config.contains("digest_algo")) {
@@ -129,19 +134,9 @@ int run_crypto_op_json(const char* json_config_str) {
         auto future = processor.run(); // このメソッドは新しいスレッドをデタッチして操作を実行する
         future.get(); // デタッチされたスレッドの完了を待機する
 
-        // パスフレーズの二重の安全策
-        if (!config.passphrase.empty()) {
-            OPENSSL_cleanse(config.passphrase.data(), config.passphrase.size());
-            config.passphrase.clear();
-        }
-
+        // SecureString will be cleared automatically by its destructor.
         return 0; // 成功
     } catch (const std::exception& e) {
-        // エラー時も消去を試みる
-        if (!config.passphrase.empty()) {
-            OPENSSL_cleanse(config.passphrase.data(), config.passphrase.size());
-            config.passphrase.clear();
-        }
         std::cerr << "CryptoProcessor execution error: " << e.what() << std::endl;
         return 4; // CryptoProcessor実行エラー
     }
