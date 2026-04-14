@@ -1,6 +1,7 @@
 #ifndef CRYPTOCONFIG_HPP
 #define CRYPTOCONFIG_HPP
 
+#include "SecureMemory.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -60,7 +61,7 @@ struct CryptoConfig {
     std::map<std::string, std::string> key_paths;
 
     // Options
-    std::string passphrase;
+    SecureString passphrase;
     bool passphrase_was_provided = false;
     bool use_tpm = false;
     std::string digest_algo = "SHA3-512";

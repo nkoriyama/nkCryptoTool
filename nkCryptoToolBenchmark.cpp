@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include "SecureMemory.hpp"
 #include <fstream>
 #include <vector>
 #include <string>
@@ -69,7 +70,7 @@ BENCHMARK(BM_Encryption)->Args({1024 * 1024, 0})->Args({1024 * 1024, 1});
 void SetupKeys() {
     std::filesystem::path key_dir = "./benchmark_keys";
     std::filesystem::create_directories(key_dir);
-    std::string pass = "";
+    SecureString pass = "";
 
     nkCryptoToolBase ecc_tool(std::make_unique<ECCStrategy>());
     std::map<std::string, std::string> ecc_paths = {{"public-key", (key_dir / "public_enc_ecc.key").string()}, {"private-key", (key_dir / "private_enc_ecc.key").string()}};

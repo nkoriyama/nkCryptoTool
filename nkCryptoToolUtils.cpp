@@ -57,8 +57,8 @@ void processDirectory(
 
 
 // パスフレーズをコンソールから安全に入力するための関数
-std::string get_masked_passphrase() {
-    std::string passphrase_input;
+SecureString get_masked_passphrase() {
+    SecureString passphrase_input;
 #if defined(_WIN32) || defined(_WIN64)
     char ch;
     while ((ch = _getch()) != '\r') {
@@ -92,8 +92,8 @@ std::string get_masked_passphrase() {
 }
 
 // パスフレーズを2回入力させ、一致を確認する関数
-std::string get_and_verify_passphrase(const std::string& prompt) {
-    std::string pass1, pass2;
+SecureString get_and_verify_passphrase(const std::string& prompt) {
+    SecureString pass1, pass2;
     do {
         std::cout << prompt;
         std::cout.flush();
@@ -111,20 +111,33 @@ std::string get_and_verify_passphrase(const std::string& prompt) {
     return pass1;
 }
 
+// OpenSSL 3.0 以降のエンコーダ/デコーダ用パスフレーズコールバック
+int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg) {
+    if (arg == nullptr) return 0;
+    
+    const SecureString* passphrase = static_cast<const SecureString*>(arg);
+    size_t len = passphrase->length();
+    if (len >= pass_max) {
+        return 0;
+    }
+    std::memcpy(pass, passphrase->c_str(), len);
+    pass[len] = '\0';
+    if (pass_len) *pass_len = len;
+    return 1; // 成功時は1を返す
+}
+
 // OpenSSLが秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
-    const char* passphrase = static_cast<const char*>(userdata);
-    if (passphrase != nullptr) {
-        int len = strlen(passphrase);
-        if (len >= size) {
-            // Buffer too small.
-            return 0;
-        }
-        // Copy the passphrase into the buffer.
-        strncpy(buf, passphrase, size);
-        buf[size - 1] = '\0';
-        return len;
+    if (userdata == nullptr) return 0;
+    
+    const SecureString* passphrase = static_cast<const SecureString*>(userdata);
+    size_t len = passphrase->length();
+    if (len >= static_cast<size_t>(size)) {
+        // Buffer too small.
+        return 0;
     }
-    // No passphrase provided.
-    return 0;
+    // Copy the passphrase into the buffer.
+    std::memcpy(buf, passphrase->c_str(), len);
+    buf[len] = '\0';
+    return (int)len;
 }

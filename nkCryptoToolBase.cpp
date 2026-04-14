@@ -32,11 +32,11 @@ void nkCryptoToolBase::setKeyBaseDirectory(std::filesystem::path dir) {
 
 std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
 
-std::expected<void, CryptoError> nkCryptoToolBase::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolBase::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
     return strategy_->generateEncryptionKeyPair(key_paths, passphrase);
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, std::string& passphrase) {
+std::expected<void, CryptoError> nkCryptoToolBase::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
     return strategy_->generateSigningKeyPair(key_paths, passphrase);
 }
 
@@ -82,7 +82,7 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     std::string input_filepath,
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::string& passphrase,
+    SecureString& passphrase,
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
@@ -100,6 +100,7 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     size_t tag_size = strategy->getTagSize();
     if (total_size < tag_size) { completion_handler(std::make_error_code(std::errc::invalid_argument)); return; }
 
+    uintmax_t header_size = 0;
     std::vector<char> tag(tag_size);
     {
         std::ifstream in(input_filepath, std::ios::binary);
@@ -113,7 +114,9 @@ void nkCryptoToolBase::decryptFileWithPipeline(
         std::streamsize read_bytes = in.gcount();
         if (read_bytes < 7) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
         header_peek.resize(static_cast<size_t>(read_bytes));
-        if (!strategy->deserializeHeader(header_peek)) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
+        auto res = strategy->deserializeHeader(header_peek);
+        if (!res) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
+        header_size = *res;
     }
 
     auto prep_res = strategy->prepareDecryption(key_paths, passphrase);
@@ -123,7 +126,6 @@ void nkCryptoToolBase::decryptFileWithPipeline(
         return;
     }
 
-    size_t header_size = strategy->getHeaderSize();
     async_file_t output_file(io_context);
     output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
     if (ec) { completion_handler(ec); return; }
@@ -132,7 +134,8 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     manager->add_stage([strategy](const std::vector<char>& data) { return strategy->decryptTransform(data); });
 
     PipelineManager::FinalizationFunc finalizer = [strategy, tag](async_file_t& out) -> asio::awaitable<void> {
-        if (!strategy->finalizeDecryption(tag)) {
+        auto res = strategy->finalizeDecryption(tag);
+        if (!res) {
             throw std::runtime_error("Decryption failed: Integrity check error");
         }
         co_return;
@@ -143,7 +146,7 @@ void nkCryptoToolBase::decryptFileWithPipeline(
 }
 
 // --- 署名・検証 ---
-asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, std::string& passphrase, ProgressCallback progress_callback) {
+asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback) {
     auto strategy = strategy_;
     auto res = strategy->prepareSigning(signing_private_key_path, passphrase, digest_algo);
     if (!res) throw std::runtime_error("Failed to prepare signing");
@@ -240,13 +243,13 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, std::string& passphrase) {
+std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, SecureString& passphrase) {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
     if (pem_content.find(TPMUtils::TPM_WRAPPED_HEADER) != std::string::npos || pem_content.find(TPMUtils::TPM_WRAPPED_ENC_HEADER) != std::string::npos) {
-        return TPMUtils::unwrapKey(pem_content, passphrase);
+        return TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), passphrase);
     }
 
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
@@ -256,7 +259,7 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, std::string& pass) {
+std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass) {
     auto pkey = loadPrivateKey(priv, pass);
     if (!pkey) return std::unexpected(pkey.error());
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(pub.string().c_str(), "wb"));
@@ -264,7 +267,7 @@ std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::file
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, std::string& pass) {
+std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass) {
     auto pkey = loadPrivateKey(raw_priv, pass);
     if (!pkey) return std::unexpected(pkey.error());
     
@@ -278,12 +281,12 @@ std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesyste
     return {};
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesystem::path wrapped_priv, std::filesystem::path raw_priv, std::string& pass) {
+std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesystem::path wrapped_priv, std::filesystem::path raw_priv, SecureString& pass) {
     std::ifstream ifs(wrapped_priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
-    auto pkey = TPMUtils::unwrapKey(pem_content, pass);
+    auto pkey = TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), pass);
     if (!pkey) return std::unexpected(pkey.error());
 
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(raw_priv.string().c_str(), "wb"));

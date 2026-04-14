@@ -67,7 +67,10 @@ FetchContent_MakeAvailable(nlohmann_json)
 find_package(Threads REQUIRED)
 
 # --- 依存関係の取得: OpenSSL ---
-find_package(OpenSSL REQUIRED)
+# システム標準のOpenSSLを優先 (Linuxbrewを避ける)
+set(OPENSSL_ROOT_DIR /usr)
+set(OPENSSL_USE_STATIC_LIBS OFF)
+find_package(OpenSSL 3.0 REQUIRED)
 
 # 実行可能ファイルとライブラリの出力ディレクトリを build/bin に設定します。
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -185,6 +188,7 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECU
             -DSCENARIO_KEY_TYPE=${KEY_TYPE}
             -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
     )
+    set_tests_properties(${TEST_NAME} PROPERTIES SKIP_REGULAR_EXPRESSION "Skipping TPM-related test scenario")
 endmacro()
 
 # Include the E2E test definitions

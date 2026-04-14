@@ -9,6 +9,8 @@
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolUtils.hpp"
 #include <openssl/provider.h>
+#include <openssl/err.h>
+#include <openssl/params.h>
 
 // This function now populates the CryptoConfig struct
 CryptoConfig parse_command_line(int argc, char* argv[]) {
@@ -151,13 +153,15 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     if (result.count("output-dir")) config.output_dir = result["output-dir"].as<std::string>();
     if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
     if (result.count("passphrase")) {
-        config.passphrase = result["passphrase"].as<std::string>();
+        std::string pass = result["passphrase"].as<std::string>();
+        config.passphrase.assign(pass.begin(), pass.end());
+        OPENSSL_cleanse(pass.data(), pass.size());
         config.passphrase_was_provided = true;
-    }
-    if (result.count("no-passphrase")) {
+    } else if (result.count("no-passphrase")) {
         config.passphrase = "";
         config.passphrase_was_provided = true;
     }
+    
     if (result.count("parallel")) config.use_parallel = true;
 
     if (result.count("recipient-pubkey")) config.key_paths["recipient-pubkey"] = resolve_key_path(result["recipient-pubkey"].as<std::string>());
@@ -249,10 +253,19 @@ int main(int argc, char* argv[]) {
     try {
         CryptoConfig config = parse_command_line(argc, argv);
         if (config.use_tpm) {
-            if (OSSL_PROVIDER_load(nullptr, "tpm2") == nullptr) {
-                std::cerr << "Warning: Failed to load TPM2 provider. Operations requiring TPM might fail." << std::endl;
+            ERR_clear_error();
+            OSSL_PROVIDER* tpm_provider = OSSL_PROVIDER_load(nullptr, "tpm2");
+            if (tpm_provider == nullptr) {
+                std::cerr << "Warning: Failed to load TPM2 provider. Detailed Errors:" << std::endl;
+                unsigned long err;
+                while ((err = ERR_get_error()) != 0) {
+                    char buf[256];
+                    ERR_error_string_n(err, buf, sizeof(buf));
+                    std::cerr << "  - " << buf << std::endl;
+                }
             } else {
                 config.key_paths["use-tpm"] = "true";
+                // OSSL_PROVIDER_unload(tpm_provider); // We keep it loaded for the session
             }
         }
         if (config.is_recursive) {

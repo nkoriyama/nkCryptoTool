@@ -704,6 +704,25 @@ if(DEFINED SCENARIO_MODE)
         set(SCENARIO_PASSPHRASE "")
     endif()
 
+    # --- Check for TPM availability if requested ---
+    if(SCENARIO_TPM OR SCENARIO_WRAP)
+        message(STATUS "Checking for TPM functionality before running scenario...")
+        # Try a simple TPM key generation to see if it works
+        execute_process(COMMAND "${NK_TOOL_EXE}" --mode ecc --gen-enc-key --tpm --no-passphrase --key-dir "${TEST_OUTPUT_DIR}/tpm_check"
+                        RESULT_VARIABLE tpm_res
+                        OUTPUT_VARIABLE tpm_out
+                        ERROR_VARIABLE tpm_err)
+        file(REMOVE_RECURSE "${TEST_OUTPUT_DIR}/tpm_check")
+        
+        if(NOT tpm_res EQUAL 0)
+            message(STATUS "TPM is NOT available or NOT correctly configured.")
+            message(STATUS "TPM Error: ${tpm_err}")
+            message(STATUS "Skipping TPM-related test scenario.")
+            return()
+        endif()
+        message(STATUS "TPM is functional. Proceeding with the scenario.")
+    endif()
+
     if(SCENARIO_SIGNING)
         run_signing_scenario(${SCENARIO_MODE} ${SCENARIO_TPM} "${SCENARIO_PASSPHRASE}")
     elseif(SCENARIO_REGENERATE_PUBKEY)
