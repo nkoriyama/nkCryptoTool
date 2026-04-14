@@ -119,6 +119,9 @@ void nkCryptoToolBase::decryptFileWithPipeline(
         header_size = *res;
     }
 
+    // 重要な修正: 以前の OpenSSL エラーをクリアする
+    ERR_clear_error();
+
     auto prep_res = strategy->prepareDecryption(key_paths, passphrase);
     if (!prep_res) {
         std::cerr << "\n[ERROR] prepareDecryption failed: " << toString(prep_res.error()) << std::endl;
