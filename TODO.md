@@ -1,17 +1,12 @@
 # TODO: nkCryptoTool Technical Debt & Known Issues
 
-## 1. GCM Integrity Check Failure (Pending Investigation)
-- **Issue**: AES-GCM decryption often fails at the finalization stage (`EVP_DecryptFinal_ex`) with "Signature verification failed", resulting in an "Input/output error" in the CLI.
-- **Current Status**: 
-    - **Crucially, the decrypted data is 100% correct and matches the original file hash.**
-    - The issue appears in both TPM and non-TPM (normal) modes.
-    - Extensive testing shows that HKDF-derived keys, IVs, and salts are consistent between encryption and decryption.
-- **Suspected Causes**:
-    - Interaction between `PipelineManager` (async I/O) and OpenSSL GCM context. Possible byte offset mismatch when identifying the ciphertext vs. the 16-byte tag at the end of the file.
-    - OpenSSL 3.x specific behavior regarding GCM context reuse or parameter setting order.
-- **Action Required**: 
-    - Deep dive into `nkCryptoToolBase::decryptFileWithPipeline` offset logic.
-    - Verify if `EVP_EncryptFinal_ex` contributes non-zero length to ciphertext during encryption that is not accounted for during decryption.
+## 1. GCM Integrity Check Failure (RESOLVED)
+- **Status**: Fixed in April 2026.
+- **Root Causes & Solutions**:
+    1. **Context Initialization**: OpenSSL 3.x GCM requires a strict initialization order (Cipher -> IVLEN -> Key/IV). Recreating the context with `EVP_CIPHER_CTX_new()` during decryption ensured a clean state.
+    2. **Error Queue Interference**: Transient OpenSSL errors from header parsing were interfering with the final tag verification. Adding `ERR_clear_error()` before decryption initialization solved this.
+    3. **Exact Header Offsets**: Updated `deserializeHeader()` to return the exact number of bytes consumed, ensuring that the async pipeline starts reading the ciphertext at the precise byte offset.
+- **Verification**: Confirmed fix across ECC and PQC modes, with and without TPM, ensuring 100% hash match and successful GCM tag validation.
 
 ## 2. TPM Implementation Improvements
 - **Current Status**: Envelope Encryption (AES-GCM + TPM Sealing) is implemented and verified for ECC and PQC.

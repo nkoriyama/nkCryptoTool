@@ -173,7 +173,11 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     ephemeral_pubkey_.assign(bio_buf->data, bio_buf->data + bio_buf->length);
     salt_.resize(16); iv_.resize(12); RAND_bytes(salt_.data(), 16); RAND_bytes(iv_.data(), 12);
     encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "ecc-encryption", "SHA3-256");
-    if (!cipher_ctx_ || EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    
+    if (!cipher_ctx_) cipher_ctx_.reset(EVP_CIPHER_CTX_new());
+    if (EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_EncryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
 
@@ -233,7 +237,10 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "ecc-encryption", "SHA3-256");
     
     cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (!cipher_ctx_ || EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_DecryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    
     decrypt_buffer_.clear();
     return {};
 }
@@ -248,7 +255,7 @@ std::vector<char> ECCStrategy::decryptTransform(const std::vector<char>& data) {
 }
 
 std::expected<void, CryptoError> ECCStrategy::finalizeDecryption(const std::vector<char>& tag) {
-    EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_GET_TAG, 16, (void*)tag.data());
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_TAG, 16, (void*)tag.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
     int final_len = 0;
     if (EVP_DecryptFinal_ex(cipher_ctx_.get(), final_block.data(), &final_len) <= 0) return std::unexpected(CryptoError::SignatureVerificationError);
