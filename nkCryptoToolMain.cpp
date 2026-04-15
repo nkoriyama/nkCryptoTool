@@ -77,8 +77,16 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     auto resolve_key_path = [&](const std::string& key_path_arg) -> std::string {
         if (key_path_arg.empty()) return "";
         std::filesystem::path key_path(key_path_arg);
-        if (key_path.is_relative() && !key_dir.empty()) {
+        if (key_path.is_absolute()) return key_path.string();
+        
+        // カレントディレクトリに存在すればそれを使う
+        if (std::filesystem::exists(key_path)) return std::filesystem::absolute(key_path).string();
+        
+        // key_dir の下にあればそれを使う
+        if (!key_dir.empty()) {
             std::filesystem::path combined = std::filesystem::path(key_dir) / key_path;
+            if (std::filesystem::exists(combined)) return std::filesystem::absolute(combined).string();
+            // 存在しなくても、生成用などのために結合したパスを返す
             return std::filesystem::absolute(combined).string();
         }
         return std::filesystem::absolute(key_path).string();
@@ -95,7 +103,11 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     else if (result.count("regenerate-pubkey")) config.operation = Operation::RegeneratePubKey;
     else if (result.count("wrap-existing")) {
         config.operation = Operation::WrapKey;
-        config.input_files.push_back(resolve_key_path(result["wrap-existing"].as<std::string>()));
+        std::string raw_path = result["wrap-existing"].as<std::string>();
+        config.input_files.push_back(resolve_key_path(raw_path));
+        if (config.output_file.empty()) {
+            config.output_file = resolve_key_path(raw_path + ".tpmkey");
+        }
     }
     else if (result.count("unwrap-key")) {
         config.operation = Operation::UnwrapKey;

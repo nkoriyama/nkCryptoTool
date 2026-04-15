@@ -40,8 +40,7 @@ public:
 
     static int run_cmd(const std::string& cmd) {
         std::string full_cmd = "TCTI=" + std::string(DEFAULT_TCTI) + " " + cmd;
-        int res = system(full_cmd.c_str());
-        return res;
+        return system(full_cmd.c_str());
     }
 
     static std::string base64_encode(const std::vector<unsigned char>& data) {
@@ -93,16 +92,17 @@ public:
         std::vector<unsigned char> tag(16);
         EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag.data());
 
-        char temp_aes_file[] = "/tmp/nk_aes_XXXXXX";
-        int fd = mkstemp(temp_aes_file);
-        write(fd, aes_key.data(), 32);
-        close(fd);
+        char temp_aes[] = "/tmp/nk_a_XXXXXX"; char primary_ctx[] = "/tmp/nk_p_XXXXXX";
+        char pub_f[] = "/tmp/nk_u_XXXXXX"; char priv_f[] = "/tmp/nk_r_XXXXXX";
+        int fds[] = { mkstemp(temp_aes), mkstemp(primary_ctx), mkstemp(pub_f), mkstemp(priv_f) };
+        write(fds[0], aes_key.data(), 32); for(int fd : fds) close(fd);
 
-        run_cmd("tpm2_createprimary -C o -c /tmp/primary.ctx -Q");
+        run_cmd("tpm2_createprimary -C o -c " + std::string(primary_ctx) + " -Q");
         std::string auth = passphrase.empty() ? "" : "-p \"" + std::string(passphrase.c_str()) + "\"";
-        std::string cmd = "tpm2_create -C /tmp/primary.ctx -i " + std::string(temp_aes_file) + " -u /tmp/key.pub -r /tmp/key.priv " + auth + " -Q";
+        std::string cmd = "tpm2_create -C " + std::string(primary_ctx) + " -i " + std::string(temp_aes) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " " + auth + " -Q";
         if (run_cmd(cmd) != 0) {
-            remove(temp_aes_file); remove("/tmp/primary.ctx"); return std::unexpected(CryptoError::TPMError);
+            for(const char* f : {temp_aes, primary_ctx, pub_f, priv_f}) remove(f);
+            return std::unexpected(CryptoError::TPMError);
         }
 
         auto read_f = [](const char* path) -> std::vector<unsigned char> {
@@ -113,14 +113,14 @@ public:
 
         std::stringstream ss;
         ss << TPM_BLOB_HEADER << "\n"
-           << "P=" << base64_encode(read_f("/tmp/key.pub")) << "\n"
-           << "R=" << base64_encode(read_f("/tmp/key.priv")) << "\n"
+           << "P=" << base64_encode(read_f(pub_f)) << "\n"
+           << "R=" << base64_encode(read_f(priv_f)) << "\n"
            << "E=" << base64_encode(ciphertext) << "\n"
            << "I=" << base64_encode(iv) << "\n"
            << "T=" << base64_encode(tag) << "\n"
            << TPM_BLOB_FOOTER << "\n";
 
-        remove(temp_aes_file); remove("/tmp/primary.ctx"); remove("/tmp/key.pub"); remove("/tmp/key.priv");
+        for(const char* f : {temp_aes, primary_ctx, pub_f, priv_f}) remove(f);
         std::string res = ss.str();
         return SecureString(res.begin(), res.end());
     }
@@ -145,30 +145,43 @@ public:
 
         if (p_b64.empty() || r_b64.empty() || e_b64.empty()) return std::unexpected(CryptoError::PrivateKeyLoadError);
 
-        char pub_f[] = "/tmp/nk_u_p_XXXXXX"; char priv_f[] = "/tmp/nk_u_r_XXXXXX"; char aes_f[] = "/tmp/nk_u_a_XXXXXX";
-        mkstemp(pub_f); mkstemp(priv_f); mkstemp(aes_f);
+        char pub_f[] = "/tmp/nk_up_XXXXXX"; char priv_f[] = "/tmp/nk_ur_XXXXXX"; 
+        char aes_f[] = "/tmp/nk_ua_XXXXXX"; char primary_ctx[] = "/tmp/nk_pc_XXXXXX";
+        char key_ctx[] = "/tmp/nk_kc_XXXXXX";
+        int fds[] = { mkstemp(pub_f), mkstemp(priv_f), mkstemp(aes_f), mkstemp(primary_ctx), mkstemp(key_ctx) };
+        for(int fd : fds) close(fd);
+
         {
             std::ofstream op(pub_f, std::ios::binary); auto d = base64_decode(p_b64); op.write((char*)d.data(), d.size());
             std::ofstream orr(priv_f, std::ios::binary); auto d2 = base64_decode(r_b64); orr.write((char*)d2.data(), d2.size());
         }
 
-        run_cmd("tpm2_createprimary -C o -c /tmp/primary.ctx -Q");
+        run_cmd("tpm2_createprimary -C o -c " + std::string(primary_ctx) + " -Q");
         std::string auth = passphrase.empty() ? "" : "-p \"" + std::string(passphrase.c_str()) + "\"";
-        run_cmd("tpm2_load -C /tmp/primary.ctx -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " -c /tmp/key.ctx " + auth + " -Q");
-        if (run_cmd("tpm2_unseal -c /tmp/key.ctx -o " + std::string(aes_f) + " " + auth + " -Q") != 0) {
-            remove(pub_f); remove(priv_f); remove(aes_f); return std::unexpected(CryptoError::TPMError);
+        
+        // tpm2_load does NOT need authorization for the objects being loaded, but it needs authorization for the PARENT
+        if (run_cmd("tpm2_load -C " + std::string(primary_ctx) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " -c " + std::string(key_ctx) + " -Q") != 0) {
+            for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) remove(f);
+            return std::unexpected(CryptoError::TPMError);
+        }
+        if (run_cmd("tpm2_unseal -c " + std::string(key_ctx) + " -o " + std::string(aes_f) + " " + auth + " -Q") != 0) {
+            for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) remove(f);
+            return std::unexpected(CryptoError::TPMError);
         }
 
         std::ifstream ifs(aes_f, std::ios::binary);
         std::vector<unsigned char> aes_key((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-        remove(pub_f); remove(priv_f); remove(aes_f); remove("/tmp/primary.ctx"); remove("/tmp/key.ctx");
+        for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) remove(f);
 
         auto ciphertext = base64_decode(e_b64);
         auto iv = base64_decode(i_b64);
         auto tag = base64_decode(t_b64);
 
         std::unique_ptr<EVP_CIPHER_CTX, void(*)(EVP_CIPHER_CTX*)> ctx(EVP_CIPHER_CTX_new(), [](EVP_CIPHER_CTX* c){ EVP_CIPHER_CTX_free(c); });
-        EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, aes_key.data(), iv.data());
+        EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr);
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr);
+        EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, aes_key.data(), iv.data());
+        
         std::vector<unsigned char> decrypted(ciphertext.size() + 16);
         int len, flen;
         EVP_DecryptUpdate(ctx.get(), decrypted.data(), &len, ciphertext.data(), (int)ciphertext.size());

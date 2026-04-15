@@ -137,13 +137,25 @@ std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::
 
 
 std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
-    if (!key_paths.count("recipient-pubkey")) return std::unexpected(CryptoError::PublicKeyLoadError);
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(key_paths.at("recipient-pubkey").c_str(), "rb"));
+    std::string pubkey_path;
+    if (key_paths.count("recipient-pubkey")) pubkey_path = key_paths.at("recipient-pubkey");
+    else if (key_paths.count("recipient-mlkem-pubkey")) pubkey_path = key_paths.at("recipient-mlkem-pubkey");
+    else return std::unexpected(CryptoError::PublicKeyLoadError);
+
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pubkey_path.c_str(), "rb"));
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
     if (!pkey) return std::unexpected(CryptoError::PublicKeyLoadError);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_pub(pkey);
     
+    // アルゴリズム名を自動更新
+    char name[128];
+    if (EVP_PKEY_get_group_name(recipient_pub.get(), name, sizeof(name), nullptr) > 0) kem_algo_ = name;
+    else {
+        const char* alg_name = EVP_PKEY_get0_type_name(recipient_pub.get());
+        if (alg_name) kem_algo_ = alg_name;
+    }
+
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(recipient_pub.get(), nullptr));
     if (!ctx || EVP_PKEY_encapsulate_init(ctx.get(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     size_t secret_len, ct_len;
@@ -184,7 +196,12 @@ std::expected<void, CryptoError> PQCStrategy::finalizeEncryption(std::vector<cha
 }
 
 std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    const std::string& priv_key_path = key_paths.at("user-privkey");
+    std::string priv_key_path;
+    if (key_paths.count("user-privkey")) priv_key_path = key_paths.at("user-privkey");
+    else if (key_paths.count("recipient-mlkem-privkey")) priv_key_path = key_paths.at("recipient-mlkem-privkey");
+    else if (key_paths.count("private-mlkem-key")) priv_key_path = key_paths.at("private-mlkem-key");
+    else return std::unexpected(CryptoError::PrivateKeyLoadError);
+
     std::ifstream ifs(priv_key_path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());

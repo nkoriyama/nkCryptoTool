@@ -44,7 +44,7 @@ void CryptoProcessor::run_internal() {
         current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
 
         auto completion_handler = [this, work_ptr](std::error_code ec) mutable {
-            if (ec) {
+            if (ec && !thread_exception_) {
                 thread_exception_ = std::make_exception_ptr(std::system_error(ec, "Operation failed"));
             }
             work_ptr->reset();
@@ -52,124 +52,124 @@ void CryptoProcessor::run_internal() {
 
         switch (config_.operation) {
             case Operation::Encrypt:
-                std::cout << std::format("Starting {} encryption...", to_string(config_.mode)) << std::endl;
                 current_handler_->encryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, completion_handler, progress_callback_);
                 break;
             case Operation::Decrypt:
-                std::cout << std::format("Starting {} decryption...", to_string(config_.mode)) << std::endl;
-                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, [completion_handler](std::error_code ec) mutable {
-                    if (ec) {
-                        std::cerr << "DEBUG: Decryption failed with ec: " << ec.message() << std::endl;
-                    }
-                    completion_handler(ec);
-                }, progress_callback_);
+                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, completion_handler, progress_callback_);
                 break;
             case Operation::Sign:
                 asio::co_spawn(io_context_, current_handler_->signFile(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-privkey"), config_.digest_algo, config_.passphrase, progress_callback_), 
                 [completion_handler](std::exception_ptr p) mutable {
                     if (p) {
-                        completion_handler(std::make_error_code(std::errc::io_error));
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
                     }
                     else completion_handler({});
                 });
                 break;
             case Operation::Verify:
-                asio::co_spawn(io_context_, current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-pubkey"), config_.digest_algo, progress_callback_),
-                [completion_handler](std::exception_ptr p, std::expected<void, CryptoError> result) mutable {
-                    if (p || !result) completion_handler(std::make_error_code(std::errc::io_error));
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    auto res = co_await current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-pubkey"), config_.digest_algo, progress_callback_);
+                    if (!res) throw std::system_error(make_error_code(std::errc::io_error), toString(res.error()));
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::GenerateEncKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
                     auto res = current_handler_->generateEncryptionKeyPair(config_.key_paths, config_.passphrase);
-                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to generate encryption key pair");
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::GenerateSignKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
                     auto res = current_handler_->generateSigningKeyPair(config_.key_paths, config_.passphrase);
-                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to generate signing key pair");
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::RegeneratePubKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
                     auto res = current_handler_->regeneratePublicKey(config_.regenerate_privkey_path, config_.regenerate_pubkey_path, config_.passphrase);
-                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to regenerate public key");
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::WrapKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    std::filesystem::path raw_priv(config_.input_files[0]);
-                    std::filesystem::path wrapped_priv = raw_priv;
-                    wrapped_priv.replace_extension(".tpmkey");
-                    
-                    std::cout << "Wrapping " << raw_priv.filename() << " into " << wrapped_priv.filename() << "..." << std::endl;
-                    auto res = current_handler_->wrapPrivateKey(raw_priv, wrapped_priv, config_.passphrase);
-                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to wrap private key with TPM");
+                    auto res = current_handler_->wrapPrivateKey(config_.input_files[0], config_.output_file, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::UnwrapKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    std::filesystem::path wrapped_priv(config_.input_files[0]);
-                    std::filesystem::path raw_priv = wrapped_priv;
-                    raw_priv.replace_extension(".rawkey");
-                    
-                    std::cout << "Unwrapping " << wrapped_priv.filename().string() << " into " << raw_priv.filename().string() << "..." << std::endl;
-                    auto res = current_handler_->unwrapPrivateKey(wrapped_priv, raw_priv, config_.passphrase);
-                    if (!res) {
-                        std::cerr << "Unwrap failed: " << toString(res.error()) << std::endl;
-                        throw std::system_error(std::make_error_code(std::errc::io_error), "Failed to unwrap private key from TPM");
-                    }
-                    std::cout << "Successfully unwrapped: " << raw_priv.string() << std::endl;
+                    auto res = nkCryptoToolBase::unwrapPrivateKey(config_.input_files[0], config_.output_file, config_.passphrase);
+                    if (!res) throw std::system_error(std::make_error_code(std::errc::io_error), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
             case Operation::Info:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    std::cout << "Inspecting file: " << config_.input_files[0] << std::endl;
                     auto res = co_await current_handler_->inspectFile(io_context_, config_.input_files[0], progress_callback_);
-                    if (res) {
-                        std::cout << "File Information:" << std::endl;
-                        for (auto const& [k, v] : *res) {
-                            std::cout << "  " << k << ": " << v << std::endl;
-                        }
-                    } else {
-                        std::cerr << "Failed to inspect file: " << toString(res.error()) << std::endl;
-                    }
+                    if (!res) throw std::system_error(make_error_code(std::errc::io_error), toString(res.error()));
+                    for (const auto& [k, v] : *res) std::cout << k << ": " << v << std::endl;
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
-                    if (p) completion_handler(std::make_error_code(std::errc::io_error));
+                    if (p) {
+                        try { std::rethrow_exception(p); }
+                        catch (const std::system_error& e) { completion_handler(e.code()); }
+                        catch (...) { completion_handler(std::make_error_code(std::errc::io_error)); }
+                    }
                     else completion_handler({});
                 });
                 break;
-            default:
-                work_ptr->reset();
-                break;
         }
-        
-        io_context_.run();
-        current_handler_.reset();
 
+        io_context_.run();
     } catch (...) {
         thread_exception_ = std::current_exception();
     }
