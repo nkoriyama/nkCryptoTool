@@ -38,61 +38,45 @@ std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::ma
     auto res2 = ecc_strategy_->prepareEncryption(key_paths);
     if (!res2) return res2;
 
-    // 共有秘密の取得と統合
     std::vector<unsigned char> pqc_secret = pqc_strategy_->getSharedSecret();
     std::vector<unsigned char> ecc_secret = ecc_strategy_->getSharedSecret();
-    
     std::vector<unsigned char> combined_secret = pqc_secret;
     combined_secret.insert(combined_secret.end(), ecc_secret.begin(), ecc_secret.end());
-    
     salt_ = pqc_strategy_->getSalt();
     iv_ = pqc_strategy_->getIV();
-    
     encryption_key_ = nkCryptoToolBase::hkdfDerive(combined_secret, 32, std::string(salt_.begin(), salt_.end()), "hybrid-encryption", "SHA3-256");
-    
-    // 機密情報の消去
     OPENSSL_cleanse(combined_secret.data(), combined_secret.size());
     OPENSSL_cleanse(pqc_secret.data(), pqc_secret.size());
     OPENSSL_cleanse(ecc_secret.data(), ecc_secret.size());
     
-    if (!cipher_ctx_ || EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) {
-        return std::unexpected(CryptoError::OpenSSLError);
-    }
-
+    if (!cipher_ctx_) cipher_ctx_.reset(EVP_CIPHER_CTX_new());
+    if (EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_EncryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
 
 std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    SecureString pass_copy = passphrase; 
-
-    std::map<std::string, std::string> pqc_paths = {{"user-privkey", key_paths.at("recipient-mlkem-privkey")}};
-    auto res1 = pqc_strategy_->prepareDecryption(pqc_paths, pass_copy);
+    auto res1 = pqc_strategy_->prepareDecryption(key_paths, passphrase);
     if (!res1) return res1;
-
-    std::map<std::string, std::string> ecc_paths = {{"user-privkey", key_paths.at("recipient-ecdh-privkey")}};
-    auto res2 = ecc_strategy_->prepareDecryption(ecc_paths, pass_copy);
+    auto res2 = ecc_strategy_->prepareDecryption(key_paths, passphrase);
     if (!res2) return res2;
 
     std::vector<unsigned char> pqc_secret = pqc_strategy_->getSharedSecret();
     std::vector<unsigned char> ecc_secret = ecc_strategy_->getSharedSecret();
-    
     std::vector<unsigned char> combined_secret = pqc_secret;
     combined_secret.insert(combined_secret.end(), ecc_secret.begin(), ecc_secret.end());
-    
     salt_ = pqc_strategy_->getSalt();
     iv_ = pqc_strategy_->getIV();
-    
     encryption_key_ = nkCryptoToolBase::hkdfDerive(combined_secret, 32, std::string(salt_.begin(), salt_.end()), "hybrid-encryption", "SHA3-256");
-    
     OPENSSL_cleanse(combined_secret.data(), combined_secret.size());
     OPENSSL_cleanse(pqc_secret.data(), pqc_secret.size());
     OPENSSL_cleanse(ecc_secret.data(), ecc_secret.size());
     
     cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (!cipher_ctx_ || EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, encryption_key_.data(), iv_.data()) <= 0) {
-        return std::unexpected(CryptoError::OpenSSLError);
-    }
-
+    if (EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_DecryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
 
@@ -146,10 +130,10 @@ std::expected<void, CryptoError> HybridStrategy::finalizeEncryption(std::vector<
 }
 
 std::expected<void, CryptoError> HybridStrategy::finalizeDecryption(const std::vector<char>& tag) {
-    EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_TAG, 16, (void*)tag.data());
+    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_TAG, 16, (void*)tag.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     int out_len = 0;
     std::vector<unsigned char> out(EVP_MAX_BLOCK_LENGTH);
-    if (EVP_DecryptFinal_ex(cipher_ctx_.get(), out.data(), &out_len) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_DecryptFinal_ex(cipher_ctx_.get(), out.data(), &out_len) <= 0) return std::unexpected(CryptoError::SignatureVerificationError);
     return {};
 }
 
@@ -171,7 +155,6 @@ std::vector<char> HybridStrategy::serializeHeader() const {
     header.insert(header.end(), {'N', 'K', 'C', 'T'});
     write_u16_le(header, 1);
     header.push_back((char)getStrategyType());
-
     auto h1 = pqc_strategy_->serializeHeader();
     auto h2 = ecc_strategy_->serializeHeader();
     header.insert(header.end(), h1.begin(), h1.end());
@@ -184,24 +167,18 @@ std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::
     if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
     if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
     pos += 4;
-
-    uint16_t version;
-    if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
-
+    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
     uint8_t type = (uint8_t)data[pos++];
     if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
-
     std::vector<char> pqc_data(data.begin() + pos, data.end());
     auto res1 = pqc_strategy_->deserializeHeader(pqc_data);
     if (!res1) return std::unexpected(res1.error());
     pos += *res1;
-
     if (pos >= data.size()) return std::unexpected(CryptoError::FileReadError);
     std::vector<char> ecc_data(data.begin() + pos, data.end());
     auto res2 = ecc_strategy_->deserializeHeader(ecc_data);
     if (!res2) return std::unexpected(res2.error());
     pos += *res2;
-
     salt_ = pqc_strategy_->getSalt();
     iv_ = pqc_strategy_->getIV();
     return pos;

@@ -141,13 +141,21 @@ std::expected<void, CryptoError> ECCStrategy::generateSigningKeyPair(const std::
 
 std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
     if (key_paths.count("digest-algo")) digest_algo_ = key_paths.at("digest-algo");
-    if (!key_paths.count("recipient-pubkey")) return std::unexpected(CryptoError::PublicKeyLoadError);
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(key_paths.at("recipient-pubkey").c_str(), "rb"));
+    
+    std::string pubkey_path;
+    if (key_paths.count("recipient-pubkey")) pubkey_path = key_paths.at("recipient-pubkey");
+    else if (key_paths.count("recipient-ecdh-pubkey")) pubkey_path = key_paths.at("recipient-ecdh-pubkey");
+    else return std::unexpected(CryptoError::PublicKeyLoadError);
+
+    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pubkey_path.c_str(), "rb"));
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
     EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
     if (!pkey) return std::unexpected(CryptoError::PublicKeyLoadError);
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_pub(pkey);
     
+    char name[128];
+    if (EVP_PKEY_get_group_name(recipient_pub.get(), name, sizeof(name), nullptr) > 0) curve_name_ = name;
+
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)curve_name_.c_str(), 0), OSSL_PARAM_construct_end() };
@@ -202,7 +210,12 @@ std::expected<void, CryptoError> ECCStrategy::finalizeEncryption(std::vector<cha
 }
 
 std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    const std::string& priv_key_path = key_paths.at("user-privkey");
+    std::string priv_key_path;
+    if (key_paths.count("user-privkey")) priv_key_path = key_paths.at("user-privkey");
+    else if (key_paths.count("recipient-ecdh-privkey")) priv_key_path = key_paths.at("recipient-ecdh-privkey");
+    else if (key_paths.count("private-ecdh-key")) priv_key_path = key_paths.at("private-ecdh-key");
+    else return std::unexpected(CryptoError::PrivateKeyLoadError);
+
     std::ifstream ifs(priv_key_path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -282,6 +295,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesyst
 
     const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
     if (!md) md = EVP_sha3_512();
+    EVP_MD_CTX_reset(md_ctx_.get());
     if (EVP_DigestSignInit(md_ctx_.get(), nullptr, md, nullptr, sign_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
@@ -294,6 +308,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::fil
     if (!verify_key_) return std::unexpected(CryptoError::PublicKeyLoadError);
     const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
     if (!md) md = EVP_sha3_512();
+    EVP_MD_CTX_reset(md_ctx_.get());
     if (EVP_DigestVerifyInit(md_ctx_.get(), nullptr, md, nullptr, verify_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
