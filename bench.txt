@@ -1,0 +1,98 @@
+{
+  "context": {
+    "date": "2026-04-16T19:07:36+09:00",
+    "host_name": "bazzite",
+    "executable": "./build/bin/nkCryptoToolBenchmark",
+    "num_cpus": 16,
+    "mhz_per_cpu": 4700,
+    "cpu_scaling_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 49152,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [0.339355,0.660645,1.74121],
+    "library_version": "v1.8.4",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_Encryption/1024/0",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Encryption/1024/0",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1301,
+      "real_time": 1.0609069496819940e+05,
+      "cpu_time": 1.0424465488086101e+05,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Encryption/1024/1",
+      "family_index": 0,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Encryption/1024/1",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1889,
+      "real_time": 7.5152407062757993e+04,
+      "cpu_time": 7.4410615669667954e+04,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Encryption/1048576/0",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Encryption/1048576/0",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 386,
+      "real_time": 3.5744842748711712e+05,
+      "cpu_time": 3.5518482383419236e+05,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Encryption/1048576/1",
+      "family_index": 1,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Encryption/1048576/1",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 434,
+      "real_time": 3.2530705325349985e+05,
+      "cpu_time": 3.2367073963133508e+05,
+      "time_unit": "ns"
+    }
+  ]
+}
