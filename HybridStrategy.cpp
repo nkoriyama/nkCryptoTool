@@ -22,9 +22,21 @@ HybridStrategy::~HybridStrategy() {
 }
 
 std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    auto res1 = pqc_strategy_->generateEncryptionKeyPair(key_paths, passphrase);
+    std::map<std::string, std::string> pqc_paths = key_paths;
+    std::map<std::string, std::string> ecc_paths = key_paths;
+
+    if (key_paths.count("public-mlkem-key")) {
+        pqc_paths["public-key"] = key_paths.at("public-mlkem-key");
+        pqc_paths["private-key"] = key_paths.at("private-mlkem-key");
+    }
+    if (key_paths.count("public-ecdh-key")) {
+        ecc_paths["public-key"] = key_paths.at("public-ecdh-key");
+        ecc_paths["private-key"] = key_paths.at("private-ecdh-key");
+    }
+
+    auto res1 = pqc_strategy_->generateEncryptionKeyPair(pqc_paths, passphrase);
     if (!res1) return res1;
-    auto res2 = ecc_strategy_->generateEncryptionKeyPair(key_paths, passphrase);
+    auto res2 = ecc_strategy_->generateEncryptionKeyPair(ecc_paths, passphrase);
     return res2;
 }
 
@@ -195,5 +207,23 @@ std::vector<char> HybridStrategy::serializeSignatureHeader() const {
 }
 
 std::expected<size_t, CryptoError> HybridStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
-    return pqc_strategy_->deserializeSignatureHeader(data);
+    size_t pos = 0;
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
+    pos += 4;
+    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint8_t type = (uint8_t)data[pos++];
+    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
+
+    // サブストラテジー用のダミーヘッダーを作成して委譲
+    std::vector<char> sub_data;
+    sub_data.insert(sub_data.end(), {'N', 'K', 'C', 'S'});
+    write_u16_le(sub_data, 1);
+    sub_data.push_back((char)StrategyType::PQC);
+    sub_data.insert(sub_data.end(), data.begin() + pos, data.end());
+    
+    auto res = pqc_strategy_->deserializeSignatureHeader(sub_data);
+    if (!res) return std::unexpected(res.error());
+    
+    return pos + (*res - 7);
 }

@@ -337,12 +337,10 @@ std::expected<bool, CryptoError> ECCStrategy::verifyHash(const std::vector<char>
 std::vector<char> ECCStrategy::serializeSignatureHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'S'});
-    uint16_t version = 1;
-    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    write_u16_le(header, 1);
     header.push_back((char)getStrategyType());
     auto add_string = [&](const std::string& s) {
-        uint32_t len = (uint32_t)s.size();
-        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        write_u32_le(header, (uint32_t)s.size());
         header.insert(header.end(), s.begin(), s.end());
     };
     add_string(curve_name_);
@@ -355,14 +353,13 @@ std::expected<size_t, CryptoError> ECCStrategy::deserializeSignatureHeader(const
     if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
     if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
     pos += 4;
-    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
-    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
     uint8_t type = (uint8_t)data[pos++];
     if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
 
     auto read_string = [&](std::string& s) -> bool {
-        if (pos + 4 > data.size()) return false;
-        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        uint32_t len;
+        if (!read_u32_le(data, pos, len)) return false;
         if (pos + len > data.size()) return false;
         s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
         return true;

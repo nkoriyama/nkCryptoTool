@@ -38,6 +38,13 @@ public:
 
     static constexpr const char* DEFAULT_TCTI = "device:/dev/tpmrm0";
 
+    // TPM2 Tools absolute paths
+    static constexpr const char* TPM2_CREATEPRIMARY = "/usr/bin/tpm2_createprimary";
+    static constexpr const char* TPM2_CREATE        = "/usr/bin/tpm2_create";
+    static constexpr const char* TPM2_LOAD          = "/usr/bin/tpm2_load";
+    static constexpr const char* TPM2_UNSEAL        = "/usr/bin/tpm2_unseal";
+    static constexpr const char* TPM2_GETCAP        = "/usr/bin/tpm2_getcap";
+
     static int run_cmd(const std::string& cmd) {
         std::string full_cmd = "TCTI=" + std::string(DEFAULT_TCTI) + " " + cmd;
         return system(full_cmd.c_str());
@@ -97,9 +104,9 @@ public:
         int fds[] = { mkstemp(temp_aes), mkstemp(primary_ctx), mkstemp(pub_f), mkstemp(priv_f) };
         write(fds[0], aes_key.data(), 32); for(int fd : fds) close(fd);
 
-        run_cmd("tpm2_createprimary -C o -c " + std::string(primary_ctx) + " -Q");
+        run_cmd(std::string(TPM2_CREATEPRIMARY) + " -C o -c " + std::string(primary_ctx) + " -Q");
         std::string auth = passphrase.empty() ? "" : "-p \"" + std::string(passphrase.c_str()) + "\"";
-        std::string cmd = "tpm2_create -C " + std::string(primary_ctx) + " -i " + std::string(temp_aes) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " " + auth + " -Q";
+        std::string cmd = std::string(TPM2_CREATE) + " -C " + std::string(primary_ctx) + " -i " + std::string(temp_aes) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " " + auth + " -Q";
         if (run_cmd(cmd) != 0) {
             for(const char* f : {temp_aes, primary_ctx, pub_f, priv_f}) remove(f);
             return std::unexpected(CryptoError::TPMError);
@@ -156,15 +163,15 @@ public:
             std::ofstream orr(priv_f, std::ios::binary); auto d2 = base64_decode(r_b64); orr.write((char*)d2.data(), d2.size());
         }
 
-        run_cmd("tpm2_createprimary -C o -c " + std::string(primary_ctx) + " -Q");
+        run_cmd(std::string(TPM2_CREATEPRIMARY) + " -C o -c " + std::string(primary_ctx) + " -Q");
         std::string auth = passphrase.empty() ? "" : "-p \"" + std::string(passphrase.c_str()) + "\"";
         
         // tpm2_load does NOT need authorization for the objects being loaded, but it needs authorization for the PARENT
-        if (run_cmd("tpm2_load -C " + std::string(primary_ctx) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " -c " + std::string(key_ctx) + " -Q") != 0) {
+        if (run_cmd(std::string(TPM2_LOAD) + " -C " + std::string(primary_ctx) + " -u " + std::string(pub_f) + " -r " + std::string(priv_f) + " -c " + std::string(key_ctx) + " -Q") != 0) {
             for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) remove(f);
             return std::unexpected(CryptoError::TPMError);
         }
-        if (run_cmd("tpm2_unseal -c " + std::string(key_ctx) + " -o " + std::string(aes_f) + " " + auth + " -Q") != 0) {
+        if (run_cmd(std::string(TPM2_UNSEAL) + " -c " + std::string(key_ctx) + " -o " + std::string(aes_f) + " " + auth + " -Q") != 0) {
             for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) remove(f);
             return std::unexpected(CryptoError::TPMError);
         }
@@ -200,7 +207,9 @@ public:
         return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
     }
 
-    static bool isTPMAvailable() { return run_cmd("tpm2_getcap properties-fixed > /dev/null 2>&1") == 0; }
+    static bool isTPMAvailable() { 
+        return run_cmd(std::string(TPM2_GETCAP) + " properties-fixed > /dev/null 2>&1") == 0; 
+    }
     static std::string extractHandle(const std::string&) { return ""; }
 };
 

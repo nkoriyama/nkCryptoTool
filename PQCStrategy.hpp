@@ -59,6 +59,7 @@ public:
     std::vector<unsigned char> getSharedSecret() const { return shared_secret_; }
 
 private:
+    std::expected<void, CryptoError> generateKeyPairInternal(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, const std::string& algo);
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx_;
     std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx_;
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sign_key_;
