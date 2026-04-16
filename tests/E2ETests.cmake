@@ -318,11 +318,15 @@ function(run_tpm_wrap_unwrap_scenario MODE PASSPHRASE KEY_TYPE)
         return()
     endif()
 
-    # --- 4. Verify the Unwrapped Key matches the Original ---
+    # --- 4. Verify Unwrapped Key ---
     message(STATUS "  -> Verifying unwrapped key content...")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol "${RAW_PRIV}" "${UNWRAPPED_PRIV}" RESULT_VARIABLE res)
-    if(NOT res EQUAL 0)
-        message(STATUS "  [FAILED] Verification failed: Unwrapped key does not match original raw key.")
+
+    # 秘密鍵の内容（テキスト）を抽出して比較することで、PEM暗号化の差異を無視する
+    execute_process(COMMAND openssl pkey -in "${RAW_PRIV}" -passin "pass:${PASSPHRASE}" -text -noout OUTPUT_VARIABLE RAW_TEXT RESULT_VARIABLE res1)
+    execute_process(COMMAND openssl pkey -in "${UNWRAPPED_PRIV}" -noout -text OUTPUT_VARIABLE UNWRAPPED_TEXT RESULT_VARIABLE res2)
+
+    if(NOT res1 EQUAL 0 OR NOT res2 EQUAL 0 OR NOT "${RAW_TEXT}" STREQUAL "${UNWRAPPED_TEXT}")
+        message(STATUS "  [FAILED] Verification failed: Unwrapped key content does not match original raw key.")
         set(TEST_RESULT 1 PARENT_SCOPE)
         return()
     endif()

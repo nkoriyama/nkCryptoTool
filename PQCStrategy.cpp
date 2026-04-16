@@ -14,7 +14,9 @@
 
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
-PQCStrategy::PQCStrategy() : cipher_ctx_(EVP_CIPHER_CTX_new()) {}
+PQCStrategy::PQCStrategy() : 
+    cipher_ctx_(EVP_CIPHER_CTX_new()),
+    md_ctx_(EVP_MD_CTX_new()) {}
 PQCStrategy::~PQCStrategy() {
     if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
@@ -93,6 +95,14 @@ std::expected<size_t, CryptoError> PQCStrategy::deserializeHeader(const std::vec
 }
 
 std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+    return generateKeyPairInternal(key_paths, passphrase, kem_algo_);
+}
+
+std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+    return generateKeyPairInternal(key_paths, passphrase, dsa_algo_);
+}
+
+std::expected<void, CryptoError> PQCStrategy::generateKeyPairInternal(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, const std::string& algo) {
     std::string pub, priv;
     if (key_paths.count("public-key")) {
         pub = key_paths.at("public-key");
@@ -106,7 +116,7 @@ std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const st
 
     bool use_tpm = key_paths.count("use-tpm") && key_paths.at("use-tpm") == "true";
     
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, kem_algo_.c_str(), nullptr));
+    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, algo.c_str(), nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::KeyGenerationInitError);
     EVP_PKEY* pkey = nullptr; 
     if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return std::unexpected(CryptoError::KeyGenerationError);
@@ -129,10 +139,6 @@ std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const st
     if (!pub_bio) return std::unexpected(CryptoError::FileCreationError);
     PEM_write_bio_PUBKEY(pub_bio.get(), pqc_key.get());
     return {};
-}
-
-std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return generateEncryptionKeyPair(key_paths, passphrase);
 }
 
 
@@ -271,8 +277,9 @@ std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesyst
         pkey_ptr.reset(pkey);
     }
 
-    sign_key_.reset(pkey_ptr.release());
-    message_buffer_.clear();
+    sign_key_ = std::move(pkey_ptr);
+    EVP_MD_CTX_reset(md_ctx_.get());
+    if (EVP_DigestSignInit(md_ctx_.get(), nullptr, nullptr, nullptr, sign_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
 
@@ -281,6 +288,9 @@ std::expected<void, CryptoError> PQCStrategy::prepareVerification(const std::fil
     if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
     verify_key_.reset(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
     if (!verify_key_) return std::unexpected(CryptoError::PublicKeyLoadError);
+
+    EVP_MD_CTX_reset(md_ctx_.get());
+    if (EVP_DigestVerifyInit(md_ctx_.get(), nullptr, nullptr, nullptr, verify_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return {};
 }
 
@@ -289,35 +299,29 @@ void PQCStrategy::updateHash(const std::vector<char>& data) {
 }
 
 std::expected<std::vector<char>, CryptoError> PQCStrategy::signHash() {
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(sign_key_.get(), nullptr));
-    if (!ctx || EVP_PKEY_sign_init(ctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    size_t sig_len;
-    EVP_PKEY_sign(ctx.get(), nullptr, &sig_len, (const unsigned char*)message_buffer_.data(), message_buffer_.size());
+    size_t sig_len = 0;
+    if (EVP_DigestSign(md_ctx_.get(), nullptr, &sig_len, (const unsigned char*)message_buffer_.data(), message_buffer_.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     std::vector<unsigned char> sig(sig_len);
-    if (EVP_PKEY_sign(ctx.get(), sig.data(), &sig_len, (const unsigned char*)message_buffer_.data(), message_buffer_.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_DigestSign(md_ctx_.get(), sig.data(), &sig_len, (const unsigned char*)message_buffer_.data(), message_buffer_.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    sig.resize(sig_len);
     message_buffer_.clear();
     return std::vector<char>(sig.begin(), sig.end());
 }
 
 std::expected<bool, CryptoError> PQCStrategy::verifyHash(const std::vector<char>& signature) {
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(verify_key_.get(), nullptr));
-    if (!ctx || EVP_PKEY_verify_init(ctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    int res = EVP_PKEY_verify(ctx.get(), (const unsigned char*)signature.data(), signature.size(), (const unsigned char*)message_buffer_.data(), message_buffer_.size());
+    int res = EVP_DigestVerify(md_ctx_.get(), (const unsigned char*)signature.data(), signature.size(), (const unsigned char*)message_buffer_.data(), message_buffer_.size());
     message_buffer_.clear();
     if (res == 1) return true;
     if (res == 0) return false;
     return std::unexpected(CryptoError::OpenSSLError);
 }
-
 std::vector<char> PQCStrategy::serializeSignatureHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'S'});
-    uint16_t version = 1;
-    header.insert(header.end(), (char*)&version, (char*)&version + 2);
+    write_u16_le(header, 1);
     header.push_back((char)getStrategyType());
     auto add_string = [&](const std::string& s) {
-        uint32_t len = (uint32_t)s.size();
-        header.insert(header.end(), (char*)&len, (char*)&len + 4);
+        write_u32_le(header, (uint32_t)s.size());
         header.insert(header.end(), s.begin(), s.end());
     };
     add_string(kem_algo_);
@@ -330,14 +334,13 @@ std::expected<size_t, CryptoError> PQCStrategy::deserializeSignatureHeader(const
     if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
     if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
     pos += 4;
-    uint16_t version; memcpy(&version, &data[pos], 2); pos += 2;
-    if (version != 1) return std::unexpected(CryptoError::FileReadError);
+    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
     uint8_t type = (uint8_t)data[pos++];
     if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
 
     auto read_string = [&](std::string& s) -> bool {
-        if (pos + 4 > data.size()) return false;
-        uint32_t len; memcpy(&len, &data[pos], 4); pos += 4;
+        uint32_t len;
+        if (!read_u32_le(data, pos, len)) return false;
         if (pos + len > data.size()) return false;
         s.assign(data.begin() + pos, data.begin() + pos + len); pos += len;
         return true;

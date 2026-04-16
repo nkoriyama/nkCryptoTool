@@ -168,6 +168,8 @@ asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, s
     auto header = strategy->serializeSignatureHeader();
     out.write(header.data(), header.size());
     out.write(signature->data(), signature->size());
+    out.flush();
+    out.close();
 }
 
 asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback) {
@@ -178,6 +180,8 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignat
     sig_in.read(sig_header_peek.data(), sig_header_peek.size());
     std::streamsize read_bytes = sig_in.gcount();
     sig_header_peek.resize(static_cast<size_t>(read_bytes));
+    sig_in.clear(); // EOF到達による failbit をリセット
+
     auto pos_res = strategy->deserializeSignatureHeader(sig_header_peek);
     if (!pos_res) co_return std::unexpected(pos_res.error());
     size_t header_size = *pos_res;
@@ -293,8 +297,14 @@ std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesys
     if (!pkey) return std::unexpected(pkey.error());
     if (raw_priv.has_parent_path()) std::filesystem::create_directories(raw_priv.parent_path());
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(raw_priv.string().c_str(), "wb"));
-    if (pass.empty()) PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), nullptr, nullptr, 0, nullptr, nullptr);
-    else PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), EVP_aes_256_cbc(), nullptr, 0, pem_passwd_cb, (void*)&pass);
+    
+    // .rawkey 拡張子の場合は、検証用などのために暗号化せずに書き出す
+    if (raw_priv.extension() == ".rawkey") {
+        PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), nullptr, nullptr, 0, nullptr, nullptr);
+    } else {
+        if (pass.empty()) PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), nullptr, nullptr, 0, nullptr, nullptr);
+        else PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), EVP_aes_256_cbc(), nullptr, 0, pem_passwd_cb, (void*)&pass);
+    }
     return {};
 }
 

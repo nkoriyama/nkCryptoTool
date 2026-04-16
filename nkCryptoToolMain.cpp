@@ -106,12 +106,26 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         std::string raw_path = result["wrap-existing"].as<std::string>();
         config.input_files.push_back(resolve_key_path(raw_path));
         if (config.output_file.empty()) {
-            config.output_file = resolve_key_path(raw_path + ".tpmkey");
+            std::filesystem::path p(raw_path);
+            if (p.extension() == ".key") {
+                config.output_file = resolve_key_path(p.stem().string() + ".tpmkey");
+            } else {
+                config.output_file = resolve_key_path(raw_path + ".tpmkey");
+            }
         }
     }
     else if (result.count("unwrap-key")) {
         config.operation = Operation::UnwrapKey;
-        config.input_files.push_back(resolve_key_path(result["unwrap-key"].as<std::string>()));
+        std::string wrapped_path = result["unwrap-key"].as<std::string>();
+        config.input_files.push_back(resolve_key_path(wrapped_path));
+        if (config.output_file.empty()) {
+            std::filesystem::path p(wrapped_path);
+            if (p.extension() == ".tpmkey") {
+                config.output_file = resolve_key_path(p.stem().string() + ".rawkey");
+            } else {
+                config.output_file = resolve_key_path(wrapped_path + ".rawkey");
+            }
+        }
     }
     else config.operation = Operation::None;
 
@@ -198,8 +212,6 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
             config.key_paths["private-mlkem-key"] = resolve_key_path("private_enc_hybrid_mlkem.key");
             config.key_paths["public-ecdh-key"] = resolve_key_path("public_enc_hybrid_ecdh.key");
             config.key_paths["private-ecdh-key"] = resolve_key_path("private_enc_hybrid_ecdh.key");
-            config.key_paths["public-key"] = config.key_paths["public-mlkem-key"];
-            config.key_paths["private-key"] = config.key_paths["private-mlkem-key"];
         } else {
             std::string suffix = "_" + to_string(config.mode) + ".key";
             config.key_paths["public-key"] = resolve_key_path("public_enc" + suffix);
@@ -335,6 +347,7 @@ int main(int argc, char* argv[]) {
         return_code = 1;
     } catch (const std::exception& e) {
         std::cerr << "An error occurred: " << e.what() << std::endl;
+        nkCryptoToolBase::printOpenSSLErrors();
         return_code = 1;
     }
     return return_code;
