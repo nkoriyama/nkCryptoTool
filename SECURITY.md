@@ -163,3 +163,5 @@ nkCryptoTool enforces a strict security model:
 * Security boundaries are explicitly defined
 
 This design reflects the practical limits of user-space cryptographic security while maximizing protection within those constraints.
+
+**This document reflects the actual implementation and is kept in sync with the codebase.**
