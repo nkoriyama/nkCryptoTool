@@ -152,7 +152,12 @@ std::expected<void, CryptoError> HybridStrategy::finalizeDecryption(const std::v
 std::map<std::string, std::string> HybridStrategy::getMetadata(const std::string& magic) const {
     auto meta = pqc_strategy_->getMetadata(magic);
     meta["Strategy"] = "Hybrid";
-    meta["Encryption-Type"] = "Hybrid (ML-KEM-1024 + ECDH-P256)";
+    if (magic == "NKCS") {
+        meta["File-Type"] = "Signature";
+    } else {
+        meta["File-Type"] = "Encrypted";
+        meta["Encryption-Type"] = "Hybrid (ML-KEM-1024 + ECDH-P256)";
+    }
     return meta;
 }
 

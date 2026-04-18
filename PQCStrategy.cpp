@@ -25,8 +25,14 @@ PQCStrategy::~PQCStrategy() {
 std::map<std::string, std::string> PQCStrategy::getMetadata(const std::string& magic) const {
     std::map<std::string, std::string> res;
     res["Strategy"] = "PQC";
-    res["KEM-Algorithm"] = kem_algo_;
-    res["DSA-Algorithm"] = dsa_algo_;
+    if (magic == "NKCS") {
+        res["File-Type"] = "Signature";
+        res["DSA-Algorithm"] = dsa_algo_;
+    } else {
+        res["File-Type"] = "Encrypted";
+        res["KEM-Algorithm"] = kem_algo_;
+        res["DSA-Algorithm"] = dsa_algo_;
+    }
     return res;
 }
 
