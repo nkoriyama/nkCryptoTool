@@ -9,7 +9,7 @@
 #include <iostream>
 #include <fstream>
 #include "nkCryptoToolBase.hpp"
-#include "TPMUtils.hpp"
+#include "TPMConstants.hpp"
 #include "nkCryptoToolUtils.hpp"
 
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
@@ -123,7 +123,7 @@ std::expected<void, CryptoError> PQCStrategy::generateKeyPairInternal(const std:
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pqc_key(pkey);
 
     if (use_tpm) {
-        auto wrapped = TPMUtils::wrapKey(pqc_key.get(), passphrase);
+        auto wrapped = key_provider_.wrap(pqc_key.get(), passphrase);
         if (!wrapped) return std::unexpected(wrapped.error());
         std::ofstream ofs(priv, std::ios::binary);
         if (!ofs) return std::unexpected(CryptoError::FileCreationError);
@@ -213,7 +213,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<s
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
     if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
-        auto unwrapped = TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), passphrase);
+        auto unwrapped = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
         if (!unwrapped) return std::unexpected(unwrapped.error());
         encryption_priv_key_ = std::move(*unwrapped);
     } else {
@@ -266,7 +266,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesyst
 
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey_ptr;
     if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
-        auto unwrapped = TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), passphrase);
+        auto unwrapped = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
         if (!unwrapped) return std::unexpected(unwrapped.error());
         pkey_ptr = std::move(*unwrapped);
     } else {

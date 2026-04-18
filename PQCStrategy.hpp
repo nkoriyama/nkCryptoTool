@@ -11,6 +11,8 @@
 #include <expected>
 #include <filesystem>
 
+#include "KeyProvider.hpp"
+
 class PQCStrategy : public ICryptoStrategy {
 public:
     PQCStrategy();
@@ -19,7 +21,12 @@ public:
     // ストラテジーの種類
     StrategyType getStrategyType() const override { return StrategyType::PQC; }
 
-    // 鍵生成
+    // 鍵プロバイダーの設定
+    void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) override {
+        key_provider_.set(provider);
+    }
+
+    // 鍵生成 ---
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
 
@@ -75,6 +82,7 @@ private:
     std::vector<unsigned char> shared_secret_;
     std::vector<unsigned char> decrypt_buffer_; // 末尾タグを保持するためのバッファ
     std::vector<char> message_buffer_; // 署名・検証用のメッセージ蓄積バッファ
+    nk::KeyProvider key_provider_;
 };
 
 #endif // PQC_STRATEGY_HPP

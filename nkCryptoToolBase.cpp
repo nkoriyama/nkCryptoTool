@@ -6,13 +6,15 @@
 #include <openssl/params.h>
 #include <openssl/core_names.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
 #include <iostream>
 #include <fstream>
 #include <filesystem>
 #include <cstring>
 #include <future>
 #include "nkCryptoToolUtils.hpp"
-#include "TPMUtils.hpp"
+#include "TPMConstants.hpp"
 
 extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
@@ -20,6 +22,11 @@ nkCryptoToolBase::nkCryptoToolBase(std::shared_ptr<ICryptoStrategy> strategy)
     : strategy_(std::move(strategy)) {}
 
 nkCryptoToolBase::~nkCryptoToolBase() {}
+
+void nkCryptoToolBase::setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) {
+    key_provider_.set(provider);
+    if (strategy_) strategy_->setKeyProvider(provider);
+}
 
 void nkCryptoToolBase::setKeyBaseDirectory(std::filesystem::path dir) { key_base_directory = dir; }
 std::filesystem::path nkCryptoToolBase::getKeyBaseDirectory() const { return key_base_directory; }
@@ -260,7 +267,7 @@ std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCrypto
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
-        return TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), passphrase);
+        return key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
     }
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
     void* pwd = passphrase.empty() ? nullptr : (void*)&passphrase;
@@ -281,7 +288,7 @@ std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::file
 std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass) {
     auto pkey = loadPrivateKey(raw_priv, pass);
     if (!pkey) return std::unexpected(pkey.error());
-    auto wrapped = TPMUtils::wrapKey(pkey->get(), pass);
+    auto wrapped = key_provider_.wrap(pkey->get(), pass);
     if (!wrapped) return std::unexpected(wrapped.error());
     if (wrapped_priv.has_parent_path()) std::filesystem::create_directories(wrapped_priv.parent_path());
     std::ofstream ofs(wrapped_priv, std::ios::binary);
@@ -293,7 +300,7 @@ std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesys
     std::ifstream ifs(wrapped_priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    auto pkey = TPMUtils::unwrapKey(SecureString(pem_content.begin(), pem_content.end()), pass);
+    auto pkey = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), pass);
     if (!pkey) return std::unexpected(pkey.error());
     if (raw_priv.has_parent_path()) std::filesystem::create_directories(raw_priv.parent_path());
     std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(raw_priv.string().c_str(), "wb"));

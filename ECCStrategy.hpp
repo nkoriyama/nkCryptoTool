@@ -11,6 +11,8 @@
 #include <expected>
 #include <filesystem>
 
+#include "KeyProvider.hpp"
+
 class ECCStrategy : public ICryptoStrategy {
 public:
     ECCStrategy();
@@ -19,7 +21,12 @@ public:
     // ストラテジーの種類
     StrategyType getStrategyType() const override { return StrategyType::ECC; }
 
-    // 鍵生成
+    // 鍵プロバイダーの設定
+    void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) override {
+        key_provider_.set(provider);
+    }
+
+    // 鍵生成 ---
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
 
@@ -76,6 +83,7 @@ private:
     bool is_tpm_wrapped_ = false;
     SecureString tpm_passphrase_;
     std::vector<char> tpm_digest_buffer_;
+    nk::KeyProvider key_provider_;
 };
 
 #endif // ECC_STRATEGY_HPP

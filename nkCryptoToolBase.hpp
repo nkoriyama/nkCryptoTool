@@ -24,6 +24,7 @@
 #include <openssl/evp.h>
 #include <openssl/bio.h>
 #include "ICryptoStrategy.hpp"
+#include "KeyProvider.hpp"
 
 namespace asio { class io_context; }
 
@@ -31,6 +32,8 @@ class nkCryptoToolBase : public std::enable_shared_from_this<nkCryptoToolBase> {
 public:
     explicit nkCryptoToolBase(std::shared_ptr<ICryptoStrategy> strategy);
     virtual ~nkCryptoToolBase();
+
+    void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider);
 
     void setKeyBaseDirectory(std::filesystem::path dir);
     std::filesystem::path getKeyBaseDirectory() const;
@@ -65,7 +68,7 @@ public:
     std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, SecureString& passphrase);
     std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, SecureString& passphrase);
     std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv_path, std::filesystem::path wrapped_priv_path, SecureString& passphrase);
-    static std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, SecureString& passphrase);
+    std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, SecureString& passphrase);
     static std::expected<StrategyType, CryptoError> detectStrategyType(const std::filesystem::path& path);
     static bool isPrivateKeyEncrypted(const std::filesystem::path& path);
 
@@ -74,6 +77,7 @@ public:
 
 protected:
     std::shared_ptr<ICryptoStrategy> strategy_;
+    nk::KeyProvider key_provider_;
     std::filesystem::path key_base_directory;
     static constexpr int CHUNK_SIZE = 65536;
 };

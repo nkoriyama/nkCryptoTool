@@ -20,6 +20,8 @@ enum class CryptoError {
     OpenSSLError,
     TPMError,
     TPMProviderLoadError,
+    ProviderNotAvailable,
+    KeyProtectionError,
 };
 
 inline std::string toString(CryptoError err) {
@@ -39,6 +41,8 @@ inline std::string toString(CryptoError err) {
         case CryptoError::OpenSSLError: return "An OpenSSL error occurred";
         case CryptoError::TPMError: return "A TPM error occurred";
         case CryptoError::TPMProviderLoadError: return "Failed to load TPM provider";
+        case CryptoError::ProviderNotAvailable: return "No key protection provider is available";
+        case CryptoError::KeyProtectionError: return "A key protection error occurred";
         default: return "Unknown error";
     }
 }
