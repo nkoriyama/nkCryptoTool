@@ -11,6 +11,15 @@ The architecture separates cryptographic operations from key protection and enfo
 
 ### 1. Ephemeral Key Usage
 
+```mermaid
+flowchart TD
+    A[Start] --> B[Derive AES Key (HKDF)]
+    B --> C[Use Key (AES-GCM)]
+    C --> D[Stored in SecureVector (mlock)]
+    D --> E[Cleanup (OPENSSL_cleanse)]
+    E --> F[Memory Released]
+```
+
 Sensitive data protection keys (e.g., AES keys) are:
 
 * Generated or derived only when needed
