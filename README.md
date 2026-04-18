@@ -90,9 +90,13 @@
 flowchart TD
     User --> CryptoProcessor
     CryptoProcessor --> Strategy
+
+    Strategy --> ECC
+    Strategy --> PQC
+    Strategy --> Hybrid
+
     Strategy --> KeyProvider
-    KeyProvider --> TPM
-    KeyProvider --> SoftwareKey
+    KeyProvider -->|unwrap key| TPM
 ```
 
 - **KeyProvider による抽象化**: 暗号操作を鍵ストレージの実装から分離。メインロジックは具体的な保護メカニズム（TPM等）に依存しません。
