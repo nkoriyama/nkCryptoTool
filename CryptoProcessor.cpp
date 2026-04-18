@@ -4,6 +4,7 @@
 #include "PQCStrategy.hpp"
 #include "HybridStrategy.hpp"
 #include "nkCryptoToolUtils.hpp"
+#include "TpmKeyProvider.hpp"
 
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
@@ -42,6 +43,7 @@ void CryptoProcessor::run_internal() {
         else strategy = std::make_shared<HybridStrategy>();
 
         current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
+        current_handler_->setKeyProvider(std::make_shared<nk::TpmKeyProvider>());
 
         auto completion_handler = [this, work_ptr](std::error_code ec, std::string detail = "") mutable {
             if (ec && !thread_exception_) {
@@ -147,7 +149,7 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::UnwrapKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    auto res = nkCryptoToolBase::unwrapPrivateKey(config_.input_files[0], config_.output_file, config_.passphrase);
+                    auto res = current_handler_->unwrapPrivateKey(config_.input_files[0], config_.output_file, config_.passphrase);
                     if (!res) throw std::system_error(make_error_code(std::errc::invalid_argument), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {

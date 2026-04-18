@@ -12,6 +12,8 @@
 #include <expected>
 #include <filesystem>
 
+#include "KeyProvider.hpp"
+
 class HybridStrategy : public ICryptoStrategy {
 public:
     HybridStrategy();
@@ -20,7 +22,13 @@ public:
     // ストラテジーの種類
     StrategyType getStrategyType() const override { return StrategyType::Hybrid; }
 
-    // 鍵生成 (ML-KEM + ECDH)
+    // 鍵プロバイダーの設定
+    void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) override {
+        if (pqc_strategy_) pqc_strategy_->setKeyProvider(provider);
+        if (ecc_strategy_) ecc_strategy_->setKeyProvider(provider);
+    }
+
+    // 鍵生成 (ML-KEM + ECDH) ---
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
 
