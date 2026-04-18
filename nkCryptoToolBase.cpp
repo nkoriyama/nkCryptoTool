@@ -231,11 +231,24 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignat
 asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> nkCryptoToolBase::inspectFile(asio::io_context& io_context, std::filesystem::path input_filepath, ProgressCallback progress_callback) {
     std::ifstream in(input_filepath, std::ios::binary);
     if (!in) co_return std::unexpected(CryptoError::FileReadError);
+    char magic[4];
+    in.read(magic, 4);
+    std::string magic_str(magic, 4);
+    in.seekg(0);
     std::vector<char> header_peek(16384);
     in.read(header_peek.data(), header_peek.size());
-    auto res = strategy_->deserializeHeader(header_peek);
+    
+    std::expected<size_t, CryptoError> res;
+    if (magic_str == "NKCT") {
+        res = strategy_->deserializeHeader(header_peek);
+    } else if (magic_str == "NKCS") {
+        res = strategy_->deserializeSignatureHeader(header_peek);
+    } else {
+        co_return std::unexpected(CryptoError::FileReadError);
+    }
+
     if (!res) co_return std::unexpected(res.error());
-    co_return strategy_->getMetadata();
+    co_return strategy_->getMetadata(magic_str);
 }
 
 std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsigned char>& secret, size_t out_len, const std::string& salt, const std::string& info, const std::string& md_name) {
@@ -320,7 +333,7 @@ std::expected<StrategyType, CryptoError> nkCryptoToolBase::detectStrategyType(co
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     char magic[4];
     ifs.read(magic, 4);
-    if (std::memcmp(magic, "NKCT", 4) != 0) return std::unexpected(CryptoError::FileReadError);
+    if (std::memcmp(magic, "NKCT", 4) != 0 && std::memcmp(magic, "NKCS", 4) != 0) return std::unexpected(CryptoError::FileReadError);
     ifs.seekg(6);
     uint8_t type;
     ifs.read((char*)&type, 1);

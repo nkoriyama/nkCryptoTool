@@ -23,6 +23,11 @@ ECCStrategy::~ECCStrategy() {
 std::map<std::string, std::string> ECCStrategy::getMetadata(const std::string& magic) const {
     std::map<std::string, std::string> res;
     res["Strategy"] = "ECC";
+    if (magic == "NKCS") {
+        res["File-Type"] = "Signature";
+    } else {
+        res["File-Type"] = "Encrypted";
+    }
     res["Curve-Name"] = curve_name_;
     res["Digest-Algorithm"] = digest_algo_;
     return res;
