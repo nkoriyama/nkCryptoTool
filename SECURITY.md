@@ -87,6 +87,28 @@ To prevent sensitive data leakage:
 
 ## Security Boundaries
 
+```mermaid
+flowchart TD
+    subgraph UserSpace
+        A[Application]
+        B[Secure Memory]
+    end
+
+    subgraph OS
+        C[Process Isolation]
+        D[Memory Management]
+    end
+
+    subgraph Hardware
+        E[RAM]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+```
+
 ### Guaranteed Protections
 
 The system ensures:
