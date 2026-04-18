@@ -1,6 +1,6 @@
 nkCryptoTool is designed with a strong focus on minimizing exposure of sensitive key material.
 
-This document describes its security design and guarantees, and reflects the current implementation.
+This document describes its security design and guarantees and reflects the current implementation.
 
 # Security Policy
 
