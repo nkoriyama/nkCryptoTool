@@ -1,7 +1,7 @@
-# Security Policy
-
 This document describes the security design and guarantees of nkCryptoTool.
 It reflects the current implementation and is kept in sync with the codebase.
+
+# Security Policy
 
 ## Overview
 
