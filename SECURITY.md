@@ -1,5 +1,6 @@
-This document describes the security design and guarantees of nkCryptoTool.
-It reflects the current implementation and is kept in sync with the codebase.
+nkCryptoTool is designed with a strong focus on minimizing exposure of sensitive key material.
+
+This document describes its security design and guarantees, and reflects the current implementation.
 
 # Security Policy
 
