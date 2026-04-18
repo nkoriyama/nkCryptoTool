@@ -11,6 +11,9 @@
 #include <openssl/provider.h>
 #include <openssl/err.h>
 #include <openssl/params.h>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 // This function now populates the CryptoConfig struct
 CryptoConfig parse_command_line(int argc, char* argv[]) {
@@ -272,6 +275,10 @@ bool needs_passphrase(const CryptoConfig& config) {
 }
 
 int main(int argc, char* argv[]) {
+#ifndef _WIN32
+    struct rlimit limit = {0, 0};
+    setrlimit(RLIMIT_CORE, &limit);
+#endif
     OSSL_PROVIDER_load(nullptr, "default");
     int return_code = 0;
     try {
