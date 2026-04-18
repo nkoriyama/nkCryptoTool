@@ -277,7 +277,9 @@ bool needs_passphrase(const CryptoConfig& config) {
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
     struct rlimit limit = {0, 0};
-    setrlimit(RLIMIT_CORE, &limit);
+    if (setrlimit(RLIMIT_CORE, &limit) != 0) {
+        std::cerr << "Warning: Failed to disable core dumps. Memory contents may be leaked on crash." << std::endl;
+    }
 #endif
     OSSL_PROVIDER_load(nullptr, "default");
     int return_code = 0;
