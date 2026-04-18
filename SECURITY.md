@@ -13,11 +13,11 @@ The architecture separates cryptographic operations from key protection and enfo
 
 ```mermaid
 flowchart TD
-    A[Start] --> B[Derive AES Key (HKDF)]
-    B --> C[Use Key (AES-GCM)]
-    C --> D[Stored in SecureVector (mlock)]
-    D --> E[Cleanup (OPENSSL_cleanse)]
-    E --> F[Memory Released]
+    A["Start"] --> B["Derive AES Key (HKDF)"]
+    B --> C["Use Key (AES-GCM)"]
+    C --> D["Stored in SecureVector (mlock)"]
+    D --> E["Cleanup (OPENSSL_cleanse)"]
+    E --> F["Memory Released"]
 ```
 
 Sensitive data protection keys (e.g., AES keys) are:
@@ -90,17 +90,17 @@ To prevent sensitive data leakage:
 ```mermaid
 flowchart TD
     subgraph UserSpace
-        A[Application]
-        B[Secure Memory]
+        A["Application"]
+        B["Secure Memory"]
     end
 
     subgraph OS
-        C[Process Isolation]
-        D[Memory Management]
+        C["Process Isolation"]
+        D["Memory Management"]
     end
 
     subgraph Hardware
-        E[RAM]
+        E["RAM"]
     end
 
     A --> B
