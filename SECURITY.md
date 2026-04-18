@@ -16,6 +16,7 @@ Sensitive data protection keys (e.g., AES keys) are:
 * Generated or derived only when needed
 * Never persisted to disk
 * Stored only in memory for the shortest possible duration
+* Key lifetime is strictly bound to the processing scope and does not exceed the lifetime of the owning object.
 
 Keys are derived using HKDF and exist only during active cryptographic operations.
 
@@ -112,6 +113,11 @@ This tool is designed to protect against:
 * Memory scraping from user-space processes
 * Command injection attacks
 * Disk persistence of sensitive material
+
+**Assumed attacker capabilities:**
+* Unprivileged local user
+* Ability to inspect process memory (limited)
+* No kernel or root-level access
 
 This tool does **not** defend against:
 
