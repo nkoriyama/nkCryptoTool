@@ -78,6 +78,15 @@
 
 ## **鍵管理アーキテクチャ**
 
+```mermaid
+flowchart TD
+    User --> CryptoProcessor
+    CryptoProcessor --> Strategy
+    Strategy --> KeyProvider
+    KeyProvider --> TPM
+    KeyProvider --> SoftwareKey
+```
+
 - **KeyProvider による抽象化**: 暗号操作を鍵ストレージの実装から分離。メインロジックは具体的な保護メカニズム（TPM等）に依存しません。
 - **セキュアな TPM バックエンド**: TPM 2.0 HMAC セッションと安全なプロセス実行（シェル排除）を活用し、堅牢なハードウェアベースの鍵ラッピングを提供します。
 - **高い拡張性**: 将来的に Cloud KMS、ハードウェアセキュリティモジュール (HSM)、あるいは高度なソフトウェアベースのプロバイダーへの拡張が可能な設計になっています。
