@@ -169,7 +169,7 @@ set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
 file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
 
 # E2Eテスト用のヘルパーマクロ
-macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECURSIVE INFO TPM WRAP PASSPHRASE KEY_TYPE)
+macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING NEGATIVE REGEN_PUB REGEN_SIGN_PUB RECURSIVE INFO TPM WRAP PASSPHRASE KEY_TYPE)
     add_test(NAME ${TEST_NAME}
         COMMAND ${CMAKE_COMMAND}
             -DNK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
@@ -178,6 +178,7 @@ macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING REGEN_PUB REGEN_SIGN_PUB RECU
             -DSCENARIO_MODE=${MODE}
             -DSCENARIO_PARALLEL=${PARALLEL}
             -DSCENARIO_SIGNING=${SIGNING}
+            -DSCENARIO_NEGATIVE=${NEGATIVE}
             -DSCENARIO_REGENERATE_PUBKEY=${REGEN_PUB}
             -DSCENARIO_REGENERATE_SIGN_PUBKEY=${REGEN_SIGN_PUB}
             -DSCENARIO_RECURSIVE=${RECURSIVE}
@@ -195,77 +196,82 @@ endmacro()
 include("${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake")
 
 # --- Run Standard Encryption Scenarios (No Passphrase) ---
-add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
-add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
-add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_Hybrid_Encryption hybrid OFF OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_Encryption    pqc    OFF OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_Encryption    ecc    OFF OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
 
 # --- Run Standard Encryption Scenarios (With Passphrase) ---
-add_e2e_test(E2E_Hybrid_Encryption_Pass hybrid OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
-add_e2e_test(E2E_PQC_Encryption_Pass    pqc    OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
-add_e2e_test(E2E_ECC_Encryption_Pass    ecc    OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
+add_e2e_test(E2E_Hybrid_Encryption_Pass hybrid OFF OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
+add_e2e_test(E2E_PQC_Encryption_Pass    pqc    OFF OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
+add_e2e_test(E2E_ECC_Encryption_Pass    ecc    OFF OFF OFF OFF OFF OFF OFF OFF OFF "secret123" "enc")
 
 # --- Run Parallel Encryption Scenarios ---
-add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
-add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
-add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_Hybrid_Parallel_Encryption hybrid ON  OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_Parallel_Encryption    pqc    ON  OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_Parallel_Encryption    ecc    ON  OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
 
 # --- Run Signing Scenarios (No Passphrase) ---
-add_e2e_test(E2E_PQC_Signing pqc OFF ON OFF OFF OFF OFF OFF OFF "" "sign")
-add_e2e_test(E2E_ECC_Signing ecc OFF ON OFF OFF OFF OFF OFF OFF "" "sign")
+add_e2e_test(E2E_PQC_Signing pqc OFF ON OFF OFF OFF OFF OFF OFF OFF "" "sign")
+add_e2e_test(E2E_ECC_Signing ecc OFF ON OFF OFF OFF OFF OFF OFF OFF "" "sign")
 
 # --- Run Signing Scenarios (With Passphrase) ---
-add_e2e_test(E2E_PQC_Signing_Pass pqc OFF ON OFF OFF OFF OFF OFF OFF "signpass" "sign")
-add_e2e_test(E2E_ECC_Signing_Pass ecc OFF ON OFF OFF OFF OFF OFF OFF "signpass" "sign")
+add_e2e_test(E2E_PQC_Signing_Pass pqc OFF ON OFF OFF OFF OFF OFF OFF OFF "signpass" "sign")
+add_e2e_test(E2E_ECC_Signing_Pass ecc OFF ON OFF OFF OFF OFF OFF OFF OFF "signpass" "sign")
+
+# --- Run Negative Scenarios ---
+add_e2e_test(E2E_Hybrid_Negative hybrid OFF OFF ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_Negative    pqc    OFF OFF ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_Negative    ecc    OFF OFF ON  OFF OFF OFF OFF OFF OFF OFF "" "enc")
 
 # --- Run Regenerate Public Key Tests ---
-add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF OFF OFF "" "enc")
-add_e2e_test(E2E_ECC_Regenerate_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF OFF OFF "regenpass" "enc")
-add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF OFF ON OFF OFF OFF "" "enc")
-add_e2e_test(E2E_PQC_Regenerate_Pubkey_Pass pqc OFF OFF OFF OFF ON OFF OFF OFF "regenpass" "enc")
+add_e2e_test(E2E_ECC_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_Regenerate_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF OFF OFF OFF OFF "regenpass" "enc")
+add_e2e_test(E2E_PQC_Regenerate_Pubkey pqc OFF OFF OFF OFF ON OFF OFF OFF OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_Regenerate_Pubkey_Pass pqc OFF OFF OFF OFF ON OFF OFF OFF OFF OFF "regenpass" "enc")
 
 # --- Run Regenerate Signing Public Key Tests ---
-add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON OFF OFF OFF "" "sign")
-add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF OFF OFF "signpass" "sign")
-add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF ON OFF OFF OFF "" "sign")
-add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey_Pass pqc OFF OFF OFF OFF ON OFF OFF OFF "signpass" "sign")
+add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF OFF ON OFF OFF OFF OFF "" "sign")
+add_e2e_test(E2E_ECC_Regenerate_Sign_Pubkey_Pass ecc OFF OFF OFF OFF OFF ON OFF OFF OFF OFF "signpass" "sign")
+add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey pqc OFF OFF OFF OFF OFF ON OFF OFF OFF OFF "" "sign")
+add_e2e_test(E2E_PQC_Regenerate_Sign_Pubkey_Pass pqc OFF OFF OFF OFF OFF ON OFF OFF OFF OFF "signpass" "sign")
 
 # --- Run TPM Regenerate Public Key Tests ---
-add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF ON OFF "" "enc")
-add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF ON OFF "tpmpass" "enc")
+add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey ecc OFF OFF OFF OFF ON OFF ON OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_TPM_Regenerate_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF ON OFF OFF "tpmpass" "enc")
 
 # --- Run TPM Regenerate Signing Public Key Tests ---
-add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF ON OFF ON OFF "" "sign")
-add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey_Pass ecc OFF OFF OFF OFF ON OFF ON OFF "tpmpass" "sign")
+add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey ecc OFF OFF OFF OFF OFF ON OFF ON OFF OFF "" "sign")
+add_e2e_test(E2E_ECC_TPM_Regenerate_Sign_Pubkey_Pass ecc OFF OFF OFF OFF OFF ON OFF ON OFF OFF "tpmpass" "sign")
 
 # --- Run Info Inspection Tests ---
-add_e2e_test(E2E_Hybrid_Info hybrid OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
-add_e2e_test(E2E_PQC_Info    pqc    OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
-add_e2e_test(E2E_ECC_Info    ecc    OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
+add_e2e_test(E2E_Hybrid_Info hybrid OFF OFF OFF OFF OFF ON OFF OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_Info    pqc    OFF OFF OFF OFF OFF ON OFF OFF OFF "" "enc")
+add_e2e_test(E2E_ECC_Info    ecc    OFF OFF OFF OFF OFF ON OFF OFF OFF "" "enc")
 
 # --- Run TPM Scenarios ---
-add_e2e_test(E2E_ECC_TPM_Encryption    ecc    OFF OFF OFF OFF OFF OFF ON OFF "" "enc")
-add_e2e_test(E2E_PQC_TPM_Encryption    pqc    OFF OFF OFF OFF OFF OFF ON OFF "" "enc")
-add_e2e_test(E2E_Hybrid_TPM_Encryption hybrid OFF OFF OFF OFF OFF OFF ON OFF "" "enc")
+add_e2e_test(E2E_ECC_TPM_Encryption    ecc    OFF OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
+add_e2e_test(E2E_PQC_TPM_Encryption    pqc    OFF OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
+add_e2e_test(E2E_Hybrid_TPM_Encryption hybrid OFF OFF OFF OFF OFF OFF ON OFF OFF "" "enc")
 
 # --- Run TPM Scenarios (With Passphrase) ---
-add_e2e_test(E2E_ECC_TPM_Encryption_Pass    ecc    OFF OFF OFF OFF OFF OFF ON OFF "tpmpass" "enc")
-add_e2e_test(E2E_PQC_TPM_Encryption_Pass    pqc    OFF OFF OFF OFF OFF OFF ON OFF "tpmpass" "enc")
-add_e2e_test(E2E_Hybrid_TPM_Encryption_Pass hybrid OFF OFF OFF OFF OFF OFF ON OFF "tpmpass" "enc")
+add_e2e_test(E2E_ECC_TPM_Encryption_Pass    ecc    OFF OFF OFF OFF OFF OFF ON OFF OFF "tpmpass" "enc")
+add_e2e_test(E2E_PQC_TPM_Encryption_Pass    pqc    OFF OFF OFF OFF OFF OFF ON OFF OFF "tpmpass" "enc")
+add_e2e_test(E2E_Hybrid_TPM_Encryption_Pass hybrid OFF OFF OFF OFF OFF OFF ON OFF OFF "tpmpass" "enc")
 
-add_e2e_test(E2E_ECC_TPM_Signing       ecc    OFF ON  OFF OFF OFF OFF ON OFF "" "sign")
-add_e2e_test(E2E_PQC_TPM_Signing       pqc    OFF ON  OFF OFF OFF OFF ON OFF "" "sign")
+add_e2e_test(E2E_ECC_TPM_Signing       ecc    OFF ON  OFF OFF OFF OFF ON OFF OFF "" "sign")
+add_e2e_test(E2E_PQC_TPM_Signing       pqc    OFF ON  OFF OFF OFF OFF ON OFF OFF "" "sign")
 
 # --- Run TPM Wrap/Unwrap Scenarios ---
-add_e2e_test(E2E_ECC_TPM_WrapUnwrap    ecc    OFF OFF OFF OFF OFF OFF OFF ON "" "enc")
-add_e2e_test(E2E_ECC_TPM_WrapUnwrap_Pass ecc    OFF OFF OFF OFF OFF OFF OFF ON "wrappass" "enc")
-add_e2e_test(E2E_PQC_TPM_WrapUnwrap    pqc    OFF OFF OFF OFF OFF OFF OFF ON "" "enc")
-add_e2e_test(E2E_PQC_TPM_WrapUnwrap_Pass pqc    OFF OFF OFF OFF OFF OFF OFF ON "wrappass" "enc")
+add_e2e_test(E2E_ECC_TPM_WrapUnwrap    ecc    OFF OFF OFF OFF OFF OFF OFF ON OFF "" "enc")
+add_e2e_test(E2E_ECC_TPM_WrapUnwrap_Pass ecc    OFF OFF OFF OFF OFF OFF OFF ON OFF "wrappass" "enc")
+add_e2e_test(E2E_PQC_TPM_WrapUnwrap    pqc    OFF OFF OFF OFF OFF OFF OFF ON OFF "" "enc")
+add_e2e_test(E2E_PQC_TPM_WrapUnwrap_Pass pqc    OFF OFF OFF OFF OFF OFF OFF ON OFF "wrappass" "enc")
 
 # --- Run TPM Wrap/Unwrap Scenarios (Signing Keys) ---
-add_e2e_test(E2E_ECC_TPM_Sign_WrapUnwrap ecc OFF OFF OFF OFF OFF OFF OFF ON "" "sign")
-add_e2e_test(E2E_ECC_TPM_Sign_WrapUnwrap_Pass ecc OFF OFF OFF OFF OFF OFF OFF ON "wrappass" "sign")
-add_e2e_test(E2E_PQC_TPM_Sign_WrapUnwrap pqc OFF OFF OFF OFF OFF OFF OFF ON "" "sign")
-add_e2e_test(E2E_PQC_TPM_Sign_WrapUnwrap_Pass pqc OFF OFF OFF OFF OFF OFF OFF ON "wrappass" "sign")
+add_e2e_test(E2E_ECC_TPM_Sign_WrapUnwrap ecc OFF OFF OFF OFF OFF OFF OFF ON OFF "" "sign")
+add_e2e_test(E2E_ECC_TPM_Sign_WrapUnwrap_Pass ecc OFF OFF OFF OFF OFF OFF OFF ON OFF "wrappass" "sign")
+add_e2e_test(E2E_PQC_TPM_Sign_WrapUnwrap pqc OFF OFF OFF OFF OFF OFF OFF ON OFF "" "sign")
+add_e2e_test(E2E_PQC_TPM_Sign_WrapUnwrap_Pass pqc OFF OFF OFF OFF OFF OFF OFF ON OFF "wrappass" "sign")
 
 # MinGW DLLのコピーとインストール設定
 if(MINGW)
