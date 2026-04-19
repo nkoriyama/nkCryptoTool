@@ -403,7 +403,117 @@ function(run_signing_scenario MODE USE_TPM PASSPHRASE)
     set(TEST_RESULT 0 PARENT_SCOPE)
 endfunction()
 
-# --- Scenario Definition: Regenerate Public Key and Use for Decryption ---
+# --- Scenario Definition: Negative Tests (Password failure, corruption, etc.) ---
+function(run_negative_scenario MODE)
+    set(SCENARIO_NAME_UPPERCASE "${MODE}")
+    string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
+
+    message(STATUS "\n=============================================")
+    message(STATUS " E2E SCENARIO: ${SCENARIO_NAME_UPPERCASE} Negative Tests (Corruption/Wrong Pass)")
+    message(STATUS "=============================================")
+
+    set(SCENARIO_DIR "${TEST_OUTPUT_DIR}")
+    set(KEY_DIR "${SCENARIO_DIR}/keys")
+    set(ENCRYPTED_FILE "${SCENARIO_DIR}/encrypted.bin")
+    set(DECRYPTED_FILE "${SCENARIO_DIR}/decrypted.txt")
+    set(SIGNATURE_FILE "${SCENARIO_DIR}/test.sig")
+    file(REMOVE_RECURSE "${SCENARIO_DIR}")
+    file(MAKE_DIRECTORY "${KEY_DIR}")
+
+    # 1. Wrong Passphrase Test
+    message(STATUS "  -> [Sub-test] Wrong passphrase detection...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-enc-key --key-dir "${KEY_DIR}" --passphrase=correct_pass RESULT_VARIABLE res)
+    
+    # Encrypt
+    set(ENCRYPT_ARGS --mode "${MODE}" --encrypt -o "${ENCRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        list(APPEND ENCRYPT_ARGS --recipient-mlkem-pubkey "${KEY_DIR}/public_enc_hybrid_mlkem.key")
+        list(APPEND ENCRYPT_ARGS --recipient-ecdh-pubkey "${KEY_DIR}/public_enc_hybrid_ecdh.key")
+    else()
+        list(APPEND ENCRYPT_ARGS --recipient-pubkey "${KEY_DIR}/public_enc_${MODE}.key")
+    endif()
+    list(APPEND ENCRYPT_ARGS "${TEST_INPUT_FILE}")
+    
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase ${ENCRYPT_ARGS} RESULT_VARIABLE res)
+
+    # Decrypt with WRONG passphrase (expect failure)
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}" --passphrase=wrong_pass "${ENCRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        list(APPEND DECRYPT_ARGS --recipient-mlkem-privkey "${KEY_DIR}/private_enc_hybrid_mlkem.key")
+        list(APPEND DECRYPT_ARGS --recipient-ecdh-privkey "${KEY_DIR}/private_enc_hybrid_ecdh.key")
+    else()
+        list(APPEND DECRYPT_ARGS --user-privkey "${KEY_DIR}/private_enc_${MODE}.key")
+    endif()
+    
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase ${DECRYPT_ARGS} RESULT_VARIABLE res)
+    if(res EQUAL 0)
+        message(STATUS "  [FAILED] Decryption succeeded with WRONG passphrase. Security risk!")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+    message(STATUS "     (OK) Decryption failed as expected with wrong passphrase.")
+
+    # 2. Encrypted Data Corruption Test (AEAD Authentication Failure)
+    message(STATUS "  -> [Sub-test] Data corruption detection (AEAD)...")
+    if(NOT EXISTS "${ENCRYPTED_FILE}")
+        message(STATUS "  [FAILED] Encrypted file not found: ${ENCRYPTED_FILE}")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+    # Corrupt the encrypted file (flip a byte)
+    file(READ "${ENCRYPTED_FILE}" hex_data HEX)
+    string(LENGTH "${hex_data}" data_len)
+    if(data_len LESS 200)
+        message(STATUS "  [FAILED] Encrypted file too small to corrupt.")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+    string(SUBSTRING "${hex_data}" 0 100 prefix)
+    string(SUBSTRING "${hex_data}" 102 -1 suffix)
+    set(corrupted_data "${prefix}FF${suffix}")
+    file(WRITE "${ENCRYPTED_FILE}" "${corrupted_data}")
+
+    # Decrypt (expect failure due to MAC mismatch)
+    set(DECRYPT_ARGS --mode "${MODE}" --decrypt -o "${DECRYPTED_FILE}" --passphrase=correct_pass "${ENCRYPTED_FILE}")
+    if("${MODE}" STREQUAL "hybrid")
+        list(APPEND DECRYPT_ARGS --recipient-mlkem-privkey "${KEY_DIR}/private_enc_hybrid_mlkem.key")
+        list(APPEND DECRYPT_ARGS --recipient-ecdh-privkey "${KEY_DIR}/private_enc_hybrid_ecdh.key")
+    else()
+        list(APPEND DECRYPT_ARGS --user-privkey "${KEY_DIR}/private_enc_${MODE}.key")
+    endif()
+
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase ${DECRYPT_ARGS} RESULT_VARIABLE res)
+    if(res EQUAL 0)
+        message(STATUS "  [FAILED] Decryption succeeded on CORRUPTED data. Integrity check failed!")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+    message(STATUS "     (OK) Decryption failed as expected on corrupted data.")
+
+    # 3. Signature Tampering Test
+    message(STATUS "  -> [Sub-test] Signature tampering detection...")
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --gen-sign-key --key-dir "${KEY_DIR}" RESULT_VARIABLE res)
+    # Sign
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --sign --signature "${SIGNATURE_FILE}" --signing-privkey "${KEY_DIR}/private_sign_${MODE}.key" "${TEST_INPUT_FILE}" RESULT_VARIABLE res)
+    
+    # Create a tampered version of the input file
+    set(TAMPERED_INPUT "${SCENARIO_DIR}/tampered_input.txt")
+    file(WRITE "${TAMPERED_INPUT}" "This data is tampered!")
+
+    # Verify signature against tampered file (expect failure)
+    execute_process(COMMAND "${NK_TOOL_EXE}" --no-passphrase --mode "${MODE}" --verify --signature "${SIGNATURE_FILE}" --signing-pubkey "${KEY_DIR}/public_sign_${MODE}.key" "${TAMPERED_INPUT}" RESULT_VARIABLE res)
+    if(res EQUAL 0)
+        message(STATUS "  [FAILED] Signature verification SUCCEEDED on tampered data. Verification logic flawed!")
+        set(TEST_RESULT 1 PARENT_SCOPE)
+        return()
+    endif()
+    message(STATUS "     (OK) Signature verification failed as expected on tampered data.")
+
+    message(STATUS "  [PASSED] Scenario: ${SCENARIO_NAME_UPPERCASE} Negative Tests")
+    set(TEST_RESULT 0 PARENT_SCOPE)
+endfunction()
+
+# --- Scenario Definition: Regenerate Public Key and Use for Decryption ---",old_string:
 function(run_regenerate_pubkey_test MODE PASSPHRASE USE_TPM)
     set(SCENARIO_NAME_UPPERCASE "${MODE}")
     string(TOUPPER "${SCENARIO_NAME_UPPERCASE}" SCENARIO_NAME_UPPERCASE)
@@ -729,6 +839,8 @@ if(DEFINED SCENARIO_MODE)
 
     if(SCENARIO_SIGNING)
         run_signing_scenario(${SCENARIO_MODE} ${SCENARIO_TPM} "${SCENARIO_PASSPHRASE}")
+    elseif(SCENARIO_NEGATIVE)
+        run_negative_scenario(${SCENARIO_MODE})
     elseif(SCENARIO_REGENERATE_PUBKEY)
         run_regenerate_pubkey_test(${SCENARIO_MODE} "${SCENARIO_PASSPHRASE}" ${SCENARIO_TPM})
     elseif(SCENARIO_REGENERATE_SIGN_PUBKEY)
