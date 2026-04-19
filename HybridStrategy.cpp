@@ -19,6 +19,7 @@ HybridStrategy::HybridStrategy() :
 HybridStrategy::~HybridStrategy() {
     if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
+    if (!decrypt_buffer_.empty()) OPENSSL_cleanse(decrypt_buffer_.data(), decrypt_buffer_.size());
 }
 
 std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {

@@ -20,6 +20,8 @@ PQCStrategy::PQCStrategy() :
 PQCStrategy::~PQCStrategy() {
     if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
+    if (!decrypt_buffer_.empty()) OPENSSL_cleanse(decrypt_buffer_.data(), decrypt_buffer_.size());
+    if (!message_buffer_.empty()) OPENSSL_cleanse(message_buffer_.data(), message_buffer_.size());
 }
 
 std::map<std::string, std::string> PQCStrategy::getMetadata(const std::string& magic) const {

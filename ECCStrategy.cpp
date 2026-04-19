@@ -18,6 +18,8 @@ ECCStrategy::ECCStrategy() : cipher_ctx_(EVP_CIPHER_CTX_new()), md_ctx_(EVP_MD_C
 ECCStrategy::~ECCStrategy() {
     if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
     if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
+    if (!decrypt_buffer_.empty()) OPENSSL_cleanse(decrypt_buffer_.data(), decrypt_buffer_.size());
+    if (!tpm_digest_buffer_.empty()) OPENSSL_cleanse(tpm_digest_buffer_.data(), tpm_digest_buffer_.size());
 }
 
 std::map<std::string, std::string> ECCStrategy::getMetadata(const std::string& magic) const {
