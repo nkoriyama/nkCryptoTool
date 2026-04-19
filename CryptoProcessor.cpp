@@ -43,7 +43,9 @@ void CryptoProcessor::run_internal() {
         else strategy = std::make_shared<HybridStrategy>();
 
         current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
-        current_handler_->setKeyProvider(std::make_shared<nk::TpmKeyProvider>());
+        if (config_.use_tpm) {
+            current_handler_->setKeyProvider(std::make_shared<nk::TpmKeyProvider>());
+        }
 
         auto completion_handler = [this, work_ptr](std::error_code ec, std::string detail = "") mutable {
             if (ec && !thread_exception_) {
