@@ -50,8 +50,15 @@ public:
         std::vector<unsigned char> tag(16);
         EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag.data());
 
-        char temp_aes[] = "/tmp/nk_a_XXXXXX"; char primary_ctx[] = "/tmp/nk_p_XXXXXX";
-        char pub_f[] = "/tmp/nk_u_XXXXXX"; char priv_f[] = "/tmp/nk_r_XXXXXX";
+        std::string tmpl_aes = nk::make_secure_tmp_template("nk_a_");
+        std::string tmpl_pctx = nk::make_secure_tmp_template("nk_p_");
+        std::string tmpl_pub = nk::make_secure_tmp_template("nk_u_");
+        std::string tmpl_priv = nk::make_secure_tmp_template("nk_r_");
+        char temp_aes[1024], primary_ctx[1024], pub_f[1024], priv_f[1024];
+        std::strncpy(temp_aes, tmpl_aes.c_str(), sizeof(temp_aes) - 1); temp_aes[sizeof(temp_aes) - 1] = '\0';
+        std::strncpy(primary_ctx, tmpl_pctx.c_str(), sizeof(primary_ctx) - 1); primary_ctx[sizeof(primary_ctx) - 1] = '\0';
+        std::strncpy(pub_f, tmpl_pub.c_str(), sizeof(pub_f) - 1); pub_f[sizeof(pub_f) - 1] = '\0';
+        std::strncpy(priv_f, tmpl_priv.c_str(), sizeof(priv_f) - 1); priv_f[sizeof(priv_f) - 1] = '\0';
         int fds[] = { mkstemp(temp_aes), mkstemp(primary_ctx), mkstemp(pub_f), mkstemp(priv_f) };
         for(int fd : fds) { fchmod(fd, 0600); }
         write(fds[0], aes_key.data(), 32); for(int fd : fds) close(fd);
@@ -120,9 +127,17 @@ public:
 
         if (p_b64.empty() || r_b64.empty() || e_b64.empty()) return std::unexpected(CryptoError::PrivateKeyLoadError);
 
-        char pub_f[] = "/tmp/nk_up_XXXXXX"; char priv_f[] = "/tmp/nk_ur_XXXXXX"; 
-        char aes_f[] = "/tmp/nk_ua_XXXXXX"; char primary_ctx[] = "/tmp/nk_pc_XXXXXX";
-        char key_ctx[] = "/tmp/nk_kc_XXXXXX";
+        std::string tmpl_pub = nk::make_secure_tmp_template("nk_up_");
+        std::string tmpl_priv = nk::make_secure_tmp_template("nk_ur_");
+        std::string tmpl_aes = nk::make_secure_tmp_template("nk_ua_");
+        std::string tmpl_pctx = nk::make_secure_tmp_template("nk_pc_");
+        std::string tmpl_kctx = nk::make_secure_tmp_template("nk_kc_");
+        char pub_f[1024], priv_f[1024], aes_f[1024], primary_ctx[1024], key_ctx[1024];
+        std::strncpy(pub_f, tmpl_pub.c_str(), sizeof(pub_f) - 1); pub_f[sizeof(pub_f) - 1] = '\0';
+        std::strncpy(priv_f, tmpl_priv.c_str(), sizeof(priv_f) - 1); priv_f[sizeof(priv_f) - 1] = '\0';
+        std::strncpy(aes_f, tmpl_aes.c_str(), sizeof(aes_f) - 1); aes_f[sizeof(aes_f) - 1] = '\0';
+        std::strncpy(primary_ctx, tmpl_pctx.c_str(), sizeof(primary_ctx) - 1); primary_ctx[sizeof(primary_ctx) - 1] = '\0';
+        std::strncpy(key_ctx, tmpl_kctx.c_str(), sizeof(key_ctx) - 1); key_ctx[sizeof(key_ctx) - 1] = '\0';
         int fds[] = { mkstemp(pub_f), mkstemp(priv_f), mkstemp(aes_f), mkstemp(primary_ctx), mkstemp(key_ctx) };
         for(int fd : fds) { fchmod(fd, 0600); close(fd); }
 
