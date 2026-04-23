@@ -17,10 +17,54 @@
 #include <fstream>
 #include <memory>
 #include <openssl/crypto.h>
+#include <filesystem>
 #include "SecureMemory.hpp"
 #include "CryptoError.hpp"
 
 extern "C" char** environ;
+
+namespace nk {
+
+/**
+ * セキュアな一時ディレクトリのパスを取得/作成する。
+ * ~/.cache/nkCryptoTool/tmp/ を使用し、初回アクセス時に 0700 で作成。
+ */
+inline std::filesystem::path get_secure_tmp_dir() {
+    static std::filesystem::path dir = []() {
+        auto home = std::getenv("HOME");
+        if (!home) {
+            // Fallback: use system temp directory
+            return std::filesystem::temp_directory_path();
+        }
+        std::filesystem::path d = std::filesystem::path(home) / ".cache" / "nkCryptoTool" / "tmp";
+        std::error_code ec;
+        if (!std::filesystem::exists(d, ec) || ec) {
+            std::filesystem::create_directories(d, ec);
+            if (!ec) {
+                // chmod 0700 - owner only
+                std::filesystem::permissions(d,
+                    std::filesystem::perms::owner_all |
+                    std::filesystem::perms::owner_read |
+                    std::filesystem::perms::owner_write |
+                    std::filesystem::perms::owner_exec,
+                    std::filesystem::perm_options::add);
+                chmod(d.c_str(), S_IRWXU);
+            }
+        }
+        return d;
+    }();
+    return dir;
+}
+
+/**
+ * セキュアな一時ファイルパスを生成し、mkstemp用のテンプレート文字列を返す。
+ * 実際のファイル作成は呼び出し側で mkstemp を行う。
+ */
+inline std::string make_secure_tmp_template(const std::string& prefix = "nk_") {
+    return (get_secure_tmp_dir() / (prefix + "XXXXXX")).string();
+}
+
+} // namespace nk
 
 namespace nk {
 
@@ -173,7 +217,10 @@ class TpmSession {
 public:
     // セッション開始 (アンバインドHMACセッション)
     TpmSession() {
-        char temp_path[] = "/tmp/nk_sess_XXXXXX";
+        std::string tmpl = nk::make_secure_tmp_template("nk_sess_");
+        char temp_path[1024];
+        std::strncpy(temp_path, tmpl.c_str(), sizeof(temp_path) - 1);
+        temp_path[sizeof(temp_path) - 1] = '\0';
         int fd = mkstemp(temp_path);
         if (fd == -1) throw std::runtime_error("Failed to create TPM session file");
         close(fd);
@@ -210,7 +257,10 @@ private:
 class TpmPasswordFile {
 public:
     TpmPasswordFile(const SecureString& password) {
-        char temp_path[] = "/tmp/nk_pw_XXXXXX";
+        std::string tmpl = nk::make_secure_tmp_template("nk_pw_");
+        char temp_path[1024];
+        std::strncpy(temp_path, tmpl.c_str(), sizeof(temp_path) - 1);
+        temp_path[sizeof(temp_path) - 1] = '\0';
         int fd = mkstemp(temp_path);
         if (fd == -1) throw std::runtime_error("Failed to create temporary password file");
         
