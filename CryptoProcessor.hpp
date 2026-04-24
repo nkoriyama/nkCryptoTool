@@ -10,6 +10,8 @@
 #include <thread>
 #include <asio.hpp>
 
+namespace nk { class IKeyProvider; }
+
 class CryptoProcessor {
 public:
     explicit CryptoProcessor(CryptoConfig config);
@@ -17,12 +19,14 @@ public:
 
     std::future<void> run();
     void set_progress_callback(ProgressCallback cb);
+    void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider);
 
 private:
     void run_internal(); // 引数を削除
 
     CryptoConfig config_;
     ProgressCallback progress_callback_ = nullptr;
+    std::shared_ptr<nk::IKeyProvider> key_provider_;
     std::shared_ptr<class nkCryptoToolBase> current_handler_;
     std::thread worker_thread_;
     asio::io_context io_context_;

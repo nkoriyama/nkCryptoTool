@@ -8,6 +8,8 @@
 #include "CryptoProcessor.hpp"
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolUtils.hpp"
+#include "KeyProvider.hpp"
+#include "TpmKeyProvider.hpp"
 #include <openssl/provider.h>
 #include <openssl/err.h>
 #include <openssl/params.h>
@@ -282,24 +284,14 @@ int main(int argc, char* argv[]) {
     }
 #endif
     OSSL_PROVIDER_load(nullptr, "default");
+    // Always try to load TPM2 provider if available, to support seamless unwrapping
+    OSSL_PROVIDER_load(nullptr, "tpm2");
+
     int return_code = 0;
     try {
         CryptoConfig config = parse_command_line(argc, argv);
         if (config.use_tpm) {
-            ERR_clear_error();
-            OSSL_PROVIDER* tpm_provider = OSSL_PROVIDER_load(nullptr, "tpm2");
-            if (tpm_provider == nullptr) {
-                std::cerr << "Warning: Failed to load TPM2 provider. Detailed Errors:" << std::endl;
-                unsigned long err;
-                while ((err = ERR_get_error()) != 0) {
-                    char buf[256];
-                    ERR_error_string_n(err, buf, sizeof(buf));
-                    std::cerr << "  - " << buf << std::endl;
-                }
-            } else {
-                config.key_paths["use-tpm"] = "true";
-                // OSSL_PROVIDER_unload(tpm_provider); // We keep it loaded for the session
-            }
+            config.key_paths["use-tpm"] = "true";
         }
         if (config.is_recursive) {
             if (config.operation == Operation::Encrypt || config.operation == Operation::Decrypt) {
@@ -319,6 +311,17 @@ int main(int argc, char* argv[]) {
                     file_config.output_file = output_path.string();
                     CryptoProcessor processor(std::move(file_config));
                     processor.set_progress_callback(progress_cb);
+
+                    // Set up provider for each processor in recursive mode
+                    std::shared_ptr<nk::IKeyProvider> provider;
+                    auto tpm_provider = std::make_shared<nk::TpmKeyProvider>();
+                    if (tpm_provider->isAvailable()) {
+                        provider = tpm_provider;
+                    } else {
+                        provider = std::make_shared<nk::DefaultKeyProvider>();
+                    }
+                    processor.setKeyProvider(provider);
+
                     auto future = processor.run();
                     try {
                         future.get();
@@ -348,6 +351,17 @@ int main(int argc, char* argv[]) {
              }
              CryptoProcessor processor(std::move(config));
              processor.set_progress_callback(progress_cb);
+
+             // Set up the best available key provider
+             std::shared_ptr<nk::IKeyProvider> provider;
+             auto tpm_provider = std::make_shared<nk::TpmKeyProvider>();
+             if (tpm_provider->isAvailable()) {
+                 provider = tpm_provider;
+             } else {
+                 provider = std::make_shared<nk::DefaultKeyProvider>();
+             }
+             processor.setKeyProvider(provider);
+
              auto future = processor.run();
              future.get();
         }
