@@ -26,6 +26,18 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --- カバレッジ計測設定 ---
+option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
+if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(--coverage -O0 -g)
+        add_link_options(--coverage)
+        message(STATUS "Code coverage enabled")
+    else()
+        message(WARNING "Coverage only supported for GCC and Clang")
+    endif()
+endif()
+
 # FetchContentモジュールをインクルードします。
 include(FetchContent)
 

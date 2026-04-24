@@ -31,6 +31,13 @@ void CryptoProcessor::set_progress_callback(ProgressCallback callback) {
     progress_callback_ = callback;
 }
 
+void CryptoProcessor::setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) {
+    key_provider_ = provider;
+    if (current_handler_) {
+        current_handler_->setKeyProvider(provider);
+    }
+}
+
 void CryptoProcessor::run_internal() {
     try {
         io_context_.restart();
@@ -43,7 +50,9 @@ void CryptoProcessor::run_internal() {
         else strategy = std::make_shared<HybridStrategy>();
 
         current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
-        if (config_.use_tpm) {
+        if (key_provider_) {
+            current_handler_->setKeyProvider(key_provider_);
+        } else if (config_.use_tpm) {
             current_handler_->setKeyProvider(std::make_shared<nk::TpmKeyProvider>());
         }
 
@@ -179,6 +188,9 @@ void CryptoProcessor::run_internal() {
                     }
                     else completion_handler({});
                 });
+                break;
+            default:
+                asio::post(io_context_, [completion_handler]() mutable { completion_handler({}); });
                 break;
         }
 

@@ -47,6 +47,20 @@ private:
     std::shared_ptr<IKeyProvider> provider_;
 };
 
+/**
+ * デフォルトの鍵プロバイダー（何もしない）
+ */
+class DefaultKeyProvider : public IKeyProvider {
+public:
+    std::expected<SecureString, CryptoError> wrapKey(EVP_PKEY* pkey, const SecureString& passphrase = "") override {
+        return std::unexpected(CryptoError::ProviderNotAvailable);
+    }
+    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") override {
+        return std::unexpected(CryptoError::ProviderNotAvailable);
+    }
+    bool isAvailable() override { return false; }
+};
+
 } // namespace nk
 
 #endif // KEY_PROVIDER_HPP
