@@ -34,24 +34,23 @@ void nkCryptoToolBase::encryptFileWithPipeline(
     std::string input_filepath,
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
-    std::function<void(std::error_code)> completion_handler,
+    CompletionHandler completion_handler,
     ProgressCallback progress_callback
 ) {
     auto strategy = strategy_;
     std::error_code ec;
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
-    if (ec) { completion_handler(ec); return; }
+    if (ec) { completion_handler(ec, "Failed to get file size"); return; }
 
     auto prep_res = strategy->prepareEncryption(key_paths);
     if (!prep_res) { 
-        std::cerr << "Encryption Prep Error: " << toString(prep_res.error()) << std::endl;
-        completion_handler(std::make_error_code(std::errc::operation_not_permitted)); 
+        completion_handler(std::make_error_code(std::errc::operation_not_permitted), "Encryption Prep Error: " + toString(prep_res.error())); 
         return; 
     }
 
     async_file_t output_file(io_context);
     output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
-    if (ec) { completion_handler(ec); return; }
+    if (ec) { completion_handler(ec, "Failed to open output file"); return; }
 
     auto manager = std::make_shared<PipelineManager>(io_context);
     manager->add_stage([strategy](const std::vector<char>& data) { return strategy->encryptTransform(data); });
@@ -67,8 +66,10 @@ void nkCryptoToolBase::encryptFileWithPipeline(
     auto header = strategy->serializeHeader();
     auto& descriptor = output_file.get();
     asio::async_write(descriptor, asio::buffer(header), [manager, input_filepath, out = std::move(output_file), total_size, completion_handler, progress_callback, finalizer](std::error_code ec, std::size_t) mutable {
-        if (ec) { completion_handler(ec); return; }
-        manager->run(input_filepath, std::move(out), 0, total_size, completion_handler, finalizer, progress_callback, total_size);
+        if (ec) { completion_handler(ec, "Header write failed"); return; }
+        manager->run(input_filepath, std::move(out), 0, total_size, [completion_handler](std::error_code ec, const std::string& detail) {
+            completion_handler(ec, detail);
+        }, finalizer, progress_callback, total_size);
     });
 }
 
@@ -78,47 +79,52 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     std::string output_filepath,
     const std::map<std::string, std::string>& key_paths,
     SecureString& passphrase,
-    std::function<void(std::error_code)> completion_handler,
+    CompletionHandler completion_handler,
     ProgressCallback progress_callback
 ) {
     auto strategy = strategy_;
     std::error_code ec;
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
-    if (ec) { completion_handler(ec); return; }
+    if (ec) { completion_handler(ec, "Failed to get file size"); return; }
 
     size_t tag_size = strategy->getTagSize();
-    if (total_size < tag_size + 8) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
+    if (total_size < tag_size + 8) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence), "File too small"); return; }
 
     std::ifstream ifs(input_filepath, std::ios::binary);
     std::vector<char> header_buf(2048);
     ifs.read(header_buf.data(), 2048);
     auto read_bytes = ifs.gcount();
     header_buf.resize((size_t)read_bytes);
-    ifs.clear(); // Clear eof/fail bits if file was smaller than 2048
+    ifs.clear();
 
     auto des_res = strategy->deserializeHeader(header_buf);
     if (!des_res) { 
-        std::cerr << "Header Deserialization Error" << std::endl;
-        completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); 
+        completion_handler(std::make_error_code(std::errc::illegal_byte_sequence), "Header Deserialization Error"); 
         return; 
     }
     size_t header_size = *des_res;
 
     auto prep_res = strategy->prepareDecryption(key_paths, passphrase);
     if (!prep_res) { 
-        std::cerr << "Decryption Prep Error: " << toString(prep_res.error()) << std::endl;
-        completion_handler(std::make_error_code(std::errc::operation_not_permitted)); 
+        completion_handler(std::make_error_code(std::errc::operation_not_permitted), "Decryption Prep Error: " + toString(prep_res.error())); 
         return; 
     }
 
     async_file_t output_file(io_context);
     output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
-    if (ec) { completion_handler(ec); return; }
+    if (ec) { completion_handler(ec, "Failed to open output file"); return; }
 
     std::vector<char> tag(tag_size);
+    if (total_size < tag_size) {
+        completion_handler(std::make_error_code(std::errc::illegal_byte_sequence), "File too small for tag");
+        return;
+    }
     ifs.seekg(total_size - tag_size);
     ifs.read(tag.data(), (std::streamsize)tag_size);
-    if (ifs.gcount() != (std::streamsize)tag_size) { completion_handler(std::make_error_code(std::errc::io_error)); return; }
+    if (ifs.gcount() != (std::streamsize)tag_size) {
+        completion_handler(std::make_error_code(std::errc::io_error), "Tag read failed");
+        return;
+    }
 
     auto manager = std::make_shared<PipelineManager>(io_context);
     manager->add_stage([strategy](const std::vector<char>& data) { return strategy->decryptTransform(data); });
@@ -130,7 +136,9 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     };
 
     uintmax_t ciphertext_size = total_size - header_size - tag_size;
-    manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, completion_handler, finalizer, progress_callback, total_size);
+    manager->run(input_filepath, std::move(output_file), header_size, ciphertext_size, [completion_handler](std::error_code ec, const std::string& detail) {
+        completion_handler(ec, detail);
+    }, finalizer, progress_callback, total_size);
 }
 
 asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback) {
@@ -142,33 +150,21 @@ asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, s
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
     if (ec) throw std::system_error(ec);
 
-    async_file_t input_file(io_context);
-    input_file.open(input_filepath, O_RDONLY, ec);
-    if (ec) throw std::system_error(ec);
-
-    auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([strategy](const std::vector<char>& data) { 
+    PipelineManager manager(io_context);
+    manager.add_stage([strategy](const std::vector<char>& data) { 
         strategy->updateHash(data);
-        return data; 
+        return std::vector<char>(); 
     });
 
-    auto self_strategy = strategy_;
-    PipelineManager::FinalizationFunc finalizer = [self_strategy, signature_filepath](async_file_t&) -> asio::awaitable<void> {
-        auto sig_res = self_strategy->signHash();
-        if (!sig_res) throw std::runtime_error("Signing failed");
-        
-        auto header = self_strategy->serializeSignatureHeader();
-        std::ofstream ofs(signature_filepath, std::ios::binary);
-        ofs.write(header.data(), (std::streamsize)header.size());
-        ofs.write(sig_res->data(), (std::streamsize)sig_res->size());
-        co_return;
-    };
+    manager.run_sync(input_filepath.string(), "/dev/null", 0, total_size);
 
-    std::promise<void> promise;
-    manager->run(input_filepath.string(), async_file_t(io_context), 0, total_size, [&promise](std::error_code ec) {
-        if (ec) promise.set_exception(std::make_exception_ptr(std::system_error(ec)));
-        else promise.set_value();
-    }, finalizer, progress_callback, total_size);
+    auto sig_res = strategy->signHash();
+    if (!sig_res) throw std::runtime_error("Signing failed");
+    
+    auto header = strategy->serializeSignatureHeader();
+    std::ofstream ofs(signature_filepath, std::ios::binary);
+    ofs.write(header.data(), (std::streamsize)header.size());
+    ofs.write(sig_res->data(), (std::streamsize)sig_res->size());
     
     co_return;
 }
@@ -193,22 +189,18 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignat
     if (!header_size_res) co_return std::unexpected(CryptoError::ParameterError);
     std::vector<char> signature(sig_data.begin() + *header_size_res, sig_data.end());
 
-    auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([strategy](const std::vector<char>& data) { strategy->updateHash(data); return data; });
+    PipelineManager manager(io_context);
+    manager.add_stage([strategy](const std::vector<char>& data) { 
+        strategy->updateHash(data); 
+        return std::vector<char>(); 
+    });
 
-    std::promise<std::expected<void, CryptoError>> promise;
-    auto finalizer = [strategy, signature](async_file_t&) -> asio::awaitable<void> {
-        auto ver_res = strategy->verifyHash(signature);
-        if (!ver_res || !*ver_res) throw std::runtime_error("Signature verification failed");
-        co_return;
-    };
+    manager.run_sync(input_filepath.string(), "/dev/null", 0, total_size);
 
-    manager->run(input_filepath.string(), async_file_t(io_context), 0, total_size, [&promise](std::error_code ec) {
-        if (ec) promise.set_value(std::unexpected(CryptoError::OpenSSLError));
-        else promise.set_value({});
-    }, finalizer, progress_callback, total_size);
+    auto ver_res = strategy->verifyHash(signature);
+    if (!ver_res || !*ver_res) co_return std::unexpected(CryptoError::SignatureVerificationError);
 
-    co_return promise.get_future().get();
+    co_return std::expected<void, CryptoError>();
 }
 
 asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> nkCryptoToolBase::inspectFile(asio::io_context&, std::filesystem::path input_filepath, ProgressCallback) { 

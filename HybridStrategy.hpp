@@ -50,6 +50,9 @@ public:
     std::expected<size_t, CryptoError> deserializeHeader(const std::vector<char>& data) override;
     size_t getTagSize() const override;
 
+    void setKemAlgo(const std::string& algo) { if (pqc_strategy_) pqc_strategy_->setKemAlgo(algo); }
+    void setDsaAlgo(const std::string& algo) { if (pqc_strategy_) pqc_strategy_->setDsaAlgo(algo); }
+
 private:
     std::unique_ptr<nk::ECCStrategy> ecc_strategy_;
     std::unique_ptr<PQCStrategy> pqc_strategy_;

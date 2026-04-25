@@ -25,6 +25,7 @@
 class nkCryptoToolBase {
 public:
     using ProgressCallback = std::function<void(double)>;
+    using CompletionHandler = std::function<void(std::error_code, const std::string&)>;
     static constexpr size_t CHUNK_SIZE = 64 * 1024;
 
     explicit nkCryptoToolBase(std::shared_ptr<ICryptoStrategy> strategy);
@@ -40,7 +41,7 @@ public:
         std::string input_filepath,
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
-        std::function<void(std::error_code)> completion_handler,
+        CompletionHandler completion_handler,
         ProgressCallback progress_callback = nullptr
     );
 
@@ -50,7 +51,7 @@ public:
         std::string output_filepath,
         const std::map<std::string, std::string>& key_paths,
         SecureString& passphrase,
-        std::function<void(std::error_code)> completion_handler,
+        CompletionHandler completion_handler,
         ProgressCallback progress_callback = nullptr
     );
 

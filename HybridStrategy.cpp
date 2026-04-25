@@ -89,7 +89,8 @@ std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const
 }
 
 std::expected<void, CryptoError> HybridStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return generateEncryptionKeyPair(key_paths, passphrase);
+    // ハイブリッド署名鍵生成 (現在は PQC 鍵のみ生成)
+    return pqc_strategy_->generateSigningKeyPair(key_paths, passphrase);
 }
 
 std::expected<void, CryptoError> HybridStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) {
@@ -132,9 +133,13 @@ std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::ma
     std::map<std::string, std::string> ecc_paths = key_paths;
     std::map<std::string, std::string> pqc_paths = key_paths;
 
-    if (key_paths.count("recipient-ecdh-privkey")) ecc_paths["user-privkey"] = key_paths.at("recipient-ecdh-privkey");
-    if (key_paths.count("recipient-mlkem-privkey")) pqc_paths["user-privkey"] = key_paths.at("recipient-mlkem-privkey");
+    if (key_paths.count("user-ecdh-privkey")) ecc_paths["user-privkey"] = key_paths.at("user-ecdh-privkey");
+    if (key_paths.count("user-mlkem-privkey")) pqc_paths["user-privkey"] = key_paths.at("user-mlkem-privkey");
 
+    // Decryption 時は AEAD の初期化を避けるため、各ストラテジーの内部状態のみを更新する必要があるが、
+    // 現在の実装では prepareDecryption が AEAD まで初期化してしまう。
+    // そのため、一時的に生成された AEAD ではなく、Hybrid 側で統合した shared_secret を使う。
+    
     auto ecc_res = ecc_strategy_->prepareDecryption(ecc_paths, passphrase);
     if (!ecc_res) return ecc_res;
     auto pqc_res = pqc_strategy_->prepareDecryption(pqc_paths, passphrase);

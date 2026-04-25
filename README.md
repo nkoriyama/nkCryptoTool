@@ -10,6 +10,7 @@
 * **ECC (楕円曲線暗号)** および **PQC (耐量子計算機暗号)**、さらにRFC 9180の設計思想に基づきPQC (ML-KEM)とECC (ECDH)を組み合わせた**ハイブリッド暗号**に対応。  
 * **TPM (Trusted Platform Module) による秘密鍵の保護**: 秘密鍵をマシンのハードウェア (TPM) に紐付けて安全にラッピング保存できます。原本（生鍵）からの再ラッピングやアンラップにも対応し、究極のセキュリティとポータビリティを両立しています。
 * **安定したストリーミング処理**: Asioライブラリの非同期I/Oとパイプライン設計により、5GB以上の巨大なファイルも **3GiB/s を超える圧倒的な高速スループット**で安定して暗号化・復号できます。 (PQCの署名・検証はML-DSAの仕様制限により一括処理)
+* **マルチバックエンド対応**: OpenSSL に加え、wolfSSL をバックエンドとして選択可能。異なるバックエンド間で 100% のバイナリ相互運用性を実現しており、OpenSSL版で暗号化したファイルをwolfSSL版で復号するといった運用が可能です。
 
 ## **セキュリティ (Security)**
 
@@ -64,10 +65,20 @@
    cd nkCryptoTool
 
 3. **ビルドの実行:**  
-   cmake \-B build \-G "Ninja"  
-   cmake \--build build
+   ビルド時に `-DUSE_BACKEND` フラグを指定することで、暗号バックエンドを切り替えられます。
 
-   *ビルドが成功すると、実行可能ファイルが build/bin ディレクトリに生成されます。*
+   *   **OpenSSL版 (デフォルト):**
+       ```bash
+       cmake -B build -G "Ninja" -DUSE_BACKEND=OpenSSL
+       cmake --build build
+       ```
+   *   **wolfSSL版:**
+       ```bash
+       cmake -B build_wolfssl -G "Ninja" -DUSE_BACKEND=WolfSSL
+       cmake --build build_wolfssl
+       ```
+
+   *ビルドが成功すると、実行可能ファイルが各ビルドディレクトリの直下に生成されます。*
 
 ## **ベンチマーク**
 `nkCryptoToolBenchmark`は、暗号化・復号、署名・検証のパフォーマンスを測定するための独立したベンチマークプログラムです。1KBから**最大5GB**までのデータサイズに対応しており、マシンの限界性能を測定できます。
