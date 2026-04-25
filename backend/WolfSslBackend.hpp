@@ -4,13 +4,13 @@
 #include "IBackend.hpp"
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/evp.h>
-#include <wolfssl/wolfcrypt/random.h>
+#include <wolfssl/wolfcrypt/aes.h>
 
 namespace nk::backend {
 
 class WolfSslAeadBackend : public IAeadBackend {
 public:
-    WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx);
+    WolfSslAeadBackend(const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt);
     ~WolfSslAeadBackend() override;
     std::expected<size_t, CryptoError> update(const uint8_t* in, size_t in_len, uint8_t* out) override;
     std::expected<size_t, CryptoError> finalize(uint8_t* out) override;
@@ -18,7 +18,9 @@ public:
     std::expected<void, CryptoError> setTag(const uint8_t* tag, size_t tag_len) override;
 
 private:
-    WOLFSSL_EVP_CIPHER_CTX* ctx_;
+    Aes aes_;
+    bool encrypt_;
+    std::vector<uint8_t> tag_;
 };
 
 class WolfSslHashBackend : public IHashBackend {
@@ -35,7 +37,7 @@ private:
     WOLFSSL_EVP_MD_CTX* ctx_;
     const WOLFSSL_EVP_MD* md_;
     WOLFSSL_EVP_PKEY* pkey_ = nullptr;
-    std::vector<uint8_t> buffer_;
+    bool is_sign_ = false;
 };
 
 class WolfSslBackend : public ICryptoBackend {

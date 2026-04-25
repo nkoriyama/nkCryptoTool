@@ -29,11 +29,13 @@ int main(int argc, char* argv[]) {
         ("passphrase", "Passphrase for private keys", cxxopts::value<std::string>())
         ("r,recursive", "Process directories recursively")
         ("input-dir", "Directory for recursive input", cxxopts::value<std::string>())
-        ("output-dir", "Directory for recursive output", cxxopts::value<std::string>());
+        ("output-dir", "Directory for recursive output", cxxopts::value<std::string>())
+        ("input-files", "Input files", cxxopts::value<std::vector<std::string>>());
+
+    options.parse_positional({"input-files"});
 
     try {
         auto result = options.parse(argc, argv);
-        auto positional = result.unmatched();
 
         CryptoConfig config;
         config.mode = get_mode_from_string(result["mode"].as<std::string>());
@@ -46,11 +48,22 @@ int main(int argc, char* argv[]) {
         else if (result.count("gen-sign-key")) config.operation = Operation::GenerateSignKey;
 
         if (result.count("output-file")) config.output_file = result["output-file"].as<std::string>();
-        if (result.count("key-dir")) config.key_paths["key-dir"] = result["key-dir"].as<std::string>();
+        
+        std::string key_dir = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
+        config.key_paths["key-dir"] = key_dir;
+
         if (result.count("recipient-pubkey")) config.key_paths["recipient-pubkey"] = result["recipient-pubkey"].as<std::string>();
         if (result.count("user-privkey")) config.key_paths["user-privkey"] = result["user-privkey"].as<std::string>();
-        if (result.count("signing-privkey")) config.key_paths["signing-privkey"] = result["signing-privkey"].as<std::string>();
-        if (result.count("signing-pubkey")) config.key_paths["signing-pubkey"] = result["signing-pubkey"].as<std::string>();
+        if (result.count("signing-privkey")) config.key_paths["signing-private-key"] = result["signing-privkey"].as<std::string>();
+        if (result.count("signing-pubkey")) config.key_paths["signing-public-key"] = result["signing-pubkey"].as<std::string>();
+        
+        if (config.operation == Operation::GenerateEncKey) {
+            config.key_paths["public-key"] = key_dir + "/public_enc_ecc.key";
+            config.key_paths["private-key"] = key_dir + "/private_enc_ecc.key";
+            config.key_paths["recipient-pubkey"] = config.key_paths["public-key"];
+            config.key_paths["user-privkey"] = config.key_paths["private-key"];
+        }
+
         if (result.count("signature")) config.key_paths["signature"] = result["signature"].as<std::string>();
         if (result.count("digest-algo")) config.digest_algo = result["digest-algo"].as<std::string>();
         
@@ -61,12 +74,19 @@ int main(int argc, char* argv[]) {
         if (result.count("passphrase")) {
             config.passphrase = result["passphrase"].as<std::string>();
             config.passphrase_was_provided = true;
-        } else if (!no_pass && (config.operation != Operation::Verify)) {
+        } else if (!no_pass && (config.operation != Operation::Verify && config.operation != Operation::None)) {
              config.passphrase = get_masked_passphrase();
              config.passphrase_was_provided = true;
         }
 
-        for (auto& p : positional) config.input_files.push_back(p);
+        if (result.count("input-files")) {
+            config.input_files = result["input-files"].as<std::vector<std::string>>();
+        }
+
+        if (config.input_files.empty() && (config.operation == Operation::Encrypt || config.operation == Operation::Decrypt)) {
+            std::cerr << "Error: No input files specified" << std::endl;
+            return 1;
+        }
 
         CryptoProcessor processor(config);
         

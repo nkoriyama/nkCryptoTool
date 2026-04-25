@@ -7,6 +7,8 @@
 #include "nkCryptoToolUtils.hpp"
 #include "backend/IBackend.hpp"
 
+namespace nk {
+
 HybridStrategy::HybridStrategy() : 
     pqc_strategy_(std::make_unique<PQCStrategy>()),
     ecc_strategy_(std::make_unique<ECCStrategy>()) {}
@@ -109,15 +111,15 @@ std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::ma
     auto ss_ecc = ecc_strategy_->getSharedSecret();
     auto ss_pqc = pqc_strategy_->getSharedSecret();
     
-    shared_secret_ = ss_ecc;
-    shared_secret_.insert(shared_secret_.end(), ss_pqc.begin(), ss_pqc.end());
+    std::vector<uint8_t> shared_secret = ss_ecc;
+    shared_secret.insert(shared_secret.end(), ss_pqc.begin(), ss_pqc.end());
     
-    salt_ = ecc_strategy_->getSalt();
+    auto salt = ecc_strategy_->getSalt();
     iv_ = ecc_strategy_->getIV();
 
     auto backend = nk::backend::getBackend();
-    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
-    encryption_key_ = backend->hkdf(shared_secret_, 32, salt_v, "hybrid-encryption", "SHA3-256");
+    std::vector<uint8_t> salt_v(salt.begin(), salt.end());
+    encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
 
     auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
     if (!aead) return std::unexpected(aead.error());
@@ -141,15 +143,15 @@ std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::ma
     auto ss_ecc = ecc_strategy_->getSharedSecret();
     auto ss_pqc = pqc_strategy_->getSharedSecret();
     
-    shared_secret_ = ss_ecc;
-    shared_secret_.insert(shared_secret_.end(), ss_pqc.begin(), ss_pqc.end());
+    std::vector<uint8_t> shared_secret = ss_ecc;
+    shared_secret.insert(shared_secret.end(), ss_pqc.begin(), ss_pqc.end());
     
-    salt_ = ecc_strategy_->getSalt();
+    auto salt = ecc_strategy_->getSalt();
     iv_ = ecc_strategy_->getIV();
 
     auto backend = nk::backend::getBackend();
-    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
-    encryption_key_ = backend->hkdf(shared_secret_, 32, salt_v, "hybrid-encryption", "SHA3-256");
+    std::vector<uint8_t> salt_v(salt.begin(), salt.end());
+    encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
 
     auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
     if (!aead) return std::unexpected(aead.error());
@@ -160,29 +162,28 @@ std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::ma
 
 std::vector<char> HybridStrategy::encryptTransform(const std::vector<char>& data) {
     if (data.empty()) return {};
-    std::vector<char> out(data.size() + 16);
+    std::vector<uint8_t> out(data.size());
     auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
     if (!res) return {};
-    out.resize(*res);
-    return out;
+    return std::vector<char>(out.begin(), out.begin() + *res);
 }
 
 std::vector<char> HybridStrategy::decryptTransform(const std::vector<char>& data) {
     if (data.empty()) return {};
-    std::vector<char> out(data.size() + 16);
+    std::vector<uint8_t> out(data.size());
     auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
     if (!res) return {};
-    out.resize(*res);
-    return out;
+    return std::vector<char>(out.begin(), out.begin() + *res);
 }
 
 std::expected<void, CryptoError> HybridStrategy::finalizeEncryption(std::vector<char>& out_final) {
-    std::vector<char> final_block(16);
+    std::vector<uint8_t> final_block(16);
     auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
-    if (!res) return std::unexpected(res.error());
+    if (!res) return std::unexpected(CryptoError::OpenSSLError);
     
     std::vector<uint8_t> tag(16);
-    aead_ctx_->getTag(tag.data(), 16);
+    auto tag_res = aead_ctx_->getTag(tag.data(), 16);
+    if (!tag_res) return std::unexpected(CryptoError::OpenSSLError);
     
     out_final.assign(final_block.begin(), final_block.begin() + *res);
     out_final.insert(out_final.end(), tag.begin(), tag.end());
@@ -190,8 +191,10 @@ std::expected<void, CryptoError> HybridStrategy::finalizeEncryption(std::vector<
 }
 
 std::expected<void, CryptoError> HybridStrategy::finalizeDecryption(const std::vector<char>& tag) {
-    aead_ctx_->setTag((const uint8_t*)tag.data(), tag.size());
-    std::vector<char> final_block(16);
+    auto res_tag = aead_ctx_->setTag((const uint8_t*)tag.data(), tag.size());
+    if (!res_tag) return std::unexpected(CryptoError::OpenSSLError);
+    
+    std::vector<uint8_t> final_block(16);
     auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
     if (!res) return std::unexpected(CryptoError::SignatureVerificationError);
     return {};
@@ -224,3 +227,5 @@ std::vector<char> HybridStrategy::serializeSignatureHeader() const {
 std::expected<size_t, CryptoError> HybridStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
     return pqc_strategy_->deserializeSignatureHeader(data);
 }
+
+} // namespace nk

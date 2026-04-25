@@ -17,13 +17,13 @@ CryptoProcessor::CryptoProcessor(CryptoConfig config)
     : config_(std::move(config)), io_context_(1) {
     switch (config_.mode) {
         case CryptoMode::ECC:
-            strategy_ = std::make_shared<ECCStrategy>();
+            strategy_ = std::make_shared<nk::ECCStrategy>();
             break;
         case CryptoMode::PQC:
             strategy_ = std::make_shared<PQCStrategy>();
             break;
         case CryptoMode::Hybrid:
-            strategy_ = std::make_shared<HybridStrategy>();
+            strategy_ = std::make_shared<nk::HybridStrategy>();
             break;
     }
     current_handler_ = std::make_shared<nkCryptoToolBase>(strategy_);

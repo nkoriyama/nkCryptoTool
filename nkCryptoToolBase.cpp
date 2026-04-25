@@ -37,11 +37,12 @@ void nkCryptoToolBase::encryptFileWithPipeline(
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
+    auto strategy = strategy_;
     std::error_code ec;
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
     if (ec) { completion_handler(ec); return; }
 
-    auto prep_res = strategy_->prepareEncryption(key_paths);
+    auto prep_res = strategy->prepareEncryption(key_paths);
     if (!prep_res) { 
         std::cerr << "Encryption Prep Error: " << toString(prep_res.error()) << std::endl;
         completion_handler(std::make_error_code(std::errc::operation_not_permitted)); 
@@ -53,20 +54,21 @@ void nkCryptoToolBase::encryptFileWithPipeline(
     if (ec) { completion_handler(ec); return; }
 
     auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([this](const std::vector<char>& data) { return strategy_->encryptTransform(data); });
+    manager->add_stage([strategy](const std::vector<char>& data) { return strategy->encryptTransform(data); });
 
-    PipelineManager::FinalizationFunc finalizer = [this](async_file_t& out) -> asio::awaitable<void> {
+    PipelineManager::FinalizationFunc finalizer = [strategy](async_file_t& out) -> asio::awaitable<void> {
         std::vector<char> tag;
-        auto res = strategy_->finalizeEncryption(tag);
+        auto res = strategy->finalizeEncryption(tag);
         if (!res) throw std::runtime_error("Encryption failed: Finalization error");
         co_await asio::async_write(out.get(), asio::buffer(tag), asio::use_awaitable);
         co_return;
     };
 
-    auto header = strategy_->serializeHeader();
-    asio::async_write(output_file.get(), asio::buffer(header), [this, manager, input_filepath, output_file = std::move(output_file), total_size, completion_handler, progress_callback, finalizer](std::error_code ec, std::size_t) mutable {
+    auto header = strategy->serializeHeader();
+    auto& descriptor = output_file.get();
+    asio::async_write(descriptor, asio::buffer(header), [manager, input_filepath, out = std::move(output_file), total_size, completion_handler, progress_callback, finalizer](std::error_code ec, std::size_t) mutable {
         if (ec) { completion_handler(ec); return; }
-        manager->run(input_filepath, std::move(output_file), 0, total_size, completion_handler, finalizer, progress_callback, total_size);
+        manager->run(input_filepath, std::move(out), 0, total_size, completion_handler, finalizer, progress_callback, total_size);
     });
 }
 
@@ -79,24 +81,30 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     std::function<void(std::error_code)> completion_handler,
     ProgressCallback progress_callback
 ) {
+    auto strategy = strategy_;
     std::error_code ec;
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
     if (ec) { completion_handler(ec); return; }
 
-    size_t header_size_init = strategy_->getHeaderSize();
-    size_t tag_size = strategy_->getTagSize();
-    std::vector<char> header(header_size_init);
-    std::vector<char> tag(tag_size);
+    size_t tag_size = strategy->getTagSize();
+    if (total_size < tag_size + 8) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
 
     std::ifstream ifs(input_filepath, std::ios::binary);
-    ifs.read(header.data(), header_size_init);
-    if (!ifs) { completion_handler(std::make_error_code(std::errc::io_error)); return; }
-    
-    auto des_res = strategy_->deserializeHeader(header);
-    if (!des_res) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); return; }
+    std::vector<char> header_buf(2048);
+    ifs.read(header_buf.data(), 2048);
+    auto read_bytes = ifs.gcount();
+    header_buf.resize((size_t)read_bytes);
+    ifs.clear(); // Clear eof/fail bits if file was smaller than 2048
+
+    auto des_res = strategy->deserializeHeader(header_buf);
+    if (!des_res) { 
+        std::cerr << "Header Deserialization Error" << std::endl;
+        completion_handler(std::make_error_code(std::errc::illegal_byte_sequence)); 
+        return; 
+    }
     size_t header_size = *des_res;
 
-    auto prep_res = strategy_->prepareDecryption(key_paths, passphrase);
+    auto prep_res = strategy->prepareDecryption(key_paths, passphrase);
     if (!prep_res) { 
         std::cerr << "Decryption Prep Error: " << toString(prep_res.error()) << std::endl;
         completion_handler(std::make_error_code(std::errc::operation_not_permitted)); 
@@ -107,14 +115,16 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
     if (ec) { completion_handler(ec); return; }
 
+    std::vector<char> tag(tag_size);
     ifs.seekg(total_size - tag_size);
-    ifs.read(tag.data(), tag_size);
+    ifs.read(tag.data(), (std::streamsize)tag_size);
+    if (ifs.gcount() != (std::streamsize)tag_size) { completion_handler(std::make_error_code(std::errc::io_error)); return; }
 
     auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([this](const std::vector<char>& data) { return strategy_->decryptTransform(data); });
+    manager->add_stage([strategy](const std::vector<char>& data) { return strategy->decryptTransform(data); });
 
-    PipelineManager::FinalizationFunc finalizer = [this, tag](async_file_t&) -> asio::awaitable<void> {
-        auto res = strategy_->finalizeDecryption(tag);
+    PipelineManager::FinalizationFunc finalizer = [strategy, tag](async_file_t&) -> asio::awaitable<void> {
+        auto res = strategy->finalizeDecryption(tag);
         if (!res) throw std::runtime_error("Decryption failed: Integrity check error");
         co_return;
     };
@@ -124,16 +134,21 @@ void nkCryptoToolBase::decryptFileWithPipeline(
 }
 
 asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback) {
-    auto prep_res = strategy_->prepareSigning(signing_private_key_path, passphrase, digest_algo);
+    auto strategy = strategy_;
+    auto prep_res = strategy->prepareSigning(signing_private_key_path, passphrase, digest_algo);
     if (!prep_res) throw std::system_error(std::make_error_code(std::errc::operation_not_permitted), toString(prep_res.error()));
 
     std::error_code ec;
     uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
     if (ec) throw std::system_error(ec);
 
+    async_file_t input_file(io_context);
+    input_file.open(input_filepath, O_RDONLY, ec);
+    if (ec) throw std::system_error(ec);
+
     auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([this](const std::vector<char>& data) { 
-        strategy_->updateHash(data);
+    manager->add_stage([strategy](const std::vector<char>& data) { 
+        strategy->updateHash(data);
         return data; 
     });
 
@@ -144,17 +159,56 @@ asio::awaitable<void> nkCryptoToolBase::signFile(asio::io_context& io_context, s
         
         auto header = self_strategy->serializeSignatureHeader();
         std::ofstream ofs(signature_filepath, std::ios::binary);
-        ofs.write(header.data(), header.size());
-        ofs.write(sig_res->data(), sig_res->size());
+        ofs.write(header.data(), (std::streamsize)header.size());
+        ofs.write(sig_res->data(), (std::streamsize)sig_res->size());
         co_return;
     };
 
-    manager->run(input_filepath.string(), async_file_t(io_context), 0, total_size, [](std::error_code){}, finalizer, progress_callback, total_size);
+    std::promise<void> promise;
+    manager->run(input_filepath.string(), async_file_t(io_context), 0, total_size, [&promise](std::error_code ec) {
+        if (ec) promise.set_exception(std::make_exception_ptr(std::system_error(ec)));
+        else promise.set_value();
+    }, finalizer, progress_callback, total_size);
+    
     co_return;
 }
 
-asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignature(asio::io_context&, std::filesystem::path, std::filesystem::path, std::filesystem::path, std::string, ProgressCallback) {
-    co_return std::expected<void, CryptoError>();
+asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback) {
+    auto strategy = strategy_;
+    auto prep_res = strategy->prepareVerification(signing_public_key_path, digest_algo);
+    if (!prep_res) co_return std::unexpected(prep_res.error());
+
+    std::error_code ec;
+    uintmax_t total_size = std::filesystem::file_size(input_filepath, ec);
+    if (ec) co_return std::unexpected(CryptoError::FileReadError);
+
+    uintmax_t sig_size = std::filesystem::file_size(signature_filepath, ec);
+    if (ec) co_return std::unexpected(CryptoError::FileReadError);
+
+    std::vector<char> sig_data(sig_size);
+    std::ifstream ifs(signature_filepath, std::ios::binary);
+    ifs.read(sig_data.data(), (std::streamsize)sig_size);
+    
+    auto header_size_res = strategy->deserializeSignatureHeader(sig_data);
+    if (!header_size_res) co_return std::unexpected(CryptoError::ParameterError);
+    std::vector<char> signature(sig_data.begin() + *header_size_res, sig_data.end());
+
+    auto manager = std::make_shared<PipelineManager>(io_context);
+    manager->add_stage([strategy](const std::vector<char>& data) { strategy->updateHash(data); return data; });
+
+    std::promise<std::expected<void, CryptoError>> promise;
+    auto finalizer = [strategy, signature](async_file_t&) -> asio::awaitable<void> {
+        auto ver_res = strategy->verifyHash(signature);
+        if (!ver_res || !*ver_res) throw std::runtime_error("Signature verification failed");
+        co_return;
+    };
+
+    manager->run(input_filepath.string(), async_file_t(io_context), 0, total_size, [&promise](std::error_code ec) {
+        if (ec) promise.set_value(std::unexpected(CryptoError::OpenSSLError));
+        else promise.set_value({});
+    }, finalizer, progress_callback, total_size);
+
+    co_return promise.get_future().get();
 }
 
 asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> nkCryptoToolBase::inspectFile(asio::io_context&, std::filesystem::path input_filepath, ProgressCallback) { 
@@ -203,8 +257,4 @@ void nkCryptoToolBase::printErrors() {}
 
 std::expected<std::vector<uint8_t>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, SecureString& passphrase) {
     return key_provider_.loadPrivateKey(path, passphrase);
-}
-
-namespace nk::backend {
-    std::shared_ptr<ICryptoBackend> getBackend();
 }
