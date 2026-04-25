@@ -1,12 +1,15 @@
 #ifndef NKCRYPTOTOOL_UTILS_HPP
 #define NKCRYPTOTOOL_UTILS_HPP
+
+#include "CryptoError.hpp"
+#include "SecureMemory.hpp"
 #include <string>
 #include <vector>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <expected>
 #include <asio/io_context.hpp>
-#include "SecureMemory.hpp"
 
 // エンディアン非依存の数値読み書きヘルパー
 inline void write_u16_le(std::vector<char>& out, uint16_t v) {
@@ -58,5 +61,15 @@ int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL
 
 // OpenSSLが秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数 (レガシー)
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
+
+namespace nkCryptoToolUtils {
+
+// PEM 形式へのラップ
+std::string wrapToPem(const std::vector<uint8_t>& der, const std::string& label);
+
+// PEM 形式からのアンラップ (DERを返す)
+std::expected<std::vector<uint8_t>, CryptoError> unwrapFromPem(const std::string& pem, const std::string& label);
+
+} // namespace nkCryptoToolUtils
 
 #endif // NKCRYPTOTOOL_UTILS_HPP

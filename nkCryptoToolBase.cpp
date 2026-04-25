@@ -1,18 +1,10 @@
 #include "nkCryptoToolBase.hpp"
 #include "PipelineManager.hpp"
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/kdf.h>
-#include <openssl/params.h>
-#include <openssl/core_names.h>
-#include <openssl/err.h>
-#include <openssl/pem.h>
-#include <openssl/bio.h>
+#include "backend/IBackend.hpp"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
 #include <cstring>
-#include <future>
 #include "nkCryptoToolUtils.hpp"
 #include "TPMConstants.hpp"
 
@@ -119,7 +111,6 @@ void nkCryptoToolBase::decryptFileWithPipeline(
         header_size = *res;
     }
 
-    ERR_clear_error();
     auto prep_res = strategy->prepareDecryption(key_paths, passphrase);
     if (!prep_res) { completion_handler(std::make_error_code(std::errc::permission_denied)); return; }
 
@@ -187,7 +178,7 @@ asio::awaitable<std::expected<void, CryptoError>> nkCryptoToolBase::verifySignat
     sig_in.read(sig_header_peek.data(), sig_header_peek.size());
     std::streamsize read_bytes = sig_in.gcount();
     sig_header_peek.resize(static_cast<size_t>(read_bytes));
-    sig_in.clear(); // EOF到達による failbit をリセット
+    sig_in.clear();
 
     auto pos_res = strategy->deserializeSignatureHeader(sig_header_peek);
     if (!pos_res) co_return std::unexpected(pos_res.error());
@@ -251,22 +242,6 @@ asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> 
     co_return strategy_->getMetadata(magic_str);
 }
 
-std::vector<unsigned char> nkCryptoToolBase::hkdfDerive(const std::vector<unsigned char>& secret, size_t out_len, const std::string& salt, const std::string& info, const std::string& md_name) {
-    std::unique_ptr<EVP_KDF, EVP_KDF_Deleter> kdf(EVP_KDF_fetch(nullptr, "HKDF", nullptr));
-    std::unique_ptr<EVP_KDF_CTX, EVP_KDF_CTX_Deleter> kctx(EVP_KDF_CTX_new(kdf.get()));
-    const EVP_MD* md = EVP_get_digestbyname(md_name.c_str());
-    if (!md) md = EVP_sha256();
-    OSSL_PARAM params[5];
-    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char*)EVP_MD_get0_name(md), 0);
-    params[1] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void*)secret.data(), secret.size());
-    params[2] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void*)salt.data(), salt.size());
-    params[3] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (void*)info.data(), info.size());
-    params[4] = OSSL_PARAM_construct_end();
-    std::vector<unsigned char> out(out_len);
-    EVP_KDF_derive(kctx.get(), out.data(), out_len, params);
-    return out;
-}
-
 std::expected<void, CryptoError> nkCryptoToolBase::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
     return strategy_->generateEncryptionKeyPair(key_paths, passphrase);
 }
@@ -275,33 +250,26 @@ std::expected<void, CryptoError> nkCryptoToolBase::generateSigningKeyPair(const 
     return strategy_->generateSigningKeyPair(key_paths, passphrase);
 }
 
-std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, SecureString& passphrase) {
+std::expected<std::vector<uint8_t>, CryptoError> nkCryptoToolBase::loadPrivateKey(std::filesystem::path path, SecureString& passphrase) {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
-    std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
-        return key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
+        return key_provider_.unwrap(SecureString(content.begin(), content.end()), passphrase);
     }
-    std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
-    void* pwd = passphrase.empty() ? nullptr : (void*)&passphrase;
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, pem_passwd_cb, pwd);
-    if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
-    return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
+    
+    return nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
 }
 
 std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass) {
-    auto pkey = loadPrivateKey(priv, pass);
-    if (!pkey) return std::unexpected(pkey.error());
-    std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(pub.string().c_str(), "wb"));
-    if (!bio) return std::unexpected(CryptoError::PublicKeyWriteError);
-    if (PEM_write_bio_PUBKEY(bio.get(), pkey->get()) <= 0) return std::unexpected(CryptoError::PublicKeyWriteError);
-    return {};
+    if (!strategy_) return std::unexpected(CryptoError::ParameterError);
+    return strategy_->regeneratePublicKey(priv, pub, pass);
 }
 
 std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass) {
-    auto pkey = loadPrivateKey(raw_priv, pass);
-    if (!pkey) return std::unexpected(pkey.error());
-    auto wrapped = key_provider_.wrap(pkey->get(), pass);
+    auto der = loadPrivateKey(raw_priv, pass);
+    if (!der) return std::unexpected(der.error());
+    auto wrapped = key_provider_.wrap(*der, pass);
     if (!wrapped) return std::unexpected(wrapped.error());
     if (wrapped_priv.has_parent_path()) std::filesystem::create_directories(wrapped_priv.parent_path());
     std::ofstream ofs(wrapped_priv, std::ios::binary);
@@ -312,19 +280,14 @@ std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesyste
 std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesystem::path wrapped_priv, std::filesystem::path raw_priv, SecureString& pass) {
     std::ifstream ifs(wrapped_priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
-    std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    auto pkey = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), pass);
-    if (!pkey) return std::unexpected(pkey.error());
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    auto der = key_provider_.unwrap(SecureString(content.begin(), content.end()), pass);
+    if (!der) return std::unexpected(der.error());
     if (raw_priv.has_parent_path()) std::filesystem::create_directories(raw_priv.parent_path());
-    std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_file(raw_priv.string().c_str(), "wb"));
     
-    // .rawkey 拡張子の場合は、検証用などのために暗号化せずに書き出す
-    if (raw_priv.extension() == ".rawkey") {
-        PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), nullptr, nullptr, 0, nullptr, nullptr);
-    } else {
-        if (pass.empty()) PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), nullptr, nullptr, 0, nullptr, nullptr);
-        else PEM_write_bio_PKCS8PrivateKey(bio.get(), pkey->get(), EVP_aes_256_cbc(), nullptr, 0, pem_passwd_cb, (void*)&pass);
-    }
+    std::string pem = nkCryptoToolUtils::wrapToPem(*der, "PRIVATE KEY");
+    std::ofstream ofs(raw_priv, std::ios::binary);
+    ofs.write(pem.data(), (std::streamsize)pem.size());
     return {};
 }
 
@@ -350,6 +313,5 @@ bool nkCryptoToolBase::isPrivateKeyEncrypted(const std::filesystem::path& path) 
     return false;
 }
 
-void nkCryptoToolBase::printOpenSSLErrors() {
-    ERR_print_errors_fp(stderr);
+void nkCryptoToolBase::printErrors() {
 }

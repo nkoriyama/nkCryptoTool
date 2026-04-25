@@ -10,14 +10,11 @@
 #include <memory>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/err.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
+#include <cstring>
 #include "IKeyProvider.hpp"
 #include "TPMConstants.hpp"
 #include "TpmSecure.hpp"
+#include "backend/IBackend.hpp"
 
 namespace nk {
 
@@ -29,26 +26,27 @@ public:
     static constexpr const char* TPM2_UNSEAL        = "/usr/bin/tpm2_unseal";
     static constexpr const char* TPM2_GETCAP        = "/usr/bin/tpm2_getcap";
 
-    std::expected<SecureString, CryptoError> wrapKey(EVP_PKEY* pkey, const SecureString& passphrase = "") override {
-        std::unique_ptr<BIO, void(*)(BIO*)> mem_bio(BIO_new(BIO_s_mem()), [](BIO* b){ BIO_free(b); });
-        i2d_PrivateKey_bio(mem_bio.get(), pkey);
-        BUF_MEM* bptr;
-        BIO_get_mem_ptr(mem_bio.get(), &bptr);
-        std::vector<unsigned char> key_der((unsigned char*)bptr->data, (unsigned char*)bptr->data + bptr->length);
+    std::expected<SecureString, CryptoError> wrapKey(const std::vector<uint8_t>& der_key, const SecureString& passphrase = "") override {
+        auto backend = nk::backend::getBackend();
 
-        std::vector<unsigned char> aes_key(32);
-        std::vector<unsigned char> iv(12);
-        RAND_bytes(aes_key.data(), 32);
-        RAND_bytes(iv.data(), 12);
+        std::vector<uint8_t> aes_key(32);
+        std::vector<uint8_t> iv(12);
+        backend->randomBytes(aes_key.data(), 32);
+        backend->randomBytes(iv.data(), 12);
 
-        std::unique_ptr<EVP_CIPHER_CTX, void(*)(EVP_CIPHER_CTX*)> ctx(EVP_CIPHER_CTX_new(), [](EVP_CIPHER_CTX* c){ EVP_CIPHER_CTX_free(c); });
-        EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, aes_key.data(), iv.data());
-        std::vector<unsigned char> ciphertext(key_der.size());
-        int len, flen;
-        EVP_EncryptUpdate(ctx.get(), ciphertext.data(), &len, key_der.data(), (int)key_der.size());
-        EVP_EncryptFinal_ex(ctx.get(), ciphertext.data() + len, &flen);
-        std::vector<unsigned char> tag(16);
-        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_GET_TAG, 16, tag.data());
+        auto aead = backend->createAead("AES-256-GCM", aes_key, iv, true);
+        if (!aead) return std::unexpected(aead.error());
+
+        std::vector<uint8_t> ciphertext(der_key.size() + 16);
+        auto n = (*aead)->update(der_key.data(), der_key.size(), ciphertext.data());
+        if (!n) return std::unexpected(n.error());
+        
+        auto n2 = (*aead)->finalize(ciphertext.data() + *n);
+        if (!n2) return std::unexpected(n2.error());
+        ciphertext.resize(*n + *n2);
+
+        std::vector<uint8_t> tag(16);
+        (*aead)->getTag(tag.data(), 16);
 
         std::string tmpl_aes = nk::make_secure_tmp_template("nk_a_");
         std::string tmpl_pctx = nk::make_secure_tmp_template("nk_p_");
@@ -107,7 +105,7 @@ public:
         return SecureString(res.begin(), res.end());
     }
 
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") override {
+    std::expected<std::vector<uint8_t>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") override {
         std::string content(wrapped_pem.c_str());
         std::string p_b64, r_b64, e_b64, i_b64, t_b64;
         std::stringstream css(content); std::string line;
@@ -171,37 +169,28 @@ public:
         }
 
         std::ifstream ifs(aes_f, std::ios::binary);
-        std::vector<unsigned char> aes_key((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        std::vector<uint8_t> aes_key((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
         for(const char* f : {pub_f, priv_f, aes_f, primary_ctx, key_ctx}) unlink(f);
 
         auto ciphertext = TPMUtils::base64_decode(e_b64);
         auto iv = TPMUtils::base64_decode(i_b64);
         auto tag = TPMUtils::base64_decode(t_b64);
 
-        std::unique_ptr<EVP_CIPHER_CTX, void(*)(EVP_CIPHER_CTX*)> ctx(EVP_CIPHER_CTX_new(), [](EVP_CIPHER_CTX* c){ EVP_CIPHER_CTX_free(c); });
-        EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr);
-        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr);
-        EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, aes_key.data(), iv.data());
+        auto backend = nk::backend::getBackend();
+        auto aead = backend->createAead("AES-256-GCM", aes_key, iv, false);
+        if (!aead) return std::unexpected(aead.error());
         
-        std::vector<unsigned char> decrypted(ciphertext.size() + 16);
-        int len, flen;
-        EVP_DecryptUpdate(ctx.get(), decrypted.data(), &len, ciphertext.data(), (int)ciphertext.size());
-        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_TAG, 16, tag.data());
-        if (EVP_DecryptFinal_ex(ctx.get(), decrypted.data() + len, &flen) <= 0) return std::unexpected(CryptoError::KeyProtectionError);
-        decrypted.resize(len + flen);
+        (*aead)->setTag(tag.data(), tag.size());
+        
+        std::vector<uint8_t> decrypted(ciphertext.size() + 16);
+        auto n = (*aead)->update(ciphertext.data(), ciphertext.size(), decrypted.data());
+        if (!n) return std::unexpected(n.error());
+        
+        auto n2 = (*aead)->finalize(decrypted.data() + *n);
+        if (!n2) return std::unexpected(CryptoError::KeyProtectionError);
+        decrypted.resize(*n + *n2);
 
-        const unsigned char* p = decrypted.data();
-        EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)decrypted.size());
-        if (!pkey) {
-            p = decrypted.data();
-            pkey = d2i_PrivateKey(EVP_PKEY_NONE, nullptr, &p, (long)decrypted.size());
-        }
-        ERR_clear_error();
-        OPENSSL_cleanse(aes_key.data(), aes_key.size());
-        OPENSSL_cleanse(decrypted.data(), decrypted.size());
-
-        if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
-        return std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
+        return decrypted;
     }
 
     bool isAvailable() override {

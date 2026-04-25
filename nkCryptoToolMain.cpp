@@ -10,9 +10,8 @@
 #include "nkCryptoToolUtils.hpp"
 #include "KeyProvider.hpp"
 #include "TpmKeyProvider.hpp"
-#include <openssl/provider.h>
-#include <openssl/err.h>
-#include <openssl/params.h>
+#include "backend/IBackend.hpp"
+
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -83,21 +82,15 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         if (key_path_arg.empty()) return "";
         std::filesystem::path key_path(key_path_arg);
         if (key_path.is_absolute()) return key_path.string();
-        
-        // カレントディレクトリに存在すればそれを使う
         if (std::filesystem::exists(key_path)) return std::filesystem::absolute(key_path).string();
-        
-        // key_dir の下にあればそれを使う
         if (!key_dir.empty()) {
             std::filesystem::path combined = std::filesystem::path(key_dir) / key_path;
-            if (std::filesystem::exists(combined)) return std::filesystem::absolute(combined).string();
-            // 存在しなくても、生成用などのために結合したパスを返す
             return std::filesystem::absolute(combined).string();
         }
         return std::filesystem::absolute(key_path).string();
     };
 
-    // 1. Determine operation
+    // Operation
     if (result.count("encrypt")) config.operation = Operation::Encrypt;
     else if (result.count("decrypt")) config.operation = Operation::Decrypt;
     else if (result.count("sign")) config.operation = Operation::Sign;
@@ -112,11 +105,7 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         config.input_files.push_back(resolve_key_path(raw_path));
         if (config.output_file.empty()) {
             std::filesystem::path p(raw_path);
-            if (p.extension() == ".key") {
-                config.output_file = resolve_key_path(p.stem().string() + ".tpmkey");
-            } else {
-                config.output_file = resolve_key_path(raw_path + ".tpmkey");
-            }
+            config.output_file = resolve_key_path(p.stem().string() + ".tpmkey");
         }
     }
     else if (result.count("unwrap-key")) {
@@ -125,22 +114,17 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         config.input_files.push_back(resolve_key_path(wrapped_path));
         if (config.output_file.empty()) {
             std::filesystem::path p(wrapped_path);
-            if (p.extension() == ".tpmkey") {
-                config.output_file = resolve_key_path(p.stem().string() + ".rawkey");
-            } else {
-                config.output_file = resolve_key_path(wrapped_path + ".rawkey");
-            }
+            config.output_file = resolve_key_path(p.stem().string() + ".rawkey");
         }
     }
     else config.operation = Operation::None;
 
-    // 2. Populate input and signature files (needed for mode detection)
     if (result.count("input") && config.input_files.empty()) {
         config.input_files = result["input"].as<std::vector<std::string>>();
     }
     if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
 
-    // 3. Determine crypto mode (auto-detect for info/decrypt/verify if mode not explicitly provided)
+    // Crypto mode
     bool mode_provided = result.count("mode") > 0;
     if (!mode_provided && (!config.input_files.empty() || !config.signature_file.empty())) {
         std::filesystem::path detect_target;
@@ -168,7 +152,6 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
         config.mode = get_mode_from_string(result["mode"].as<std::string>());
     }
 
-    // Populate common config
     config.sync_mode = result.count("sync") > 0;
     config.is_recursive = result.count("input-dir") > 0;
     config.digest_algo = result["digest-algo"].as<std::string>();
@@ -176,17 +159,12 @@ CryptoConfig parse_command_line(int argc, char* argv[]) {
     config.pqc_dsa_algo = result["pqc-dsa-algo"].as<std::string>();
     config.use_tpm = result.count("tpm") > 0;
 
-    if (result.count("input") && config.input_files.empty()) {
-        config.input_files = result["input"].as<std::vector<std::string>>();
-    }
     if (result.count("output-file")) config.output_file = result["output-file"].as<std::string>();
     if (result.count("input-dir")) config.input_dir = result["input-dir"].as<std::string>();
     if (result.count("output-dir")) config.output_dir = result["output-dir"].as<std::string>();
-    if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
     if (result.count("passphrase")) {
         std::string pass = result["passphrase"].as<std::string>();
         config.passphrase.assign(pass.begin(), pass.end());
-        OPENSSL_cleanse(pass.data(), pass.size());
         config.passphrase_was_provided = true;
     } else if (result.count("no-passphrase")) {
         config.passphrase = "";
@@ -283,9 +261,6 @@ int main(int argc, char* argv[]) {
         std::cerr << "Warning: Failed to disable core dumps. Memory contents may be leaked on crash." << std::endl;
     }
 #endif
-    OSSL_PROVIDER_load(nullptr, "default");
-    // Always try to load TPM2 provider if available, to support seamless unwrapping
-    OSSL_PROVIDER_load(nullptr, "tpm2");
 
     int return_code = 0;
     try {
@@ -312,7 +287,6 @@ int main(int argc, char* argv[]) {
                     CryptoProcessor processor(std::move(file_config));
                     processor.set_progress_callback(progress_cb);
 
-                    // Set up provider for each processor in recursive mode
                     std::shared_ptr<nk::IKeyProvider> provider;
                     auto tpm_provider = std::make_shared<nk::TpmKeyProvider>();
                     if (tpm_provider->isAvailable()) {
@@ -352,7 +326,6 @@ int main(int argc, char* argv[]) {
              CryptoProcessor processor(std::move(config));
              processor.set_progress_callback(progress_cb);
 
-             // Set up the best available key provider
              std::shared_ptr<nk::IKeyProvider> provider;
              auto tpm_provider = std::make_shared<nk::TpmKeyProvider>();
              if (tpm_provider->isAvailable()) {
@@ -370,7 +343,7 @@ int main(int argc, char* argv[]) {
         return_code = 1;
     } catch (const std::exception& e) {
         std::cerr << "An error occurred: " << e.what() << std::endl;
-        nkCryptoToolBase::printOpenSSLErrors();
+        nkCryptoToolBase::printErrors();
         return_code = 1;
     }
     return return_code;

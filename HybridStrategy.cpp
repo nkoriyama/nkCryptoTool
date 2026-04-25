@@ -1,95 +1,199 @@
 #include "HybridStrategy.hpp"
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/pem.h>
-#include <openssl/err.h>
-#include <openssl/core_names.h>
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
 #include <fstream>
 #include "nkCryptoToolBase.hpp"
 #include "nkCryptoToolUtils.hpp"
+#include "backend/IBackend.hpp"
 
 HybridStrategy::HybridStrategy() : 
     pqc_strategy_(std::make_unique<PQCStrategy>()),
-    ecc_strategy_(std::make_unique<ECCStrategy>()),
-    cipher_ctx_(EVP_CIPHER_CTX_new()) {}
+    ecc_strategy_(std::make_unique<ECCStrategy>()) {}
 
-HybridStrategy::~HybridStrategy() {
-    if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
-    if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
-    if (!decrypt_buffer_.empty()) OPENSSL_cleanse(decrypt_buffer_.data(), decrypt_buffer_.size());
+HybridStrategy::~HybridStrategy() {}
+
+std::map<std::string, std::string> HybridStrategy::getMetadata(const std::string& magic) const {
+    std::map<std::string, std::string> res;
+    res["Strategy"] = "Hybrid";
+    if (pqc_strategy_) {
+        auto pqc_meta = pqc_strategy_->getMetadata(magic);
+        res.insert(pqc_meta.begin(), pqc_meta.end());
+    }
+    if (ecc_strategy_) {
+        auto ecc_meta = ecc_strategy_->getMetadata(magic);
+        res.insert(ecc_meta.begin(), ecc_meta.end());
+    }
+    return res;
+}
+
+size_t HybridStrategy::getHeaderSize() const {
+    return 4 + 2 + 1 + 4 + ecc_strategy_->serializeHeader().size() + 4 + pqc_strategy_->serializeHeader().size();
+}
+
+size_t HybridStrategy::getTagSize() const { return 16; }
+
+std::vector<char> HybridStrategy::serializeHeader() const {
+    std::vector<char> header;
+    header.insert(header.end(), {'N', 'K', 'C', 'T'});
+    write_u16_le(header, 1);
+    header.push_back((char)getStrategyType());
+
+    auto ecc_h = ecc_strategy_->serializeHeader();
+    write_u32_le(header, (uint32_t)ecc_h.size());
+    header.insert(header.end(), ecc_h.begin(), ecc_h.end());
+
+    auto pqc_h = pqc_strategy_->serializeHeader();
+    write_u32_le(header, (uint32_t)pqc_h.size());
+    header.insert(header.end(), pqc_h.begin(), pqc_h.end());
+
+    return header;
+}
+
+std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::vector<char>& data) {
+    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
+    if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
+    
+    size_t pos = 7;
+    uint32_t ecc_len;
+    if (!read_u32_le(data, pos, ecc_len)) return std::unexpected(CryptoError::FileReadError);
+    if (pos + ecc_len > data.size()) return std::unexpected(CryptoError::FileReadError);
+    std::vector<char> ecc_h(data.begin() + pos, data.begin() + pos + ecc_len);
+    ecc_strategy_->deserializeHeader(ecc_h);
+    pos += ecc_len;
+
+    uint32_t pqc_len;
+    if (!read_u32_le(data, pos, pqc_len)) return std::unexpected(CryptoError::FileReadError);
+    if (pos + pqc_len > data.size()) return std::unexpected(CryptoError::FileReadError);
+    std::vector<char> pqc_h(data.begin() + pos, data.begin() + pos + pqc_len);
+    pqc_strategy_->deserializeHeader(pqc_h);
+    pos += pqc_len;
+
+    return pos;
 }
 
 std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    std::map<std::string, std::string> pqc_paths = key_paths;
     std::map<std::string, std::string> ecc_paths = key_paths;
+    std::map<std::string, std::string> pqc_paths = key_paths;
 
-    if (key_paths.count("public-mlkem-key")) {
-        pqc_paths["public-key"] = key_paths.at("public-mlkem-key");
-        pqc_paths["private-key"] = key_paths.at("private-mlkem-key");
-    }
-    if (key_paths.count("public-ecdh-key")) {
-        ecc_paths["public-key"] = key_paths.at("public-ecdh-key");
-        ecc_paths["private-key"] = key_paths.at("private-ecdh-key");
-    }
+    if (key_paths.count("public-ecdh-key")) ecc_paths["public-key"] = key_paths.at("public-ecdh-key");
+    if (key_paths.count("private-ecdh-key")) ecc_paths["private-key"] = key_paths.at("private-ecdh-key");
+    if (key_paths.count("public-mlkem-key")) pqc_paths["public-key"] = key_paths.at("public-mlkem-key");
+    if (key_paths.count("private-mlkem-key")) pqc_paths["private-key"] = key_paths.at("private-mlkem-key");
 
-    auto res1 = pqc_strategy_->generateEncryptionKeyPair(pqc_paths, passphrase);
-    if (!res1) return res1;
-    auto res2 = ecc_strategy_->generateEncryptionKeyPair(ecc_paths, passphrase);
-    return res2;
+    auto ecc_res = ecc_strategy_->generateEncryptionKeyPair(ecc_paths, passphrase);
+    if (!ecc_res) return ecc_res;
+    return pqc_strategy_->generateEncryptionKeyPair(pqc_paths, passphrase);
 }
 
 std::expected<void, CryptoError> HybridStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return pqc_strategy_->generateSigningKeyPair(key_paths, passphrase);
+    return generateEncryptionKeyPair(key_paths, passphrase);
+}
+
+std::expected<void, CryptoError> HybridStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) {
+    return pqc_strategy_->regeneratePublicKey(priv_path, pub_path, passphrase);
 }
 
 std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
-    auto res1 = pqc_strategy_->prepareEncryption(key_paths);
-    if (!res1) return res1;
-    auto res2 = ecc_strategy_->prepareEncryption(key_paths);
-    if (!res2) return res2;
+    std::map<std::string, std::string> ecc_paths = key_paths;
+    std::map<std::string, std::string> pqc_paths = key_paths;
 
-    std::vector<unsigned char> pqc_secret = pqc_strategy_->getSharedSecret();
-    std::vector<unsigned char> ecc_secret = ecc_strategy_->getSharedSecret();
-    std::vector<unsigned char> combined_secret = pqc_secret;
-    combined_secret.insert(combined_secret.end(), ecc_secret.begin(), ecc_secret.end());
-    salt_ = pqc_strategy_->getSalt();
-    iv_ = pqc_strategy_->getIV();
-    encryption_key_ = nkCryptoToolBase::hkdfDerive(combined_secret, 32, std::string(salt_.begin(), salt_.end()), "hybrid-encryption", "SHA3-256");
-    OPENSSL_cleanse(combined_secret.data(), combined_secret.size());
-    OPENSSL_cleanse(pqc_secret.data(), pqc_secret.size());
-    OPENSSL_cleanse(ecc_secret.data(), ecc_secret.size());
+    if (key_paths.count("recipient-ecdh-pubkey")) ecc_paths["recipient-pubkey"] = key_paths.at("recipient-ecdh-pubkey");
+    if (key_paths.count("recipient-mlkem-pubkey")) pqc_paths["recipient-pubkey"] = key_paths.at("recipient-mlkem-pubkey");
+
+    auto ecc_res = ecc_strategy_->prepareEncryption(ecc_paths);
+    if (!ecc_res) return ecc_res;
+    auto pqc_res = pqc_strategy_->prepareEncryption(pqc_paths);
+    if (!pqc_res) return pqc_res;
+
+    auto ss_ecc = ecc_strategy_->getSharedSecret();
+    auto ss_pqc = pqc_strategy_->getSharedSecret();
     
-    if (!cipher_ctx_) cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_EncryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    shared_secret_ = ss_ecc;
+    shared_secret_.insert(shared_secret_.end(), ss_pqc.begin(), ss_pqc.end());
+    
+    salt_ = ecc_strategy_->getSalt();
+    iv_ = ecc_strategy_->getIV();
+
+    auto backend = nk::backend::getBackend();
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    encryption_key_ = backend->hkdf(shared_secret_, 32, salt_v, "hybrid-encryption", "SHA3-256");
+
+    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
+    if (!aead) return std::unexpected(aead.error());
+    aead_ctx_ = std::move(*aead);
+
     return {};
 }
 
 std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    auto res1 = pqc_strategy_->prepareDecryption(key_paths, passphrase);
-    if (!res1) return res1;
-    auto res2 = ecc_strategy_->prepareDecryption(key_paths, passphrase);
-    if (!res2) return res2;
+    std::map<std::string, std::string> ecc_paths = key_paths;
+    std::map<std::string, std::string> pqc_paths = key_paths;
 
-    std::vector<unsigned char> pqc_secret = pqc_strategy_->getSharedSecret();
-    std::vector<unsigned char> ecc_secret = ecc_strategy_->getSharedSecret();
-    std::vector<unsigned char> combined_secret = pqc_secret;
-    combined_secret.insert(combined_secret.end(), ecc_secret.begin(), ecc_secret.end());
-    salt_ = pqc_strategy_->getSalt();
-    iv_ = pqc_strategy_->getIV();
-    encryption_key_ = nkCryptoToolBase::hkdfDerive(combined_secret, 32, std::string(salt_.begin(), salt_.end()), "hybrid-encryption", "SHA3-256");
-    OPENSSL_cleanse(combined_secret.data(), combined_secret.size());
-    OPENSSL_cleanse(pqc_secret.data(), pqc_secret.size());
-    OPENSSL_cleanse(ecc_secret.data(), ecc_secret.size());
+    if (key_paths.count("recipient-ecdh-privkey")) ecc_paths["user-privkey"] = key_paths.at("recipient-ecdh-privkey");
+    if (key_paths.count("recipient-mlkem-privkey")) pqc_paths["user-privkey"] = key_paths.at("recipient-mlkem-privkey");
+
+    auto ecc_res = ecc_strategy_->prepareDecryption(ecc_paths, passphrase);
+    if (!ecc_res) return ecc_res;
+    auto pqc_res = pqc_strategy_->prepareDecryption(pqc_paths, passphrase);
+    if (!pqc_res) return pqc_res;
+
+    auto ss_ecc = ecc_strategy_->getSharedSecret();
+    auto ss_pqc = pqc_strategy_->getSharedSecret();
     
-    cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_DecryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    shared_secret_ = ss_ecc;
+    shared_secret_.insert(shared_secret_.end(), ss_pqc.begin(), ss_pqc.end());
+    
+    salt_ = ecc_strategy_->getSalt();
+    iv_ = ecc_strategy_->getIV();
+
+    auto backend = nk::backend::getBackend();
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    encryption_key_ = backend->hkdf(shared_secret_, 32, salt_v, "hybrid-encryption", "SHA3-256");
+
+    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
+    if (!aead) return std::unexpected(aead.error());
+    aead_ctx_ = std::move(*aead);
+
+    return {};
+}
+
+std::vector<char> HybridStrategy::encryptTransform(const std::vector<char>& data) {
+    if (data.empty()) return {};
+    std::vector<char> out(data.size() + 16);
+    auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
+    if (!res) return {};
+    out.resize(*res);
+    return out;
+}
+
+std::vector<char> HybridStrategy::decryptTransform(const std::vector<char>& data) {
+    if (data.empty()) return {};
+    std::vector<char> out(data.size() + 16);
+    auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
+    if (!res) return {};
+    out.resize(*res);
+    return out;
+}
+
+std::expected<void, CryptoError> HybridStrategy::finalizeEncryption(std::vector<char>& out_final) {
+    std::vector<char> final_block(16);
+    auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
+    if (!res) return std::unexpected(res.error());
+    
+    std::vector<uint8_t> tag(16);
+    aead_ctx_->getTag(tag.data(), 16);
+    
+    out_final.assign(final_block.begin(), final_block.begin() + *res);
+    out_final.insert(out_final.end(), tag.begin(), tag.end());
+    return {};
+}
+
+std::expected<void, CryptoError> HybridStrategy::finalizeDecryption(const std::vector<char>& tag) {
+    aead_ctx_->setTag((const uint8_t*)tag.data(), tag.size());
+    std::vector<char> final_block(16);
+    auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
+    if (!res) return std::unexpected(CryptoError::SignatureVerificationError);
     return {};
 }
 
@@ -113,123 +217,10 @@ std::expected<bool, CryptoError> HybridStrategy::verifyHash(const std::vector<ch
     return pqc_strategy_->verifyHash(signature);
 }
 
-std::vector<char> HybridStrategy::encryptTransform(const std::vector<char>& data) {
-    if (data.empty()) return {};
-    std::vector<unsigned char> out(data.size() + EVP_MAX_BLOCK_LENGTH);
-    int out_len = 0;
-    EVP_EncryptUpdate(cipher_ctx_.get(), out.data(), &out_len, (const unsigned char*)data.data(), (int)data.size());
-    out.resize(out_len);
-    return std::vector<char>(out.begin(), out.end());
-}
-
-std::vector<char> HybridStrategy::decryptTransform(const std::vector<char>& data) {
-    if (data.empty()) return {};
-    std::vector<unsigned char> out(data.size() + EVP_MAX_BLOCK_LENGTH);
-    int out_len = 0;
-    EVP_DecryptUpdate(cipher_ctx_.get(), out.data(), &out_len, (const unsigned char*)data.data(), (int)data.size());
-    out.resize(out_len);
-    return std::vector<char>(out.begin(), out.end());
-}
-
-std::expected<void, CryptoError> HybridStrategy::finalizeEncryption(std::vector<char>& out) {
-    int out_len = 0;
-    std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
-    EVP_EncryptFinal_ex(cipher_ctx_.get(), final_block.data(), &out_len);
-    out.assign(final_block.begin(), final_block.begin() + out_len);
-    std::vector<unsigned char> tag(16);
-    EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_GET_TAG, 16, tag.data());
-    out.insert(out.end(), tag.begin(), tag.end());
-    return {};
-}
-
-std::expected<void, CryptoError> HybridStrategy::finalizeDecryption(const std::vector<char>& tag) {
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_TAG, 16, (void*)tag.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    int out_len = 0;
-    std::vector<unsigned char> out(EVP_MAX_BLOCK_LENGTH);
-    if (EVP_DecryptFinal_ex(cipher_ctx_.get(), out.data(), &out_len) <= 0) return std::unexpected(CryptoError::SignatureVerificationError);
-    return {};
-}
-
-std::map<std::string, std::string> HybridStrategy::getMetadata(const std::string& magic) const {
-    auto meta = pqc_strategy_->getMetadata(magic);
-    meta["Strategy"] = "Hybrid";
-    if (magic == "NKCS") {
-        meta["File-Type"] = "Signature";
-    } else {
-        meta["File-Type"] = "Encrypted";
-        meta["Encryption-Type"] = "Hybrid (ML-KEM-1024 + ECDH-P256)";
-    }
-    return meta;
-}
-
-size_t HybridStrategy::getHeaderSize() const {
-    return 7 + pqc_strategy_->getHeaderSize() + ecc_strategy_->getHeaderSize();
-}
-
-size_t HybridStrategy::getTagSize() const { return 16; }
-
-std::vector<char> HybridStrategy::serializeHeader() const {
-    std::vector<char> header;
-    header.insert(header.end(), {'N', 'K', 'C', 'T'});
-    write_u16_le(header, 1);
-    header.push_back((char)getStrategyType());
-    auto h1 = pqc_strategy_->serializeHeader();
-    auto h2 = ecc_strategy_->serializeHeader();
-    header.insert(header.end(), h1.begin(), h1.end());
-    header.insert(header.end(), h2.begin(), h2.end());
-    return header;
-}
-
-std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::vector<char>& data) {
-    size_t pos = 0;
-    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
-    if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
-    pos += 4;
-    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
-    uint8_t type = (uint8_t)data[pos++];
-    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
-    std::vector<char> pqc_data(data.begin() + pos, data.end());
-    auto res1 = pqc_strategy_->deserializeHeader(pqc_data);
-    if (!res1) return std::unexpected(res1.error());
-    pos += *res1;
-    if (pos >= data.size()) return std::unexpected(CryptoError::FileReadError);
-    std::vector<char> ecc_data(data.begin() + pos, data.end());
-    auto res2 = ecc_strategy_->deserializeHeader(ecc_data);
-    if (!res2) return std::unexpected(res2.error());
-    pos += *res2;
-    salt_ = pqc_strategy_->getSalt();
-    iv_ = pqc_strategy_->getIV();
-    return pos;
-}
-
 std::vector<char> HybridStrategy::serializeSignatureHeader() const {
-    std::vector<char> header;
-    header.insert(header.end(), {'N', 'K', 'C', 'S'});
-    write_u16_le(header, 1);
-    header.push_back((char)getStrategyType());
-    auto h = pqc_strategy_->serializeSignatureHeader();
-    header.insert(header.end(), h.begin() + 7, h.end());
-    return header;
+    return pqc_strategy_->serializeSignatureHeader();
 }
 
 std::expected<size_t, CryptoError> HybridStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
-    size_t pos = 0;
-    if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
-    if (std::string(data.data(), 4) != "NKCS") return std::unexpected(CryptoError::FileReadError);
-    pos += 4;
-    uint16_t version; if (!read_u16_le(data, pos, version) || version != 1) return std::unexpected(CryptoError::FileReadError);
-    uint8_t type = (uint8_t)data[pos++];
-    if (type != (uint8_t)getStrategyType()) return std::unexpected(CryptoError::FileReadError);
-
-    // サブストラテジー用のダミーヘッダーを作成して委譲
-    std::vector<char> sub_data;
-    sub_data.insert(sub_data.end(), {'N', 'K', 'C', 'S'});
-    write_u16_le(sub_data, 1);
-    sub_data.push_back((char)StrategyType::PQC);
-    sub_data.insert(sub_data.end(), data.begin() + pos, data.end());
-    
-    auto res = pqc_strategy_->deserializeSignatureHeader(sub_data);
-    if (!res) return std::unexpected(res.error());
-    
-    return pos + (*res - 7);
+    return pqc_strategy_->deserializeSignatureHeader(data);
 }

@@ -213,6 +213,7 @@ public:
     void setKeyProvider(std::shared_ptr<nk::IKeyProvider>) override {}
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>&, SecureString&) override { return {}; }
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>&, SecureString&) override { return {}; }
+    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path&, const std::filesystem::path&, SecureString&) override { return {}; }
     std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>&) override { return {}; }
     std::expected<void, CryptoError> prepareDecryption(const std::map<std::string, std::string>&, SecureString&) override { return {}; }
     std::vector<char> encryptTransform(const std::vector<char>& data) override { return data; }

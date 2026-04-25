@@ -4,40 +4,37 @@
  * This file is part of nkCryptoTool.
  */
 
-#ifndef NKCRYPTOTOOLBASE_HPP
-#define NKCRYPTOTOOLBASE_HPP
+#ifndef NKCRYPTOTOOL_BASE_HPP
+#define NKCRYPTOTOOL_BASE_HPP
 
-#include <string>
 #include <vector>
-#include <filesystem>
+#include <string>
+#include <map>
 #include <functional>
 #include <system_error>
-#include <memory>
-#include <map>
-#include <expected>
-#include "SecureMemory.hpp"
-#include "CryptoError.hpp"
-#include "async_file_types.hpp"
-#include "nkcrypto_ffi.hpp" 
-#include <asio/awaitable.hpp>
-#include <asio/buffer.hpp>
-#include <openssl/evp.h>
-#include <openssl/bio.h>
+#include <filesystem>
 #include "ICryptoStrategy.hpp"
 #include "KeyProvider.hpp"
+#include "SecureMemory.hpp"
+#include "async_file_types.hpp"
+#include <asio/awaitable.hpp>
+#include <asio/io_context.hpp>
+#include <asio/write.hpp>
+#include <memory>
 
-namespace asio { class io_context; }
-
-class nkCryptoToolBase : public std::enable_shared_from_this<nkCryptoToolBase> {
+class nkCryptoToolBase {
 public:
+    using ProgressCallback = std::function<void(double)>;
+    static constexpr size_t CHUNK_SIZE = 64 * 1024;
+
     explicit nkCryptoToolBase(std::shared_ptr<ICryptoStrategy> strategy);
     virtual ~nkCryptoToolBase();
 
     void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider);
-
     void setKeyBaseDirectory(std::filesystem::path dir);
     std::filesystem::path getKeyBaseDirectory() const;
 
+    // 非同期パイプラインによる暗号化・復号
     void encryptFileWithPipeline(
         asio::io_context& io_context,
         std::string input_filepath,
@@ -57,29 +54,32 @@ public:
         ProgressCallback progress_callback = nullptr
     );
 
-    virtual asio::awaitable<void> signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback = nullptr);
-    virtual asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback = nullptr);
-    virtual asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> inspectFile(asio::io_context& io_context, std::filesystem::path input_filepath, ProgressCallback progress_callback = nullptr);
+    // 署名・検証
+    asio::awaitable<void> signFile(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_private_key_path, std::string digest_algo, SecureString& passphrase, ProgressCallback progress_callback = nullptr);
+    asio::awaitable<std::expected<void, CryptoError>> verifySignature(asio::io_context& io_context, std::filesystem::path input_filepath, std::filesystem::path signature_filepath, std::filesystem::path signing_public_key_path, std::string digest_algo, ProgressCallback progress_callback = nullptr);
 
+    // ファイル情報のインスペクト
+    asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> inspectFile(asio::io_context& io_context, std::filesystem::path input_filepath, ProgressCallback progress_callback = nullptr);
+
+    // 鍵管理ユーティリティ (バックエンド非依存)
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
+    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass);
+    std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass);
+    std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv, std::filesystem::path raw_priv, SecureString& pass);
 
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPublicKey(std::filesystem::path public_key_path);
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> loadPrivateKey(std::filesystem::path private_key_path, SecureString& passphrase);
-    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path private_key_path, std::filesystem::path public_key_path, SecureString& passphrase);
-    std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv_path, std::filesystem::path wrapped_priv_path, SecureString& passphrase);
-    std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv_path, std::filesystem::path raw_priv_path, SecureString& passphrase);
+    // 静的ユーティリティ
     static std::expected<StrategyType, CryptoError> detectStrategyType(const std::filesystem::path& path);
     static bool isPrivateKeyEncrypted(const std::filesystem::path& path);
+    static void printErrors();
 
-    static std::vector<unsigned char> hkdfDerive(const std::vector<unsigned char>& ikm, size_t output_len, const std::string& salt, const std::string& info, const std::string& digest_algo);
-    static void printOpenSSLErrors();
+    // 秘密鍵のロード (DER形式を返す)
+    std::expected<std::vector<uint8_t>, CryptoError> loadPrivateKey(std::filesystem::path path, SecureString& passphrase);
 
 protected:
     std::shared_ptr<ICryptoStrategy> strategy_;
     nk::KeyProvider key_provider_;
-    std::filesystem::path key_base_directory;
-    static constexpr int CHUNK_SIZE = 65536;
+    std::filesystem::path key_base_directory = "keys";
 };
 
-#endif // NKCRYPTOTOOLBASE_HPP
+#endif

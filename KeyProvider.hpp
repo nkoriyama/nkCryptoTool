@@ -7,15 +7,11 @@ namespace nk {
 
 /**
  * 鍵保護操作のフロントエンドクラス。
- * 具象的な実装（TPM等）をラップし、統一されたインターフェースを提供する。
  */
 class KeyProvider {
 public:
     KeyProvider() = default;
 
-    /**
-     * プロバイダー（TPM実装など）を設定する
-     */
     void set(std::shared_ptr<IKeyProvider> provider) {
         provider_ = std::move(provider);
     }
@@ -23,22 +19,19 @@ public:
     /**
      * 秘密鍵をラップする
      */
-    std::expected<SecureString, CryptoError> wrap(EVP_PKEY* pkey, const SecureString& passphrase = "") {
+    std::expected<SecureString, CryptoError> wrap(const std::vector<uint8_t>& der_key, const SecureString& passphrase = "") {
         if (!provider_) return std::unexpected(CryptoError::ProviderNotAvailable);
-        return provider_->wrapKey(pkey, passphrase);
+        return provider_->wrapKey(der_key, passphrase);
     }
 
     /**
      * ラップされた鍵をアンラップする
      */
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> unwrap(const SecureString& wrapped_pem, const SecureString& passphrase = "") {
+    std::expected<std::vector<uint8_t>, CryptoError> unwrap(const SecureString& wrapped_pem, const SecureString& passphrase = "") {
         if (!provider_) return std::unexpected(CryptoError::ProviderNotAvailable);
         return provider_->unwrapKey(wrapped_pem, passphrase);
     }
 
-    /**
-     * プロバイダーが利用可能かチェックする
-     */
     bool isAvailable() const {
         return provider_ && provider_->isAvailable();
     }
@@ -52,10 +45,10 @@ private:
  */
 class DefaultKeyProvider : public IKeyProvider {
 public:
-    std::expected<SecureString, CryptoError> wrapKey(EVP_PKEY* pkey, const SecureString& passphrase = "") override {
+    std::expected<SecureString, CryptoError> wrapKey(const std::vector<uint8_t>&, const SecureString& = "") override {
         return std::unexpected(CryptoError::ProviderNotAvailable);
     }
-    std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") override {
+    std::expected<std::vector<uint8_t>, CryptoError> unwrapKey(const SecureString&, const SecureString& = "") override {
         return std::unexpected(CryptoError::ProviderNotAvailable);
     }
     bool isAvailable() override { return false; }

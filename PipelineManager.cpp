@@ -4,10 +4,11 @@
 #include <algorithm>
 
 void PipelineManager::run(const std::string& in_path, async_file_t out_file, uintmax_t read_offset, uintmax_t read_size,
-                         std::function<void(std::error_code)> completion_handler,
-                         FinalizationFunc finalization_handler,
-                         ProgressCallback progress_callback,
-                         uintmax_t total_input_size) {
+                          std::function<void(std::error_code)> completion_handler,
+                          FinalizationFunc finalization_handler,
+                          std::function<void(double)> progress_callback,
+                          uintmax_t total_input_size) {
+
     output_file_ = std::move(out_file);
     completion_handler_ = completion_handler;
     finalization_handler_ = finalization_handler;

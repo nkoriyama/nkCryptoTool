@@ -4,10 +4,9 @@
 #include <expected>
 #include <memory>
 #include <string>
-#include <openssl/evp.h>
+#include <vector>
 #include "SecureMemory.hpp"
 #include "CryptoError.hpp"
-#include "OpenSSLDeleters.hpp"
 
 namespace nk {
 
@@ -18,8 +17,18 @@ class IKeyProvider {
 public:
     virtual ~IKeyProvider() = default;
 
-    virtual std::expected<SecureString, CryptoError> wrapKey(EVP_PKEY* pkey, const SecureString& passphrase = "") = 0;
-    virtual std::expected<std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") = 0;
+    /**
+     * 秘密鍵をラップする
+     * @param der_key ラップ対象の秘密鍵 (DER形式)
+     */
+    virtual std::expected<SecureString, CryptoError> wrapKey(const std::vector<uint8_t>& der_key, const SecureString& passphrase = "") = 0;
+    
+    /**
+     * ラップされた鍵をアンラップする
+     * @return 復元された秘密鍵 (DER形式)
+     */
+    virtual std::expected<std::vector<uint8_t>, CryptoError> unwrapKey(const SecureString& wrapped_pem, const SecureString& passphrase = "") = 0;
+    
     virtual bool isAvailable() = 0;
 };
 

@@ -1,9 +1,4 @@
 #include "ECCStrategy.hpp"
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/pem.h>
-#include <openssl/err.h>
-#include <openssl/core_names.h>
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
@@ -11,16 +6,10 @@
 #include "nkCryptoToolBase.hpp"
 #include "TPMConstants.hpp"
 #include "nkCryptoToolUtils.hpp"
+#include "backend/IBackend.hpp"
 
-extern int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
-
-ECCStrategy::ECCStrategy() : cipher_ctx_(EVP_CIPHER_CTX_new()), md_ctx_(EVP_MD_CTX_new()) {}
-ECCStrategy::~ECCStrategy() {
-    if (!shared_secret_.empty()) OPENSSL_cleanse(shared_secret_.data(), shared_secret_.size());
-    if (!encryption_key_.empty()) OPENSSL_cleanse(encryption_key_.data(), encryption_key_.size());
-    if (!decrypt_buffer_.empty()) OPENSSL_cleanse(decrypt_buffer_.data(), decrypt_buffer_.size());
-    if (!tpm_digest_buffer_.empty()) OPENSSL_cleanse(tpm_digest_buffer_.data(), tpm_digest_buffer_.size());
-}
+ECCStrategy::ECCStrategy() {}
+ECCStrategy::~ECCStrategy() {}
 
 std::map<std::string, std::string> ECCStrategy::getMetadata(const std::string& magic) const {
     std::map<std::string, std::string> res;
@@ -101,43 +90,39 @@ std::expected<size_t, CryptoError> ECCStrategy::deserializeHeader(const std::vec
 
 std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
     std::string pub, priv;
-    if (key_paths.count("public-key")) {
+    if (key_paths.count("public-ecdh-key") && key_paths.count("private-ecdh-key")) {
+        pub = key_paths.at("public-ecdh-key");
+        priv = key_paths.at("private-ecdh-key");
+    } else if (key_paths.count("public-key") && key_paths.count("private-key")) {
         pub = key_paths.at("public-key");
         priv = key_paths.at("private-key");
-    } else if (key_paths.count("signing-public-key")) {
+    } else if (key_paths.count("signing-public-key") && key_paths.count("signing-private-key")) {
         pub = key_paths.at("signing-public-key");
         priv = key_paths.at("signing-private-key");
     } else {
-        return std::unexpected(CryptoError::FileCreationError);
+        return std::unexpected(CryptoError::ParameterError);
     }
 
     bool use_tpm = key_paths.count("use-tpm") && key_paths.at("use-tpm") == "true";
     
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ec_key;
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::KeyGenerationInitError);
-    OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)curve_name_.c_str(), 0), OSSL_PARAM_construct_end() };
-    EVP_PKEY_CTX_set_params(pctx.get(), params);
-    EVP_PKEY* pkey = nullptr; 
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return std::unexpected(CryptoError::KeyGenerationError);
-    ec_key.reset(pkey);
+    auto backend = nk::backend::getBackend();
+    auto key_pair = backend->generateEccKeyPair(curve_name_);
+    if (!key_pair) return std::unexpected(key_pair.error());
 
     if (use_tpm) {
-        auto wrapped = key_provider_.wrap(ec_key.get(), passphrase);
+        auto wrapped = key_provider_.wrap(key_pair->first, passphrase);
         if (!wrapped) return std::unexpected(wrapped.error());
         std::ofstream ofs(priv, std::ios::binary);
-        if (!ofs) return std::unexpected(CryptoError::FileCreationError);
         ofs.write(wrapped->data(), (std::streamsize)wrapped->size());
     } else {
-        std::unique_ptr<BIO, BIO_Deleter> priv_bio(BIO_new_file(priv.c_str(), "wb"));
-        if (!priv_bio) return std::unexpected(CryptoError::FileCreationError);
-        if (passphrase.empty()) PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), nullptr, nullptr, 0, nullptr, nullptr);
-        else PEM_write_bio_PKCS8PrivateKey(priv_bio.get(), ec_key.get(), EVP_aes_256_cbc(), nullptr, 0, pem_passwd_cb, (void*)&passphrase);
+        std::string pem = nkCryptoToolUtils::wrapToPem(key_pair->first, "PRIVATE KEY");
+        std::ofstream ofs(priv, std::ios::binary);
+        ofs.write(pem.data(), (std::streamsize)pem.size());
     }
     
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pub.c_str(), "wb"));
-    if (!pub_bio) return std::unexpected(CryptoError::FileCreationError);
-    PEM_write_bio_PUBKEY(pub_bio.get(), ec_key.get());
+    std::string pub_pem = nkCryptoToolUtils::wrapToPem(key_pair->second, "PUBLIC KEY");
+    std::ofstream ofs_pub(pub, std::ios::binary);
+    ofs_pub.write(pub_pem.data(), (std::streamsize)pub_pem.size());
     return {};
 }
 
@@ -145,6 +130,30 @@ std::expected<void, CryptoError> ECCStrategy::generateSigningKeyPair(const std::
     return generateEncryptionKeyPair(key_paths, passphrase);
 }
 
+std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) {
+    std::ifstream ifs(priv_path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    
+    std::vector<uint8_t> priv_der;
+    if (content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
+        auto loaded = key_provider_.unwrap(SecureString(content.begin(), content.end()), passphrase);
+        if (!loaded) return std::unexpected(loaded.error());
+        priv_der = std::move(*loaded);
+    } else {
+        auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
+        if (!der) return std::unexpected(der.error());
+        priv_der = std::move(*der);
+    }
+
+    auto backend = nk::backend::getBackend();
+    auto pub_der = backend->extractPublicKey(priv_der);
+    if (!pub_der) return std::unexpected(pub_der.error());
+
+    std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
+    std::ofstream ofs_pub(pub_path, std::ios::binary);
+    ofs_pub.write(pub_pem.data(), (std::streamsize)pub_pem.size());
+    return {};
+}
 
 std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
     if (key_paths.count("digest-algo")) digest_algo_ = key_paths.at("digest-algo");
@@ -154,64 +163,53 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     else if (key_paths.count("recipient-ecdh-pubkey")) pubkey_path = key_paths.at("recipient-ecdh-pubkey");
     else return std::unexpected(CryptoError::PublicKeyLoadError);
 
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pubkey_path.c_str(), "rb"));
-    if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
-    EVP_PKEY* pkey = PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr);
-    if (!pkey) return std::unexpected(CryptoError::PublicKeyLoadError);
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> recipient_pub(pkey);
-    
-    char name[128];
-    if (EVP_PKEY_get_group_name(recipient_pub.get(), name, sizeof(name), nullptr) > 0) curve_name_ = name;
+    std::ifstream ifs(pubkey_path, std::ios::binary);
+    std::string pub_pem((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    auto recipient_pub_der = nkCryptoToolUtils::unwrapFromPem(pub_pem, "PUBLIC KEY");
+    if (!recipient_pub_der) return std::unexpected(recipient_pub_der.error());
 
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    OSSL_PARAM params[] = { OSSL_PARAM_construct_utf8_string("group", (char*)curve_name_.c_str(), 0), OSSL_PARAM_construct_end() };
-    EVP_PKEY_CTX_set_params(pctx.get(), params);
+    auto backend = nk::backend::getBackend();
+    auto ephem_pair = backend->generateEccKeyPair(curve_name_);
+    if (!ephem_pair) return std::unexpected(ephem_pair.error());
     
-    EVP_PKEY* epkey = nullptr; 
-    if (EVP_PKEY_keygen(pctx.get(), &epkey) <= 0) return std::unexpected(CryptoError::KeyGenerationError);
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_key(epkey);
+    auto secret = backend->eccDh(ephem_pair->first, *recipient_pub_der);
+    if (!secret) return std::unexpected(secret.error());
+    shared_secret_ = *secret;
+
+    ephemeral_pubkey_ = ephem_pair->second;
+    salt_.resize(16); iv_.resize(12);
+    backend->randomBytes(salt_.data(), 16);
+    backend->randomBytes(iv_.data(), 12);
     
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_ctx(EVP_PKEY_CTX_new(ephemeral_key.get(), nullptr));
-    if (!ecdh_ctx || EVP_PKEY_derive_init(ecdh_ctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_PKEY_derive_set_peer(ecdh_ctx.get(), recipient_pub.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    
-    size_t slen; 
-    EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen);
-    std::vector<unsigned char> secret(slen);
-    EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen);
-    shared_secret_ = secret;
-    
-    std::unique_ptr<BIO, BIO_Deleter> mem_bio(BIO_new(BIO_s_mem()));
-    PEM_write_bio_PUBKEY(mem_bio.get(), ephemeral_key.get());
-    BUF_MEM *bio_buf; BIO_get_mem_ptr(mem_bio.get(), &bio_buf);
-    ephemeral_pubkey_.assign(bio_buf->data, bio_buf->data + bio_buf->length);
-    salt_.resize(16); iv_.resize(12); RAND_bytes(salt_.data(), 16); RAND_bytes(iv_.data(), 12);
-    encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "ecc-encryption", "SHA3-256");
-    
-    if (!cipher_ctx_) cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (EVP_EncryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_EncryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "ecc-encryption", "SHA3-256");
+    encryption_key_.assign(key_raw.begin(), key_raw.end());
+
+    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
+    if (!aead) return std::unexpected(aead.error());
+    aead_ctx_ = std::move(*aead);
+
     return {};
 }
 
 std::vector<char> ECCStrategy::encryptTransform(const std::vector<char>& data) {
     if (data.empty()) return {};
-    std::vector<unsigned char> out(data.size() + EVP_MAX_BLOCK_LENGTH);
-    int out_len = 0;
-    EVP_EncryptUpdate(cipher_ctx_.get(), out.data(), &out_len, (const unsigned char*)data.data(), (int)data.size());
-    out.resize(out_len);
-    return std::vector<char>(out.begin(), out.end());
+    std::vector<char> out(data.size() + 16);
+    auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
+    if (!res) return {};
+    out.resize(*res);
+    return out;
 }
 
 std::expected<void, CryptoError> ECCStrategy::finalizeEncryption(std::vector<char>& out_final) {
-    std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
-    int final_len = 0;
-    EVP_EncryptFinal_ex(cipher_ctx_.get(), final_block.data(), &final_len);
-    std::vector<unsigned char> tag(16);
-    EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_GET_TAG, 16, tag.data());
-    out_final.assign(final_block.begin(), final_block.begin() + final_len);
+    std::vector<char> final_block(16);
+    auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
+    if (!res) return std::unexpected(res.error());
+    
+    std::vector<uint8_t> tag(16);
+    aead_ctx_->getTag(tag.data(), 16);
+    
+    out_final.assign(final_block.begin(), final_block.begin() + *res);
     out_final.insert(out_final.end(), tag.begin(), tag.end());
     return {};
 }
@@ -224,61 +222,49 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     else return std::unexpected(CryptoError::PrivateKeyLoadError);
 
     std::ifstream ifs(priv_key_path, std::ios::binary);
-    if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
+    std::vector<uint8_t> priv_der;
     if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
         auto loaded = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
         if (!loaded) return std::unexpected(loaded.error());
-        encryption_priv_key_ = std::move(*loaded);
+        priv_der = std::move(*loaded);
     } else {
-        encryption_priv_key_.reset();
-        std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
-        void* pwd = passphrase.empty() ? nullptr : (void*)&passphrase;
-        EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, pem_passwd_cb, pwd);
-        if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
-        encryption_priv_key_.reset(pkey);
+        auto der = nkCryptoToolUtils::unwrapFromPem(pem_content, "PRIVATE KEY");
+        if (!der) return std::unexpected(der.error());
+        priv_der = std::move(*der);
     }
 
-    std::unique_ptr<BIO, BIO_Deleter> mem_bio(BIO_new_mem_buf(ephemeral_pubkey_.data(), (int)ephemeral_pubkey_.size()));
-    EVP_PKEY* epkey = PEM_read_bio_PUBKEY(mem_bio.get(), nullptr, nullptr, nullptr);
-    if (!epkey) return std::unexpected(CryptoError::PublicKeyLoadError);
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> ephemeral_key(epkey);
+    auto backend = nk::backend::getBackend();
+    auto secret = backend->eccDh(priv_der, ephemeral_pubkey_);
+    if (!secret) return std::unexpected(secret.error());
+    shared_secret_ = *secret;
+    
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "ecc-encryption", "SHA3-256");
+    encryption_key_.assign(key_raw.begin(), key_raw.end());
 
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_ctx(EVP_PKEY_CTX_new(encryption_priv_key_.get(), nullptr));
-    if (!ecdh_ctx || EVP_PKEY_derive_init(ecdh_ctx.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_PKEY_derive_set_peer(ecdh_ctx.get(), ephemeral_key.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    size_t slen; 
-    EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen);
-    std::vector<unsigned char> secret(slen);
-    EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen);
+    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
+    if (!aead) return std::unexpected(aead.error());
+    aead_ctx_ = std::move(*aead);
     
-    shared_secret_ = secret;
-    encryption_key_ = nkCryptoToolBase::hkdfDerive(secret, 32, std::string(salt_.begin(), salt_.end()), "ecc-encryption", "SHA3-256");
-    
-    cipher_ctx_.reset(EVP_CIPHER_CTX_new());
-    if (EVP_DecryptInit_ex(cipher_ctx_.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv_.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_DecryptInit_ex(cipher_ctx_.get(), nullptr, nullptr, encryption_key_.data(), iv_.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    
-    decrypt_buffer_.clear();
     return {};
 }
 
 std::vector<char> ECCStrategy::decryptTransform(const std::vector<char>& data) {
     if (data.empty()) return {};
-    std::vector<unsigned char> out(data.size() + EVP_MAX_BLOCK_LENGTH);
-    int out_len = 0;
-    EVP_DecryptUpdate(cipher_ctx_.get(), out.data(), &out_len, (const unsigned char*)data.data(), (int)data.size());
-    out.resize(out_len);
-    return std::vector<char>(out.begin(), out.end());
+    std::vector<char> out(data.size() + 16);
+    auto res = aead_ctx_->update((const uint8_t*)data.data(), data.size(), (uint8_t*)out.data());
+    if (!res) return {};
+    out.resize(*res);
+    return out;
 }
 
 std::expected<void, CryptoError> ECCStrategy::finalizeDecryption(const std::vector<char>& tag) {
-    if (EVP_CIPHER_CTX_ctrl(cipher_ctx_.get(), EVP_CTRL_GCM_SET_TAG, 16, (void*)tag.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    std::vector<unsigned char> final_block(EVP_MAX_BLOCK_LENGTH);
-    int final_len = 0;
-    if (EVP_DecryptFinal_ex(cipher_ctx_.get(), final_block.data(), &final_len) <= 0) return std::unexpected(CryptoError::SignatureVerificationError);
+    aead_ctx_->setTag((const uint8_t*)tag.data(), tag.size());
+    std::vector<char> final_block(16);
+    auto res = aead_ctx_->finalize((uint8_t*)final_block.data());
+    if (!res) return std::unexpected(CryptoError::SignatureVerificationError);
     return {};
 }
 
@@ -288,57 +274,52 @@ std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesyst
     if (!ifs) return std::unexpected(CryptoError::PrivateKeyLoadError);
     std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
+    std::vector<uint8_t> priv_der;
     if (pem_content.find(TPMUtils::TPM_BLOB_HEADER) != std::string::npos) {
         auto loaded = key_provider_.unwrap(SecureString(pem_content.begin(), pem_content.end()), passphrase);
         if (!loaded) return std::unexpected(loaded.error());
-        sign_key_ = std::move(*loaded);
+        priv_der = std::move(*loaded);
     } else {
-        std::unique_ptr<BIO, BIO_Deleter> bio(BIO_new_mem_buf(pem_content.data(), (int)pem_content.size()));
-        void* pwd = passphrase.empty() ? nullptr : (void*)&passphrase;
-        EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio.get(), nullptr, pem_passwd_cb, pwd);
-        if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
-        sign_key_.reset(pkey);
+        auto der = nkCryptoToolUtils::unwrapFromPem(pem_content, "PRIVATE KEY");
+        if (!der) return std::unexpected(der.error());
+        priv_der = std::move(*der);
     }
 
-    const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
-    if (!md) md = EVP_sha3_512();
-    EVP_MD_CTX_reset(md_ctx_.get());
-    if (EVP_DigestSignInit(md_ctx_.get(), nullptr, md, nullptr, sign_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    return {};
+    auto backend = nk::backend::getBackend();
+    auto hash = backend->createHash(digest_algo_);
+    if (!hash) return std::unexpected(hash.error());
+    hash_ctx_ = std::move(*hash);
+    return hash_ctx_->initSign(priv_der);
 }
 
 std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::filesystem::path& pub_key_path, const std::string& digest_algo) {
     digest_algo_ = digest_algo;
-    std::unique_ptr<BIO, BIO_Deleter> pub_bio(BIO_new_file(pub_key_path.string().c_str(), "rb"));
-    if (!pub_bio) return std::unexpected(CryptoError::PublicKeyLoadError);
-    verify_key_.reset(PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr));
-    if (!verify_key_) return std::unexpected(CryptoError::PublicKeyLoadError);
-    const EVP_MD* md = EVP_get_digestbyname(digest_algo.c_str());
-    if (!md) md = EVP_sha3_512();
-    EVP_MD_CTX_reset(md_ctx_.get());
-    if (EVP_DigestVerifyInit(md_ctx_.get(), nullptr, md, nullptr, verify_key_.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    return {};
+    std::ifstream ifs(pub_key_path, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::PublicKeyLoadError);
+    std::string pem_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    auto pub_der = nkCryptoToolUtils::unwrapFromPem(pem_content, "PUBLIC KEY");
+    if (!pub_der) return std::unexpected(pub_der.error());
+
+    auto backend = nk::backend::getBackend();
+    auto hash = backend->createHash(digest_algo_);
+    if (!hash) return std::unexpected(hash.error());
+    hash_ctx_ = std::move(*hash);
+    return hash_ctx_->initVerify(*pub_der);
 }
 
 void ECCStrategy::updateHash(const std::vector<char>& data) {
-    if (sign_key_) EVP_DigestSignUpdate(md_ctx_.get(), data.data(), data.size());
-    else if (verify_key_) EVP_DigestVerifyUpdate(md_ctx_.get(), data.data(), data.size());
+    hash_ctx_->update((const uint8_t*)data.data(), data.size());
 }
 
 std::expected<std::vector<char>, CryptoError> ECCStrategy::signHash() {
-    size_t slen = 0;
-    if (EVP_DigestSignFinal(md_ctx_.get(), nullptr, &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    std::vector<unsigned char> sig(slen);
-    if (EVP_DigestSignFinal(md_ctx_.get(), sig.data(), &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    sig.resize(slen);
-    return std::vector<char>(sig.begin(), sig.end());
+    auto res = hash_ctx_->finalizeSign();
+    if (!res) return std::unexpected(res.error());
+    return std::vector<char>(res->begin(), res->end());
 }
 
 std::expected<bool, CryptoError> ECCStrategy::verifyHash(const std::vector<char>& signature) {
-    int res = EVP_DigestVerifyFinal(md_ctx_.get(), (const unsigned char*)signature.data(), signature.size());
-    if (res == 1) return true;
-    if (res == 0) return false;
-    return std::unexpected(CryptoError::OpenSSLError);
+    std::vector<uint8_t> sig_v(signature.begin(), signature.end());
+    return hash_ctx_->finalizeVerify(sig_v);
 }
 
 std::vector<char> ECCStrategy::serializeSignatureHeader() const {
