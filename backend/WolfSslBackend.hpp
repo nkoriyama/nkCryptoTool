@@ -1,29 +1,30 @@
-#ifndef NKCRYPTOTOOL_OPENSSL_BACKEND_HPP
-#define NKCRYPTOTOOL_OPENSSL_BACKEND_HPP
+#ifndef NKCRYPTOTOOL_WOLFSSL_BACKEND_HPP
+#define NKCRYPTOTOOL_WOLFSSL_BACKEND_HPP
 
 #include "IBackend.hpp"
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/kdf.h>
-#include "../OpenSSLDeleters.hpp"
+#include <wolfssl/options.h>
+#include <wolfssl/openssl/evp.h>
+#include <wolfssl/wolfcrypt/random.h>
 
 namespace nk::backend {
 
-class OpenSslAeadBackend : public IAeadBackend {
+class WolfSslAeadBackend : public IAeadBackend {
 public:
-    OpenSslAeadBackend(std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx);
+    WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx);
+    ~WolfSslAeadBackend() override;
     std::expected<size_t, CryptoError> update(const uint8_t* in, size_t in_len, uint8_t* out) override;
     std::expected<size_t, CryptoError> finalize(uint8_t* out) override;
     std::expected<void, CryptoError> getTag(uint8_t* tag, size_t tag_len) override;
     std::expected<void, CryptoError> setTag(const uint8_t* tag, size_t tag_len) override;
 
 private:
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx_;
+    WOLFSSL_EVP_CIPHER_CTX* ctx_;
 };
 
-class OpenSslHashBackend : public IHashBackend {
+class WolfSslHashBackend : public IHashBackend {
 public:
-    OpenSslHashBackend(std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> ctx, const EVP_MD* md);
+    WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EVP_MD* md);
+    ~WolfSslHashBackend() override;
     std::expected<void, CryptoError> update(const uint8_t* data, size_t len) override;
     std::expected<void, CryptoError> initSign(const std::vector<uint8_t>& priv_key_der) override;
     std::expected<std::vector<uint8_t>, CryptoError> finalizeSign() override;
@@ -31,13 +32,13 @@ public:
     std::expected<bool, CryptoError> finalizeVerify(const std::vector<uint8_t>& signature) override;
 
 private:
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> ctx_;
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> pkey_;
-    const EVP_MD* md_;
+    WOLFSSL_EVP_MD_CTX* ctx_;
+    const WOLFSSL_EVP_MD* md_;
+    WOLFSSL_EVP_PKEY* pkey_ = nullptr;
     std::vector<uint8_t> buffer_;
 };
 
-class OpenSslBackend : public ICryptoBackend {
+class WolfSslBackend : public ICryptoBackend {
 public:
     std::expected<std::unique_ptr<IAeadBackend>, CryptoError> createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) override;
     std::expected<std::unique_ptr<IHashBackend>, CryptoError> createHash(const std::string& algo_name) override;
@@ -54,9 +55,6 @@ public:
     std::vector<uint8_t> base64Decode(const std::string& base64_str) override;
 };
 
-// OpenSSL 3.0 以降のエンコーダ/デコーダ用パスフレーズコールバック
-int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg);
-
 } // namespace nk::backend
 
-#endif // NKCRYPTOTOOL_OPENSSL_BACKEND_HPP
+#endif // NKCRYPTOTOOL_WOLFSSL_BACKEND_HPP

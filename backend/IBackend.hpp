@@ -64,6 +64,13 @@ public:
 
     // ランダムバイト生成
     virtual std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) = 0;
+
+    // メモリの安全な消去
+    virtual void cleanse(void* ptr, size_t len) = 0;
+
+    // Base64 エンコード/デコード
+    virtual std::string base64Encode(const std::vector<uint8_t>& data) = 0;
+    virtual std::vector<uint8_t> base64Decode(const std::string& base64_str) = 0;
 };
 
 // 現在のビルド構成で最適なバックエンドを取得する
