@@ -13,6 +13,8 @@
 
 #include "KeyProvider.hpp"
 
+namespace nk {
+
 class ECCStrategy : public ICryptoStrategy {
 public:
     ECCStrategy();
@@ -68,9 +70,7 @@ public:
 
 private:
     std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
-    std::unique_ptr<nk::backend::IHashBackend> hash_ctx_;
-    std::vector<uint8_t> sign_key_der_;
-    std::vector<uint8_t> verify_key_der_;
+    std::unique_ptr<nk::backend::IHashBackend> hash_backend_;
 
     std::string curve_name_ = "prime256v1";
     std::string digest_algo_ = "SHA3-512";
@@ -81,5 +81,7 @@ private:
     std::vector<unsigned char> ephemeral_pubkey_;
     nk::KeyProvider key_provider_;
 };
+
+} // namespace nk
 
 #endif // ECC_STRATEGY_HPP

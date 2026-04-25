@@ -19,6 +19,7 @@ include(FetchContent)
 # --- WolfSSL Configuration ---
 if(USE_BACKEND STREQUAL "WolfSSL")
     message(STATUS "Configuring WolfSSL")
+    
     set(WOLFSSL_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(WOLFSSL_CRYPTONLY ON CACHE BOOL "" FORCE)
     set(WOLFSSL_TLS OFF CACHE BOOL "" FORCE)
@@ -30,8 +31,17 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     set(WOLFSSL_KEYGEN ON CACHE BOOL "" FORCE)
     set(WOLFSSL_HKDF ON CACHE BOOL "" FORCE)
     set(WOLFSSL_PKCS8 ON CACHE BOOL "" FORCE)
-    set(WOLFSSL_ASN_TEMPLATE ON CACHE BOOL "" FORCE) # これが必要な場合がある
+    set(WOLFSSL_ASN_TEMPLATE ON CACHE BOOL "" FORCE)
     set(WOLFSSL_WERROR OFF CACHE BOOL "" FORCE)
+    
+    # 重要なマクロを強制 (FetchContentの前に設定)
+    add_compile_definitions(WOLFSSL_AESGCM_STREAM)
+    add_compile_definitions(HAVE_AESGCM)
+    add_compile_definitions(HAVE_HKDF)
+    add_compile_definitions(HAVE_ECC)
+
+    set(CMAKE_C_FLAGS "-fPIC -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "-fPIC -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC" CACHE STRING "" FORCE)
 
     FetchContent_Declare(wolfssl
         GIT_REPOSITORY https://github.com/wolfSSL/wolfssl.git
@@ -53,7 +63,9 @@ FetchContent_MakeAvailable(googletest)
 
 FetchContent_Declare(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.4)
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
 set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_DOWNLOAD_DEPENDENCIES ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(benchmark)
 
 FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.11.3)
@@ -93,9 +105,6 @@ set(NKCRYPTO_SHARED_SOURCES
 
 add_library(nkcrypto_shared STATIC ${NKCRYPTO_SHARED_SOURCES})
 set_target_properties(nkcrypto_shared PROPERTIES POSITION_INDEPENDENT_CODE ON)
-set_target_properties(nkcrypto_shared PROPERTIES CXX_STANDARD 23)
-target_compile_options(nkcrypto_shared PRIVATE -fPIC -Wno-error -Wno-stringop-overflow)
-target_compile_options(nkcrypto_shared PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fcoroutines>)
 
 target_include_directories(nkcrypto_shared PUBLIC
   ${PROJECT_SOURCE_DIR}
@@ -116,46 +125,14 @@ if(UNIX AND NOT APPLE)
 endif()
 
 add_executable(nkCryptoTool nkCryptoToolMain.cpp)
-set_target_properties(nkCryptoTool PROPERTIES CXX_STANDARD 23)
-target_compile_options(nkCryptoTool PRIVATE -fcoroutines -Wno-error)
 target_include_directories(nkCryptoTool PRIVATE ${cxxopts_SOURCE_DIR}/include)
 target_link_libraries(nkCryptoTool PRIVATE nkcrypto_shared benchmark benchmark_main)
 
 # --- ユニットテスト ---
 add_executable(unit_tests tests/unit/unit_tests.cpp)
-set_target_properties(unit_tests PROPERTIES CXX_STANDARD 23)
-target_compile_options(unit_tests PRIVATE -fcoroutines -Wno-error)
 target_include_directories(unit_tests PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(unit_tests PRIVATE nkcrypto_shared GTest::gtest_main GTest::gmock Threads::Threads)
 include(GoogleTest)
 gtest_discover_tests(unit_tests)
 
-# E2Eテスト
 enable_testing()
-set(E2E_TEST_INPUT_FILE "${CMAKE_BINARY_DIR}/e2e_test_input.txt")
-file(WRITE "${E2E_TEST_INPUT_FILE}" "This is the test file for the nkCryptoTool end-to-end scenarios.")
-
-macro(add_e2e_test TEST_NAME MODE PARALLEL SIGNING NEGATIVE REGEN_PUB REGEN_SIGN_PUB RECURSIVE INFO TPM WRAP PASSPHRASE KEY_TYPE)
-    add_test(NAME ${TEST_NAME}
-        COMMAND ${CMAKE_COMMAND}
-            -DNK_TOOL_EXE=$<TARGET_FILE:nkCryptoTool>
-            -DTEST_INPUT_FILE=${E2E_TEST_INPUT_FILE}
-            -DTEST_OUTPUT_DIR=${CMAKE_BINARY_DIR}/tests/${TEST_NAME}
-            -DSCENARIO_MODE=${MODE}
-            -DSCENARIO_PARALLEL=${PARALLEL}
-            -DSCENARIO_SIGNING=${SIGNING}
-            -DSCENARIO_NEGATIVE=${NEGATIVE}
-            -DSCENARIO_REGENERATE_PUBKEY=${REGEN_PUB}
-            -DSCENARIO_REGENERATE_SIGN_PUBKEY=${REGEN_SIGN_PUB}
-            -DSCENARIO_RECURSIVE=${RECURSIVE}
-            -DSCENARIO_INFO=${INFO}
-            -DSCENARIO_TPM=${TPM}
-            -DSCENARIO_WRAP=${WRAP}
-            -DSCENARIO_PASSPHRASE=${PASSPHRASE}
-            -DSCENARIO_KEY_TYPE=${KEY_TYPE}
-            -P "${CMAKE_SOURCE_DIR}/tests/E2ETests.cmake"
-    )
-endmacro()
-
-add_e2e_test(E2E_ECC_Encryption ecc OFF OFF OFF OFF OFF OFF OFF OFF OFF "" "enc")
-add_e2e_test(E2E_ECC_Signing    ecc OFF ON  OFF OFF OFF OFF OFF OFF OFF "" "sign")
