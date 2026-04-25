@@ -1,6 +1,6 @@
 build/
-./build_wolfssl/
-./build_final/
+build_wolfssl/
+build_final/
 build_release/
 build_test/
 bin/
