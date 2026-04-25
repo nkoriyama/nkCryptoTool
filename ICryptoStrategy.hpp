@@ -12,15 +12,10 @@
 #include <map>
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include "SecureMemory.hpp"
 #include "CryptoError.hpp"
-#include <openssl/evp.h>
-#include <openssl/bio.h>
-#include <openssl/kdf.h>
-#include <asio/awaitable.hpp>
-#include <memory>
-#include "OpenSSLDeleters.hpp"
-#include "KeyProvider.hpp"
+#include "IKeyProvider.hpp"
 
 // ストラテジーのタイプ識別子
 enum class StrategyType : uint8_t {
@@ -43,6 +38,7 @@ public:
     // --- 鍵生成 ---
     virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
     virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
+    virtual std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) = 0;
 
     // --- 暗号化・復号のパイプライン処理用 ---
     virtual std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) = 0;

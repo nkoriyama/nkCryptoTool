@@ -3,7 +3,7 @@
 
 #include "ICryptoStrategy.hpp"
 #include "SecureMemory.hpp"
-#include <openssl/evp.h>
+#include "backend/IBackend.hpp"
 #include <memory>
 #include <vector>
 #include <string>
@@ -29,6 +29,7 @@ public:
     // 鍵生成 ---
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
+    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) override;
 
     // パイプライン・トランスフォーマー
     std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) override;
@@ -66,11 +67,11 @@ public:
     std::vector<unsigned char> getSharedSecret() const { return shared_secret_; }
 
 private:
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx_;
-    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> md_ctx_;
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> sign_key_;
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> verify_key_;
-    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> encryption_priv_key_;
+    std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
+    std::unique_ptr<nk::backend::IHashBackend> hash_ctx_;
+    std::vector<uint8_t> sign_key_der_;
+    std::vector<uint8_t> verify_key_der_;
+
     std::string curve_name_ = "prime256v1";
     std::string digest_algo_ = "SHA3-512";
     std::vector<unsigned char> encryption_key_;
@@ -78,11 +79,6 @@ private:
     std::vector<unsigned char> salt_;
     std::vector<unsigned char> shared_secret_;
     std::vector<unsigned char> ephemeral_pubkey_;
-    std::vector<unsigned char> decrypt_buffer_;
-    std::string tpm_wrapped_pem_;
-    bool is_tpm_wrapped_ = false;
-    SecureString tpm_passphrase_;
-    std::vector<char> tpm_digest_buffer_;
     nk::KeyProvider key_provider_;
 };
 

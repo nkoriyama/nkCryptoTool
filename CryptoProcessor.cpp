@@ -6,64 +6,76 @@
 #include "nkCryptoToolUtils.hpp"
 #include "TpmKeyProvider.hpp"
 
-#include <asio.hpp>
-#include <asio/co_spawn.hpp>
-#include <thread>
 #include <iostream>
-#include <format>
+#include <chrono>
+#include <iomanip>
+#include <asio/post.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 
-CryptoProcessor::CryptoProcessor(CryptoConfig config) : config_(std::move(config)), io_context_() {}
+CryptoProcessor::CryptoProcessor(CryptoConfig config)
+    : config_(std::move(config)), io_context_(1) {
+    switch (config_.mode) {
+        case CryptoMode::ECC:
+            strategy_ = std::make_shared<ECCStrategy>();
+            break;
+        case CryptoMode::PQC:
+            strategy_ = std::make_shared<PQCStrategy>();
+            break;
+        case CryptoMode::Hybrid:
+            strategy_ = std::make_shared<HybridStrategy>();
+            break;
+    }
+    current_handler_ = std::make_shared<nkCryptoToolBase>(strategy_);
+}
 
 CryptoProcessor::~CryptoProcessor() {
-    io_context_.stop();
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
 }
 
 std::future<void> CryptoProcessor::run() {
-    return std::async(std::launch::async, [this]() {
-        run_internal();
-        if (thread_exception_) {
-            std::rethrow_exception(thread_exception_);
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
+
+    worker_thread_ = std::thread([this, promise]() mutable {
+        try {
+            run_internal();
+            if (thread_exception_) {
+                promise->set_exception(thread_exception_);
+            } else {
+                promise->set_value();
+            }
+        } catch (...) {
+            promise->set_exception(std::current_exception());
         }
     });
+
+    return future;
 }
 
-void CryptoProcessor::set_progress_callback(ProgressCallback callback) {
+void CryptoProcessor::set_progress_callback(std::function<void(double)> callback) {
     progress_callback_ = callback;
 }
 
 void CryptoProcessor::setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) {
     key_provider_ = provider;
-    if (current_handler_) {
-        current_handler_->setKeyProvider(provider);
-    }
+    if (current_handler_) current_handler_->setKeyProvider(provider);
 }
 
 void CryptoProcessor::run_internal() {
-    try {
-        io_context_.restart();
-        auto work_guard = asio::make_work_guard(io_context_.get_executor());
-        auto work_ptr = std::make_shared<decltype(work_guard)>(std::move(work_guard));
-        
-        std::shared_ptr<ICryptoStrategy> strategy;
-        if (config_.mode == CryptoMode::ECC) strategy = std::make_shared<ECCStrategy>();
-        else if (config_.mode == CryptoMode::PQC) strategy = std::make_shared<PQCStrategy>();
-        else strategy = std::make_shared<HybridStrategy>();
+    auto work_ptr = std::make_shared<asio::executor_work_guard<asio::io_context::executor_type>>(io_context_.get_executor());
 
-        current_handler_ = std::make_shared<nkCryptoToolBase>(std::move(strategy));
-        if (key_provider_) {
-            current_handler_->setKeyProvider(key_provider_);
-        } else if (config_.use_tpm) {
-            current_handler_->setKeyProvider(std::make_shared<nk::TpmKeyProvider>());
+    auto completion_handler = [this, work_ptr](std::error_code ec, std::string detail = "") {
+        if (ec && !thread_exception_) {
+            std::string msg = detail.empty() ? "Operation failed" : detail;
+            thread_exception_ = std::make_exception_ptr(std::system_error(ec, msg));
         }
+        work_ptr->reset();
+    };
 
-        auto completion_handler = [this, work_ptr](std::error_code ec, std::string detail = "") mutable {
-            if (ec && !thread_exception_) {
-                std::string msg = detail.empty() ? "Operation failed" : detail;
-                thread_exception_ = std::make_exception_ptr(std::system_error(ec, msg));
-            }
-            work_ptr->reset();
-        };
-
+    try {
         switch (config_.operation) {
             case Operation::Encrypt:
                 current_handler_->encryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, [completion_handler](std::error_code ec) mutable { completion_handler(ec); }, progress_callback_);
@@ -72,8 +84,15 @@ void CryptoProcessor::run_internal() {
                 current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, [completion_handler](std::error_code ec) mutable { completion_handler(ec); }, progress_callback_);
                 break;
             case Operation::Sign:
-                asio::co_spawn(io_context_, current_handler_->signFile(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-privkey"), config_.digest_algo, config_.passphrase, progress_callback_), 
-                [completion_handler](std::exception_ptr p) mutable {
+                asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
+                    std::string key_path;
+                    if (config_.key_paths.count("signing-privkey")) key_path = config_.key_paths.at("signing-privkey");
+                    else if (config_.key_paths.count("private-key")) key_path = config_.key_paths.at("private-key");
+                    else throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Missing signing private key");
+
+                    co_await current_handler_->signFile(io_context_, config_.input_files[0], config_.signature_file, key_path, config_.digest_algo, config_.passphrase, progress_callback_);
+                    co_return;
+                }, [completion_handler](std::exception_ptr p) mutable {
                     if (p) {
                         try { std::rethrow_exception(p); }
                         catch (const std::system_error& e) { completion_handler(e.code(), e.what()); }
@@ -85,7 +104,12 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::Verify:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    auto res = co_await current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, config_.key_paths.at("signing-pubkey"), config_.digest_algo, progress_callback_);
+                    std::string key_path;
+                    if (config_.key_paths.count("signing-pubkey")) key_path = config_.key_paths.at("signing-pubkey");
+                    else if (config_.key_paths.count("public-key")) key_path = config_.key_paths.at("public-key");
+                    else throw std::system_error(std::make_error_code(std::errc::invalid_argument), "Missing signing public key");
+
+                    auto res = co_await current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, key_path, config_.digest_algo, progress_callback_);
                     if (!res) throw std::system_error(make_error_code(std::errc::invalid_argument), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {

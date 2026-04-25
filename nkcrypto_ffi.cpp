@@ -11,7 +11,7 @@
 #include <asio.hpp> // For asio::io_context
 
 // FFI層で共有されるグローバルな進捗コールバック
-static ProgressCallback g_progress_callback = nullptr;
+static FfiProgressCallback g_progress_callback = nullptr;
 
 // FFIでOperationを文字列から変換するヘルパー
 Operation get_operation_from_string(const std::string& op_str) {
@@ -27,7 +27,7 @@ Operation get_operation_from_string(const std::string& op_str) {
 
 extern "C" {
 
-void set_progress_callback(ProgressCallback cb) {
+void set_progress_callback(FfiProgressCallback cb) {
     g_progress_callback = cb;
 }
 

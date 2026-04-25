@@ -1,0 +1,201 @@
+{
+  "tests": 27,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "SecureStringTest",
+      "tests": 5,
+      "testsuite": [
+        {
+          "name": "DefaultConstruction",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 32
+        },
+        {
+          "name": "AssignAndAccess",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 38
+        },
+        {
+          "name": "Concatenation",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 45
+        },
+        {
+          "name": "Comparison",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 52
+        },
+        {
+          "name": "ClearOnDestruction",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 60
+        }
+      ]
+    },
+    {
+      "name": "SecureVectorTest",
+      "tests": 4,
+      "testsuite": [
+        {
+          "name": "DefaultConstruction",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 68
+        },
+        {
+          "name": "PushBack",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 74
+        },
+        {
+          "name": "Resize",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 85
+        },
+        {
+          "name": "Assign",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 93
+        }
+      ]
+    },
+    {
+      "name": "SecureAllocatorTest",
+      "tests": 2,
+      "testsuite": [
+        {
+          "name": "AllocateAndDeallocate",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 100
+        },
+        {
+          "name": "LargeAllocation",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 111
+        }
+      ]
+    },
+    {
+      "name": "UtilsTest",
+      "tests": 8,
+      "testsuite": [
+        {
+          "name": "WriteU16Le",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 122
+        },
+        {
+          "name": "ReadU16Le",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 130
+        },
+        {
+          "name": "WriteU32Le",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 139
+        },
+        {
+          "name": "ReadU32Le",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 146
+        },
+        {
+          "name": "OsslPassphraseCb",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 154
+        },
+        {
+          "name": "PemPasswdCb",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 164
+        },
+        {
+          "name": "ProcessDirectory",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 171
+        },
+        {
+          "name": "GetAndVerifyPassphraseSuccess",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 185
+        }
+      ]
+    },
+    {
+      "name": "CryptoConfigTest",
+      "tests": 1,
+      "testsuite": [
+        {
+          "name": "DefaultValues",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 197
+        }
+      ]
+    },
+    {
+      "name": "CryptoModeTest",
+      "tests": 1,
+      "testsuite": [
+        {
+          "name": "ToString",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 202
+        }
+      ]
+    },
+    {
+      "name": "BaseTest",
+      "tests": 1,
+      "testsuite": [
+        {
+          "name": "DetectStrategyTypeInvalid",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 247
+        }
+      ]
+    },
+    {
+      "name": "PipelineManagerTest",
+      "tests": 2,
+      "testsuite": [
+        {
+          "name": "SimpleRun",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 259
+        },
+        {
+          "name": "InvalidInputFile",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 281
+        }
+      ]
+    },
+    {
+      "name": "FFITest",
+      "tests": 2,
+      "testsuite": [
+        {
+          "name": "RunInvalidJson",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 300
+        },
+        {
+          "name": "RunKeyGeneration",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 305
+        }
+      ]
+    },
+    {
+      "name": "CryptoProcessorTest",
+      "tests": 1,
+      "testsuite": [
+        {
+          "name": "InvalidOperationError",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 320
+        }
+      ]
+    }
+  ]
+}

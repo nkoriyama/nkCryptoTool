@@ -5,6 +5,7 @@
 #include "SecureMemory.hpp"
 #include "PQCStrategy.hpp"
 #include "ECCStrategy.hpp"
+#include "backend/IBackend.hpp"
 #include <memory>
 #include <vector>
 #include <string>
@@ -31,6 +32,7 @@ public:
     // 鍵生成 (ML-KEM + ECDH) ---
     std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
     std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
+    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) override;
 
     // パイプライン・トランスフォーマー
     std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) override;
@@ -67,8 +69,7 @@ private:
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
     std::vector<unsigned char> salt_;
-    std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> cipher_ctx_;
-    std::vector<unsigned char> decrypt_buffer_;
+    std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
 };
 
 #endif // HYBRID_STRATEGY_HPP

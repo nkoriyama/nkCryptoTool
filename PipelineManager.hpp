@@ -88,7 +88,7 @@ public:
     void run(const std::string& in_path, async_file_t out_file, uintmax_t read_offset, uintmax_t read_size,
              std::function<void(std::error_code)> completion_handler,
              FinalizationFunc finalization_handler = nullptr,
-             ProgressCallback progress_callback = nullptr,
+             std::function<void(double)> progress_callback = nullptr,
              uintmax_t total_input_size = 0);
 
     void run_sync(const std::string& in_path, const std::string& out_path, uintmax_t read_offset, uintmax_t read_size);
@@ -118,7 +118,7 @@ private:
     std::mutex state_mutex_;
     asio::steady_timer backpressure_timer_; // 流量制限用タイマー
     uintmax_t total_to_read_{0}, total_read_{0}, total_written_{0}, total_input_size_{0}, next_progress_update_point_{0};
-    ProgressCallback progress_callback_ = nullptr;
+    std::function<void(double)> progress_callback_;
     static constexpr size_t CHUNK_SIZE = 1024 * 64;
     static constexpr size_t MAX_QUEUED_TASKS = 64; // 最大蓄積タスク数 (約4MB)
 };
