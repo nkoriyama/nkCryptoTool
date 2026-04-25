@@ -57,6 +57,9 @@ public:
     std::expected<size_t, CryptoError> deserializeHeader(const std::vector<char>& data) override;
     size_t getTagSize() const override;
 
+    void setKemAlgo(const std::string& algo) { kem_algo_ = algo; }
+    void setDsaAlgo(const std::string& algo) { dsa_algo_ = algo; }
+
     // ハイブリッド連携用
     std::vector<unsigned char> getEncapsulatedKey() const { return kem_ct_; }
     void setEncapsulatedKey(const std::vector<unsigned char>& key) { kem_ct_ = key; }

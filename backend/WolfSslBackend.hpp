@@ -4,13 +4,15 @@
 #include "IBackend.hpp"
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/evp.h>
-#include <wolfssl/wolfcrypt/aes.h>
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#include <wolfssl/wolfcrypt/dilithium.h>
+#endif
 
 namespace nk::backend {
 
 class WolfSslAeadBackend : public IAeadBackend {
 public:
-    WolfSslAeadBackend(const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt);
+    WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx);
     ~WolfSslAeadBackend() override;
     std::expected<size_t, CryptoError> update(const uint8_t* in, size_t in_len, uint8_t* out) override;
     std::expected<size_t, CryptoError> finalize(uint8_t* out) override;
@@ -18,9 +20,7 @@ public:
     std::expected<void, CryptoError> setTag(const uint8_t* tag, size_t tag_len) override;
 
 private:
-    Aes aes_;
-    bool encrypt_;
-    std::vector<uint8_t> tag_;
+    WOLFSSL_EVP_CIPHER_CTX* ctx_;
 };
 
 class WolfSslHashBackend : public IHashBackend {
@@ -38,6 +38,11 @@ private:
     const WOLFSSL_EVP_MD* md_;
     WOLFSSL_EVP_PKEY* pkey_ = nullptr;
     bool is_sign_ = false;
+    std::vector<uint8_t> buffer_;
+    int pqc_dsa_type_ = -1;
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+    dilithium_key dilithium_key_;
+#endif
 };
 
 class WolfSslBackend : public ICryptoBackend {

@@ -24,7 +24,6 @@
 #include <map>
 #include <asio/steady_timer.hpp>
 #include "async_file_types.hpp"
-#include "nkcrypto_ffi.hpp"
 
 class AsyncOrderedQueue {
 public:
@@ -57,7 +56,6 @@ public:
         }
     }
     size_t size() const { std::lock_guard<std::mutex> lock(mutex_); return buffer_.size(); }
-    bool is_empty() const { std::lock_guard<std::mutex> lock(mutex_); return buffer_.empty(); }
 private:
     asio::io_context& io_context_;
     mutable std::mutex mutex_;
@@ -76,7 +74,7 @@ public:
         : io_context_(io_context), 
           results_queue_(io_context), input_file_(io_context), output_file_(io_context),
           is_running_(true), reading_complete_(false), next_task_id_(0), tasks_completed_count_(0),
-          completion_handler_called_(false),
+          completion_handler_called_(false), has_output_(true),
           backpressure_timer_(io_context) {
         backpressure_timer_.expires_at(std::chrono::steady_clock::time_point::max());
     }
@@ -84,24 +82,26 @@ public:
     ~PipelineManager() { is_running_ = false; backpressure_timer_.cancel(); }
 
     void add_stage(StageFunc stage) { stages_.push_back(std::move(stage)); }
+    void set_has_output(bool has_output) { has_output_ = has_output; }
 
     void run(const std::string& in_path, async_file_t out_file, uintmax_t read_offset, uintmax_t read_size,
-             std::function<void(std::error_code)> completion_handler,
+             std::function<void(std::error_code, const std::string&)> completion_handler,
              FinalizationFunc finalization_handler = nullptr,
              std::function<void(double)> progress_callback = nullptr,
              uintmax_t total_input_size = 0);
 
+    // 同期実行 (署名・検証用)
     void run_sync(const std::string& in_path, const std::string& out_path, uintmax_t read_offset, uintmax_t read_size);
 
 private:
     asio::awaitable<void> writer_coroutine(std::shared_ptr<PipelineManager> self);
     asio::awaitable<void> reader_coroutine(std::shared_ptr<PipelineManager> self);
 
-    void call_completion_handler(const std::error_code& ec) {
+    void call_completion_handler(const std::error_code& ec, const std::string& detail = "") {
         if (!completion_handler_called_.exchange(true)) {
             if (!ec && progress_callback_) progress_callback_(1.0);
-            asio::post(io_context_, [this, ec, completion = completion_handler_]() {
-                if (completion) completion(ec);
+            asio::post(io_context_, [this, ec, detail, completion = completion_handler_]() {
+                if (completion) completion(ec, detail);
             });
         }
     }
@@ -111,15 +111,15 @@ private:
     AsyncOrderedQueue results_queue_;
     async_file_t input_file_;
     async_file_t output_file_;
-    std::function<void(std::error_code)> completion_handler_;
+    std::function<void(std::error_code, const std::string&)> completion_handler_;
     FinalizationFunc finalization_handler_;
-    std::atomic<bool> is_running_, reading_complete_, completion_handler_called_;
+    std::atomic<bool> is_running_, reading_complete_, completion_handler_called_, has_output_;
     std::atomic<uint64_t> next_task_id_, tasks_completed_count_;
     std::mutex state_mutex_;
-    asio::steady_timer backpressure_timer_; // 流量制限用タイマー
+    asio::steady_timer backpressure_timer_;
     uintmax_t total_to_read_{0}, total_read_{0}, total_written_{0}, total_input_size_{0}, next_progress_update_point_{0};
     std::function<void(double)> progress_callback_;
     static constexpr size_t CHUNK_SIZE = 1024 * 64;
-    static constexpr size_t MAX_QUEUED_TASKS = 64; // 最大蓄積タスク数 (約4MB)
+    static constexpr size_t MAX_QUEUED_TASKS = 64;
 };
 #endif

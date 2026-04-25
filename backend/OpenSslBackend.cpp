@@ -1,8 +1,10 @@
 #include "OpenSslBackend.hpp"
+#include "SecureMemory.hpp"
 #include <openssl/pem.h>
 #include <openssl/err.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#include <openssl/kdf.h>
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
@@ -12,6 +14,15 @@
 
 namespace nk::backend {
 
+static void reportOpenSSLErrors(const std::string& context) {
+    unsigned long err;
+    while ((err = ERR_get_error()) != 0) {
+        char buf[256];
+        ERR_error_string_n(err, buf, sizeof(buf));
+        std::cerr << "[OpenSSL] " << context << " Error: " << buf << std::endl;
+    }
+}
+
 // --- OpenSslAeadBackend ---
 
 OpenSslAeadBackend::OpenSslAeadBackend(std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx)
@@ -19,23 +30,34 @@ OpenSslAeadBackend::OpenSslAeadBackend(std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHE
 
 std::expected<size_t, CryptoError> OpenSslAeadBackend::update(const uint8_t* in, size_t in_len, uint8_t* out) {
     int out_l = 0;
-    if (EVP_CipherUpdate(ctx_.get(), out, &out_l, in, (int)in_len) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CipherUpdate(ctx_.get(), out, &out_l, in, (int)in_len) <= 0) {
+        reportOpenSSLErrors("AEAD Update");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return (size_t)out_l;
 }
 
 std::expected<size_t, CryptoError> OpenSslAeadBackend::finalize(uint8_t* out) {
     int out_l = 0;
-    if (EVP_CipherFinal_ex(ctx_.get(), out, &out_l) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CipherFinal_ex(ctx_.get(), out, &out_l) <= 0) {
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return (size_t)out_l;
 }
 
 std::expected<void, CryptoError> OpenSslAeadBackend::getTag(uint8_t* tag, size_t tag_len) {
-    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_GET_TAG, (int)tag_len, tag) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_GET_TAG, (int)tag_len, tag) <= 0) {
+        reportOpenSSLErrors("AEAD GetTag");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return {};
 }
 
 std::expected<void, CryptoError> OpenSslAeadBackend::setTag(const uint8_t* tag, size_t tag_len) {
-    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag) <= 0) {
+        reportOpenSSLErrors("AEAD SetTag");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return {};
 }
 
@@ -45,54 +67,45 @@ OpenSslHashBackend::OpenSslHashBackend(std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_De
     : ctx_(std::move(ctx)), md_(md) {}
 
 std::expected<void, CryptoError> OpenSslHashBackend::update(const uint8_t* data, size_t len) {
-    // ストリーミングがサポートされていない場合に備え、バッファにも蓄積する
     buffer_.insert(buffer_.end(), data, data + len);
-    
-    // ストリーミング可能な場合は Update も呼んでおく（ECDSA用）
-    // エラーは一旦無視する（PQCでは失敗するため）
-    EVP_DigestSignUpdate(ctx_.get(), data, len);
-    EVP_DigestVerifyUpdate(ctx_.get(), data, len);
-    
     return {};
 }
 
 std::expected<void, CryptoError> OpenSslHashBackend::initSign(const std::vector<uint8_t>& priv_key_der) {
     const uint8_t* p = priv_key_der.data();
     EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_key_der.size());
-    if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
-    pkey_ = std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
-    
-    EVP_MD_CTX_reset(ctx_.get());
-    buffer_.clear();
-    
-    // PQC (ML-DSA) の場合は MD を指定せずに Init する必要がある場合がある
-    // ここではストラテジーが指定した MD を試みる
-    if (EVP_DigestSignInit(ctx_.get(), nullptr, md_, nullptr, pkey_.get()) <= 0) {
-        // 失敗した場合は MD なしで試行
-        if (EVP_DigestSignInit(ctx_.get(), nullptr, nullptr, nullptr, pkey_.get()) <= 0) {
-            return std::unexpected(CryptoError::OpenSSLError);
-        }
+    if (!pkey) {
+        reportOpenSSLErrors("initSign: Load Private Key");
+        return std::unexpected(CryptoError::PrivateKeyLoadError);
     }
+    pkey_ = std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
+    buffer_.clear();
     return {};
 }
 
 std::expected<std::vector<uint8_t>, CryptoError> OpenSslHashBackend::finalizeSign() {
-    size_t slen = 0;
-    // まずストリーミングでの完了を試みる
-    if (EVP_DigestSignFinal(ctx_.get(), nullptr, &slen) > 0) {
-        std::vector<uint8_t> sig(slen);
-        if (EVP_DigestSignFinal(ctx_.get(), sig.data(), &slen) > 0) {
-            sig.resize(slen);
-            return sig;
-        }
-    }
+    EVP_MD_CTX_reset(ctx_.get());
     
-    // ストリーミングが失敗した（PQC等）場合は、一括（One-shot）で署名する
-    if (EVP_DigestSign(ctx_.get(), nullptr, &slen, buffer_.data(), buffer_.size()) <= 0) {
+    const char* pkey_name = EVP_PKEY_get0_type_name(pkey_.get());
+    const EVP_MD* actual_md = md_;
+    if (pkey_name && (std::string(pkey_name).find("ML-DSA") != std::string::npos || std::string(pkey_name).find("mldsa") != std::string::npos)) {
+        actual_md = nullptr;
+    }
+
+    if (EVP_DigestSignInit(ctx_.get(), nullptr, actual_md, nullptr, pkey_.get()) <= 0) {
+        reportOpenSSLErrors("DigestSignInit");
         return std::unexpected(CryptoError::OpenSSLError);
     }
+    
+    size_t slen = 0;
+    if (EVP_DigestSign(ctx_.get(), nullptr, &slen, (const uint8_t*)buffer_.data(), buffer_.size()) <= 0) {
+        reportOpenSSLErrors("DigestSign (Length)");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    
     std::vector<uint8_t> sig(slen);
-    if (EVP_DigestSign(ctx_.get(), sig.data(), &slen, buffer_.data(), buffer_.size()) <= 0) {
+    if (EVP_DigestSign(ctx_.get(), sig.data(), &slen, (const uint8_t*)buffer_.data(), buffer_.size()) <= 0) {
+        reportOpenSSLErrors("DigestSign (Execution)");
         return std::unexpected(CryptoError::OpenSSLError);
     }
     sig.resize(slen);
@@ -102,28 +115,34 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslHashBackend::finalizeSig
 std::expected<void, CryptoError> OpenSslHashBackend::initVerify(const std::vector<uint8_t>& pub_key_der) {
     const uint8_t* p = pub_key_der.data();
     EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)pub_key_der.size());
-    if (!pkey) return std::unexpected(CryptoError::PublicKeyLoadError);
-    pkey_ = std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
-    
-    EVP_MD_CTX_reset(ctx_.get());
-    buffer_.clear();
-    
-    if (EVP_DigestVerifyInit(ctx_.get(), nullptr, md_, nullptr, pkey_.get()) <= 0) {
-        if (EVP_DigestVerifyInit(ctx_.get(), nullptr, nullptr, nullptr, pkey_.get()) <= 0) {
-            return std::unexpected(CryptoError::OpenSSLError);
-        }
+    if (!pkey) {
+        reportOpenSSLErrors("initVerify: Load Public Key");
+        return std::unexpected(CryptoError::PublicKeyLoadError);
     }
+    pkey_ = std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter>(pkey);
+    buffer_.clear();
     return {};
 }
 
 std::expected<bool, CryptoError> OpenSslHashBackend::finalizeVerify(const std::vector<uint8_t>& signature) {
-    // ストリーミングでの検証を試みる
-    if (EVP_DigestVerifyFinal(ctx_.get(), signature.data(), signature.size()) == 1) return true;
+    EVP_MD_CTX_reset(ctx_.get());
     
-    // 失敗した場合は一括検証を試みる
-    int res = EVP_DigestVerify(ctx_.get(), signature.data(), signature.size(), buffer_.data(), buffer_.size());
+    const char* pkey_name = EVP_PKEY_get0_type_name(pkey_.get());
+    const EVP_MD* actual_md = md_;
+    if (pkey_name && (std::string(pkey_name).find("ML-DSA") != std::string::npos || std::string(pkey_name).find("mldsa") != std::string::npos)) {
+        actual_md = nullptr;
+    }
+
+    if (EVP_DigestVerifyInit(ctx_.get(), nullptr, actual_md, nullptr, pkey_.get()) <= 0) {
+        reportOpenSSLErrors("DigestVerifyInit");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    
+    int res = EVP_DigestVerify(ctx_.get(), signature.data(), signature.size(), (const uint8_t*)buffer_.data(), buffer_.size());
     if (res == 1) return true;
     if (res == 0) return false;
+    
+    reportOpenSSLErrors("DigestVerify");
     return std::unexpected(CryptoError::OpenSSLError);
 }
 
@@ -179,7 +198,10 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std
     EVP_PKEY* priv = d2i_AutoPrivateKey(nullptr, &p1, (long)priv_der.size());
     const uint8_t* p2 = pub_der.data();
     EVP_PKEY* pub = d2i_PUBKEY(nullptr, &p2, (long)pub_der.size());
-    if (!priv || !pub) return std::unexpected(CryptoError::KeyGenerationError);
+    if (!priv || !pub) {
+        reportOpenSSLErrors("eccDh: Key Load");
+        return std::unexpected(CryptoError::KeyGenerationError);
+    }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spriv(priv), spub(pub);
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ecdh_ctx(EVP_PKEY_CTX_new(spriv.get(), nullptr));
@@ -196,7 +218,10 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std
 std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der) {
     const uint8_t* p = priv_der.data();
     EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_der.size());
-    if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
+    if (!pkey) {
+        reportOpenSSLErrors("extractPublicKey: Load Private Key");
+        return std::unexpected(CryptoError::PrivateKeyLoadError);
+    }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
     
     uint8_t *pub = nullptr;
@@ -237,7 +262,10 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::pqcEncap(const std::vector<uint8_t>& pub_key_der) {
     const uint8_t* p = pub_key_der.data();
     EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)pub_key_der.size());
-    if (!pkey) return std::unexpected(CryptoError::PublicKeyLoadError);
+    if (!pkey) {
+        reportOpenSSLErrors("pqcEncap: Load Public Key");
+        return std::unexpected(CryptoError::PublicKeyLoadError);
+    }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(spkey.get(), nullptr));
@@ -255,17 +283,29 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
 std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) {
     const uint8_t* p = priv_key_der.data();
     EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_key_der.size());
-    if (!pkey) return std::unexpected(CryptoError::PrivateKeyLoadError);
+    if (!pkey) {
+        reportOpenSSLErrors("pqcDecap: Load Private Key");
+        return std::unexpected(CryptoError::PrivateKeyLoadError);
+    }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
 
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> ctx(EVP_PKEY_CTX_new(spkey.get(), nullptr));
-    if (!ctx || EVP_PKEY_decapsulate_init(ctx.get(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (!ctx || EVP_PKEY_decapsulate_init(ctx.get(), nullptr) <= 0) {
+        reportOpenSSLErrors("pqcDecap: Decapsulate Init");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     
     size_t secret_len;
-    if (EVP_PKEY_decapsulate(ctx.get(), nullptr, &secret_len, (const unsigned char*)kem_ct.data(), kem_ct.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_PKEY_decapsulate(ctx.get(), nullptr, &secret_len, (const unsigned char*)kem_ct.data(), kem_ct.size()) <= 0) {
+        reportOpenSSLErrors("pqcDecap: Decapsulate (Length)");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     
     std::vector<uint8_t> secret(secret_len);
-    if (EVP_PKEY_decapsulate(ctx.get(), secret.data(), &secret_len, (const unsigned char*)kem_ct.data(), kem_ct.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (EVP_PKEY_decapsulate(ctx.get(), secret.data(), &secret_len, (const unsigned char*)kem_ct.data(), kem_ct.size()) <= 0) {
+        reportOpenSSLErrors("pqcDecap: Decapsulate (Execution)");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     
     return secret;
 }
@@ -275,14 +315,22 @@ std::vector<uint8_t> OpenSslBackend::hkdf(const std::vector<uint8_t>& secret, si
     std::unique_ptr<EVP_KDF_CTX, EVP_KDF_CTX_Deleter> kctx(EVP_KDF_CTX_new(kdf.get()));
     const EVP_MD* md = EVP_get_digestbyname(md_name.c_str());
     if (!md) md = EVP_sha256();
+    
+    uint8_t zero_salt[64] = {0};
+    void* salt_ptr = (void*)salt.data();
+    if (salt.empty()) salt_ptr = zero_salt;
+
     OSSL_PARAM params[5];
     params[0] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char*)EVP_MD_get0_name(md), 0);
     params[1] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void*)secret.data(), secret.size());
-    params[2] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void*)salt.data(), salt.size());
+    params[2] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, salt_ptr, salt.size());
     params[3] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (void*)info.data(), info.size());
     params[4] = OSSL_PARAM_construct_end();
+    
     std::vector<uint8_t> out(out_len);
-    EVP_KDF_derive(kctx.get(), out.data(), out_len, params);
+    if (EVP_KDF_derive(kctx.get(), out.data(), out_len, params) <= 0) {
+        reportOpenSSLErrors("HKDF Derive");
+    }
     return out;
 }
 

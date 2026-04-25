@@ -19,12 +19,20 @@ CryptoProcessor::CryptoProcessor(CryptoConfig config)
         case CryptoMode::ECC:
             strategy_ = std::make_shared<nk::ECCStrategy>();
             break;
-        case CryptoMode::PQC:
-            strategy_ = std::make_shared<PQCStrategy>();
+        case CryptoMode::PQC: {
+            auto pqc = std::make_shared<PQCStrategy>();
+            pqc->setKemAlgo(config_.pqc_kem_algo);
+            pqc->setDsaAlgo(config_.pqc_dsa_algo);
+            strategy_ = pqc;
             break;
-        case CryptoMode::Hybrid:
-            strategy_ = std::make_shared<nk::HybridStrategy>();
+        }
+        case CryptoMode::Hybrid: {
+            auto hybrid = std::make_shared<nk::HybridStrategy>();
+            hybrid->setKemAlgo(config_.pqc_kem_algo);
+            hybrid->setDsaAlgo(config_.pqc_dsa_algo);
+            strategy_ = hybrid;
             break;
+        }
     }
     current_handler_ = std::make_shared<nkCryptoToolBase>(strategy_);
 }
@@ -78,10 +86,10 @@ void CryptoProcessor::run_internal() {
     try {
         switch (config_.operation) {
             case Operation::Encrypt:
-                current_handler_->encryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, [completion_handler](std::error_code ec) mutable { completion_handler(ec); }, progress_callback_);
+                current_handler_->encryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, [completion_handler](std::error_code ec, const std::string& detail) mutable { completion_handler(ec, detail); }, progress_callback_);
                 break;
             case Operation::Decrypt:
-                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, [completion_handler](std::error_code ec) mutable { completion_handler(ec); }, progress_callback_);
+                current_handler_->decryptFileWithPipeline(io_context_, config_.input_files[0], config_.output_file, config_.key_paths, config_.passphrase, [completion_handler](std::error_code ec, const std::string& detail) mutable { completion_handler(ec, detail); }, progress_callback_);
                 break;
             case Operation::Sign:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {

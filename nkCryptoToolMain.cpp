@@ -24,6 +24,8 @@ int main(int argc, char* argv[]) {
         ("signing-pubkey", "The signer's public key for verification", cxxopts::value<std::string>())
         ("signature", "Path to the signature file", cxxopts::value<std::string>())
         ("digest-algo", "Hashing algorithm", cxxopts::value<std::string>()->default_value("SHA3-512"))
+        ("kem-algo", "PQC KEM algorithm", cxxopts::value<std::string>()->default_value("ML-KEM-768"))
+        ("dsa-algo", "PQC DSA algorithm", cxxopts::value<std::string>()->default_value("ML-DSA-65"))
         ("tpm", "Use TPM to protect private keys")
         ("no-passphrase", "Do not use a passphrase for private keys")
         ("passphrase", "Passphrase for private keys", cxxopts::value<std::string>())
@@ -48,23 +50,70 @@ int main(int argc, char* argv[]) {
         else if (result.count("gen-sign-key")) config.operation = Operation::GenerateSignKey;
 
         if (result.count("output-file")) config.output_file = result["output-file"].as<std::string>();
+        if (result.count("signature")) config.signature_file = result["signature"].as<std::string>();
         
         std::string key_dir = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
         config.key_paths["key-dir"] = key_dir;
 
         if (result.count("recipient-pubkey")) config.key_paths["recipient-pubkey"] = result["recipient-pubkey"].as<std::string>();
         if (result.count("user-privkey")) config.key_paths["user-privkey"] = result["user-privkey"].as<std::string>();
-        if (result.count("signing-privkey")) config.key_paths["signing-private-key"] = result["signing-privkey"].as<std::string>();
-        if (result.count("signing-pubkey")) config.key_paths["signing-public-key"] = result["signing-pubkey"].as<std::string>();
         
-        if (config.operation == Operation::GenerateEncKey) {
-            config.key_paths["public-key"] = key_dir + "/public_enc_ecc.key";
-            config.key_paths["private-key"] = key_dir + "/private_enc_ecc.key";
-            config.key_paths["recipient-pubkey"] = config.key_paths["public-key"];
-            config.key_paths["user-privkey"] = config.key_paths["private-key"];
+        // CryptoProcessor.cpp の期待名 (signing-privkey / signing-pubkey) に合わせる
+        if (result.count("signing-privkey")) config.key_paths["signing-privkey"] = result["signing-privkey"].as<std::string>();
+        if (result.count("signing-pubkey")) config.key_paths["signing-pubkey"] = result["signing-pubkey"].as<std::string>();
+        
+        if (config.mode == CryptoMode::Hybrid) {
+            if (!result.count("recipient-ecdh-pubkey") && !result.count("recipient-pubkey"))
+                config.key_paths["recipient-ecdh-pubkey"] = key_dir + "/public_enc_ecc.key";
+            if (!result.count("recipient-mlkem-pubkey"))
+                config.key_paths["recipient-mlkem-pubkey"] = key_dir + "/public_enc_pqc.key";
+            if (!result.count("user-ecdh-privkey") && !result.count("user-privkey"))
+                config.key_paths["user-ecdh-privkey"] = key_dir + "/private_enc_ecc.key";
+            if (!result.count("user-mlkem-privkey"))
+                config.key_paths["user-mlkem-privkey"] = key_dir + "/private_enc_pqc.key";
+            
+            if (!result.count("signing-privkey"))
+                config.key_paths["signing-privkey"] = key_dir + "/private_sign_pqc.key";
+            if (!result.count("signing-pubkey"))
+                config.key_paths["signing-pubkey"] = key_dir + "/public_sign_pqc.key";
         }
 
-        if (result.count("signature")) config.key_paths["signature"] = result["signature"].as<std::string>();
+        if (result.count("kem-algo")) config.pqc_kem_algo = result["kem-algo"].as<std::string>();
+        if (result.count("dsa-algo")) config.pqc_dsa_algo = result["dsa-algo"].as<std::string>();
+
+        if (config.operation == Operation::GenerateEncKey) {
+            if (config.mode == CryptoMode::Hybrid) {
+                config.key_paths["public-ecdh-key"] = key_dir + "/public_enc_ecc.key";
+                config.key_paths["private-ecdh-key"] = key_dir + "/private_enc_ecc.key";
+                config.key_paths["public-mlkem-key"] = key_dir + "/public_enc_pqc.key";
+                config.key_paths["private-mlkem-key"] = key_dir + "/private_enc_pqc.key";
+                config.key_paths["recipient-ecdh-pubkey"] = config.key_paths["public-ecdh-key"];
+                config.key_paths["recipient-mlkem-pubkey"] = config.key_paths["public-mlkem-key"];
+                config.key_paths["recipient-pubkey"] = config.key_paths["public-ecdh-key"]; // Fallback
+            } else {
+                std::string prefix = (config.mode == CryptoMode::PQC) ? "pqc" : "ecc";
+                config.key_paths["public-key"] = key_dir + "/public_enc_" + prefix + ".key";
+                config.key_paths["private-key"] = key_dir + "/private_enc_" + prefix + ".key";
+                config.key_paths["recipient-pubkey"] = config.key_paths["public-key"];
+                config.key_paths["user-privkey"] = config.key_paths["private-key"];
+            }
+        } else if (config.operation == Operation::GenerateSignKey) {
+            if (config.mode == CryptoMode::Hybrid) {
+                // ハイブリッド署名は現在 PQC 署名のみを想定 (または PQC + ECC)
+                // ここでは PQC 署名鍵をデフォルトとする
+                config.key_paths["public-key"] = key_dir + "/public_sign_pqc.key";
+                config.key_paths["private-key"] = key_dir + "/private_sign_pqc.key";
+                config.key_paths["signing-pubkey"] = config.key_paths["public-key"];
+                config.key_paths["signing-privkey"] = config.key_paths["private-key"];
+            } else {
+                std::string prefix = (config.mode == CryptoMode::PQC) ? "pqc" : "ecc";
+                config.key_paths["public-key"] = key_dir + "/public_sign_" + prefix + ".key";
+                config.key_paths["private-key"] = key_dir + "/private_sign_" + prefix + ".key";
+                config.key_paths["signing-pubkey"] = config.key_paths["public-key"];
+                config.key_paths["signing-privkey"] = config.key_paths["private-key"];
+            }
+        }
+
         if (result.count("digest-algo")) config.digest_algo = result["digest-algo"].as<std::string>();
         
         bool tpm = result.count("tpm") > 0;
@@ -83,7 +132,7 @@ int main(int argc, char* argv[]) {
             config.input_files = result["input-files"].as<std::vector<std::string>>();
         }
 
-        if (config.input_files.empty() && (config.operation == Operation::Encrypt || config.operation == Operation::Decrypt)) {
+        if (config.input_files.empty() && (config.operation == Operation::Encrypt || config.operation == Operation::Decrypt || config.operation == Operation::Sign || config.operation == Operation::Verify)) {
             std::cerr << "Error: No input files specified" << std::endl;
             return 1;
         }

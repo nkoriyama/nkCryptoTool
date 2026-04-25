@@ -31,21 +31,28 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     set(WOLFSSL_KEYGEN ON CACHE BOOL "" FORCE)
     set(WOLFSSL_HKDF ON CACHE BOOL "" FORCE)
     set(WOLFSSL_PKCS8 ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_KYBER ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_EXPERIMENTAL ON CACHE BOOL "" FORCE)
     set(WOLFSSL_ASN_TEMPLATE ON CACHE BOOL "" FORCE)
     set(WOLFSSL_WERROR OFF CACHE BOOL "" FORCE)
+    set(WOLFSSL_DILITHIUM ON CACHE BOOL "" FORCE)
     
-    # 重要なマクロを強制 (FetchContentの前に設定)
     add_compile_definitions(WOLFSSL_AESGCM_STREAM)
     add_compile_definitions(HAVE_AESGCM)
     add_compile_definitions(HAVE_HKDF)
     add_compile_definitions(HAVE_ECC)
+    add_compile_definitions(WOLFSSL_HAVE_KYBER)
+    add_compile_definitions(WOLFSSL_WC_KYBER)
+    add_compile_definitions(HAVE_DILITHIUM)
+    add_compile_definitions(WOLFSSL_WC_DILITHIUM)
+    add_compile_definitions(WOLFSSL_SHA3)
 
-    set(CMAKE_C_FLAGS "-fPIC -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC" CACHE STRING "" FORCE)
-    set(CMAKE_CXX_FLAGS "-fPIC -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC" CACHE STRING "" FORCE)
+    set(CMAKE_C_FLAGS "-fPIC -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "-fPIC -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
 
     FetchContent_Declare(wolfssl
         GIT_REPOSITORY https://github.com/wolfSSL/wolfssl.git
-        GIT_TAG v5.7.0-stable
+        GIT_TAG v5.7.6-stable
     )
     FetchContent_MakeAvailable(wolfssl)
 endif()
@@ -86,7 +93,13 @@ if(USE_BACKEND STREQUAL "OpenSSL")
 elseif(USE_BACKEND STREQUAL "WolfSSL")
     message(STATUS "Using WolfSSL backend")
     add_definitions(-DUSE_BACKEND_WOLFSSL)
-    list(APPEND BACKEND_SOURCES backend/WolfSslBackend.cpp)
+    list(APPEND BACKEND_SOURCES 
+        backend/WolfSslBackend.cpp
+        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/dilithium.c
+        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/hmac.c
+        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/hash.c
+        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/sha3.c
+    )
     list(APPEND BACKEND_LIBS wolfssl)
 endif()
 
