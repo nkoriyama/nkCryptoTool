@@ -7,6 +7,9 @@
 #include <cstring>
 #include <iostream>
 
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
+
 namespace nk::backend {
 
 // --- OpenSslAeadBackend ---
@@ -288,9 +291,50 @@ std::expected<void, CryptoError> OpenSslBackend::randomBytes(uint8_t* out, size_
     return {};
 }
 
+void OpenSslBackend::cleanse(void* ptr, size_t len) {
+    OPENSSL_cleanse(ptr, len);
+}
+
+std::string OpenSslBackend::base64Encode(const std::vector<uint8_t>& data) {
+    BIO *b64 = BIO_new(BIO_f_base64());
+    BIO *mem = BIO_new(BIO_s_mem());
+    BIO_push(b64, mem);
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    BIO_write(b64, data.data(), (int)data.size());
+    BIO_flush(b64);
+    BUF_MEM *ptr;
+    BIO_get_mem_ptr(b64, &ptr);
+    std::string res(ptr->data, ptr->length);
+    BIO_free_all(b64);
+    return res;
+}
+
+std::vector<uint8_t> OpenSslBackend::base64Decode(const std::string& base64_str) {
+    BIO *b64 = BIO_new(BIO_f_base64());
+    BIO *mem = BIO_new_mem_buf(base64_str.data(), (int)base64_str.size());
+    BIO_push(b64, mem);
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    std::vector<uint8_t> decoded(base64_str.size());
+    int len = BIO_read(b64, decoded.data(), (int)decoded.size());
+    if (len > 0) decoded.resize(len); else decoded.clear();
+    BIO_free_all(b64);
+    return decoded;
+}
+
 std::shared_ptr<ICryptoBackend> getBackend() {
     static auto instance = std::make_shared<OpenSslBackend>();
     return instance;
+}
+
+int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg) {
+    if (arg == nullptr) return 0;
+    const SecureString* passphrase = static_cast<const SecureString*>(arg);
+    size_t len = passphrase->length();
+    if (len >= pass_max) return 0;
+    std::memcpy(pass, passphrase->c_str(), len);
+    pass[len] = '\0';
+    if (pass_len) *pass_len = len;
+    return 1;
 }
 
 } // namespace nk::backend

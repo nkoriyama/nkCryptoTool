@@ -56,10 +56,7 @@ SecureString get_masked_passphrase();
 // パスフレーズを2回入力させ、一致を確認する関数
 SecureString get_and_verify_passphrase(const std::string& prompt);
 
-// OpenSSL 3.0 以降のエンコーダ/デコーダ用パスフレーズコールバック
-int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg);
-
-// OpenSSLが秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数 (レガシー)
+// 秘密鍵のパスフレーズを要求する際に呼び出すコールバック関数 (レガシー)
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
 namespace nkCryptoToolUtils {

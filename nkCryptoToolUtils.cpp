@@ -97,17 +97,6 @@ SecureString get_and_verify_passphrase(const std::string& prompt) {
     return pass1;
 }
 
-int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg) {
-    if (arg == nullptr) return 0;
-    const SecureString* passphrase = static_cast<const SecureString*>(arg);
-    size_t len = passphrase->length();
-    if (len >= pass_max) return 0;
-    std::memcpy(pass, passphrase->c_str(), len);
-    pass[len] = '\0';
-    if (pass_len) *pass_len = len;
-    return 1;
-}
-
 int pem_passwd_cb(char *buf, int size, int rwflag, void *userdata) {
     if (userdata == nullptr) return 0;
     const SecureString* passphrase = static_cast<const SecureString*>(userdata);

@@ -1,0 +1,75 @@
+{
+  "tests": 9,
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "SecureVectorTest",
+      "tests": 3,
+      "testsuite": [
+        {
+          "name": "DefaultConstruction",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 15
+        },
+        {
+          "name": "PushBack",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 20
+        },
+        {
+          "name": "Assign",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 32
+        }
+      ]
+    },
+    {
+      "name": "SecureStringTest",
+      "tests": 1,
+      "testsuite": [
+        {
+          "name": "Assignment",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 27
+        }
+      ]
+    },
+    {
+      "name": "UtilsTest",
+      "tests": 2,
+      "testsuite": [
+        {
+          "name": "LE16",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 41
+        },
+        {
+          "name": "LE32",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 52
+        }
+      ]
+    },
+    {
+      "name": "StrategyTest",
+      "tests": 3,
+      "testsuite": [
+        {
+          "name": "ECCStrategyCreation",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 92
+        },
+        {
+          "name": "PQCStrategyCreation",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 97
+        },
+        {
+          "name": "HybridStrategyCreation",
+          "file": "\/var\/home\/bazzite\/\u00E3\u0083\u0089\u00E3\u0082\u00AD\u00E3\u0083\u00A5\u00E3\u0083\u00A1\u00E3\u0083\u00B3\u00E3\u0083\u0088\/src\/nkCryptoTool\/tests\/unit\/unit_tests.cpp",
+          "line": 102
+        }
+      ]
+    }
+  ]
+}
