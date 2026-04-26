@@ -2,6 +2,13 @@
 
 **nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽にセキュアに実行できるツールです。**
 
+**🚧 現在開発中（Alpha段階）**  
+ CLIのみのコマンドラインツールです。本格的な利用はもう少しお待ちください。  
+ C++版とRust版で完全な相互互換性を実現しています。
+
+**nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽にセキュアに実行できるツールです。**
+
+初めてお使いの方や、暗号技術に詳しくない方は、まずこちらの [GETTING_STARTED.md](GETTING_STARTED.md) をご覧ください。
 **初めてお使いの方や、暗号技術に詳しくない方は、まずこちらの [GETTING_STARTED.md](GETTING_STARTED.md) をご覧ください。**
 
 * **データの暗号化・復号**: 秘密の情報を安全にやり取りできます。
@@ -431,8 +438,9 @@ sequenceDiagram
 
 ## License
 
-This software is licensed under the MIT License.
-See the LICENSE.txt file for details.
+This project is licensed under the **MIT License**.
+
+See the [LICENSE.txt](LICENSE.txt) file for details.
 
 ## 📄 Dependencies and Third-Party Licenses
 
