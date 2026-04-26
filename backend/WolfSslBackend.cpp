@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2024-2026 Naohiro KORIYAMA <nkoriyama@gmail.com>
+ *
+ * This file is part of nkCryptoTool.
+ */
+
 #include "WolfSslBackend.hpp"
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/pem.h>

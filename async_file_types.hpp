@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2024-2026 Naohiro KORIYAMA <nkoriyama@gmail.com>
+ *
+ * This file is part of nkCryptoTool.
+ */
+
 #ifndef ASYNC_FILE_TYPES_HPP
 #define ASYNC_FILE_TYPES_HPP
 
