@@ -431,7 +431,7 @@ sequenceDiagram
 
 ## License
 
-This software is licensed under the GNU Lesser General Public License v3.0.
+This software is licensed under the MIT License.
 See the LICENSE.txt file for details.
 
 ## 📄 Dependencies and Third-Party Licenses
