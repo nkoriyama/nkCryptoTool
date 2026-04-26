@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2024-2026 Naohiro KORIYAMA <nkoriyama@gmail.com>
+ *
+ * This file is part of nkCryptoTool.
+ */
+
 // CryptoError.hpp
 #ifndef CRYPTO_ERROR_HPP
 #define CRYPTO_ERROR_HPP
