@@ -39,7 +39,7 @@ struct SecureAllocator {
     void deallocate(T* p, std::size_t n) noexcept {
         std::size_t size = n * sizeof(T);
         // バックエンド経由で安全に消去
-        nk::backend::getBackend()->cleanse(p, size);
+        ::get_nk_backend()->cleanse(p, size);
 #ifdef _WIN32
         VirtualUnlock(p, size);
 #else

@@ -684,7 +684,7 @@ std::vector<uint8_t> WolfSslBackend::base64Decode(const std::string& base64_str)
 }
 
 #ifdef USE_BACKEND_WOLFSSL
-std::shared_ptr<ICryptoBackend> getBackend() {
+std::shared_ptr<ICryptoBackend> nk_get_backend() {
     static bool initialized = false;
     if (!initialized) {
         wolfCrypt_Init();

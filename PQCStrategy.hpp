@@ -13,6 +13,8 @@
 
 #include "KeyProvider.hpp"
 
+namespace nk {
+
 class PQCStrategy : public ICryptoStrategy {
 public:
     PQCStrategy();
@@ -85,5 +87,7 @@ private:
     std::vector<unsigned char> shared_secret_;
     nk::KeyProvider key_provider_;
 };
+
+} // namespace nk
 
 #endif // PQC_STRATEGY_HPP

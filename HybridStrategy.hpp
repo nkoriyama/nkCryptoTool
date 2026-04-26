@@ -55,7 +55,7 @@ public:
 
 private:
     std::unique_ptr<nk::ECCStrategy> ecc_strategy_;
-    std::unique_ptr<PQCStrategy> pqc_strategy_;
+    std::unique_ptr<nk::PQCStrategy> pqc_strategy_;
     std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;

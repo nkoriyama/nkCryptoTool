@@ -27,7 +27,7 @@ public:
     static constexpr const char* TPM2_GETCAP        = "/usr/bin/tpm2_getcap";
 
     std::expected<SecureString, CryptoError> wrapKey(const std::vector<uint8_t>& der_key, const SecureString& passphrase = "") override {
-        auto backend = nk::backend::getBackend();
+        auto backend = ::get_nk_backend();
 
         std::vector<uint8_t> aes_key(32);
         std::vector<uint8_t> iv(12);
@@ -176,7 +176,7 @@ public:
         auto iv = TPMUtils::base64_decode(i_b64);
         auto tag = TPMUtils::base64_decode(t_b64);
 
-        auto backend = nk::backend::getBackend();
+        auto backend = ::get_nk_backend();
         auto aead = backend->createAead("AES-256-GCM", aes_key, iv, false);
         if (!aead) return std::unexpected(aead.error());
         

@@ -11,11 +11,11 @@ public:
     static constexpr const char* TPM_BLOB_FOOTER = "-----END TPM WRAPPED BLOB-----";
 
     static std::string base64_encode(const std::vector<unsigned char>& data) {
-        return nk::backend::getBackend()->base64Encode(data);
+        return ::get_nk_backend()->base64Encode(data);
     }
 
     static std::vector<unsigned char> base64_decode(const std::string& base64_str) {
-        return nk::backend::getBackend()->base64Decode(base64_str);
+        return ::get_nk_backend()->base64Decode(base64_str);
     }
 };
 
