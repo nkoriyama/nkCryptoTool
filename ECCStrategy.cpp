@@ -22,7 +22,7 @@ std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const st
         return std::unexpected(CryptoError::ParameterError);
     }
 
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     auto key_pair = backend->generateEccKeyPair(curve_name_);
     if (!key_pair) return std::unexpected(key_pair.error());
 
@@ -54,20 +54,25 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     auto recipient_pub_der = nkCryptoToolUtils::unwrapFromPem(content, "PUBLIC KEY");
     if (!recipient_pub_der) return std::unexpected(recipient_pub_der.error());
 
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     auto ephem_pair = backend->generateEccKeyPair(curve_name_);
     if (!ephem_pair) return std::unexpected(ephem_pair.error());
     
     auto secret = backend->eccDh(ephem_pair->first, *recipient_pub_der);
     if (!secret) return std::unexpected(secret.error());
 
-    auto ikm = *secret;
-    std::vector<uint8_t> salt_v;
-    std::string info = "nkCryptoTool ECC Session Key";
-    auto okm = backend->hkdf(ikm, 32 + 12, salt_v, info, "SHA256");
+    shared_secret_ = *secret;
+    auto ikm = shared_secret_;
+    salt_.resize(16);
+    backend->randomBytes(salt_.data(), 16);
+    iv_.resize(12);
+    backend->randomBytes(iv_.data(), 12);
+
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    std::string info = "ecc-encryption";
+    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA256");
     
-    encryption_key_.assign(okm.begin(), okm.begin() + 32);
-    iv_.assign(okm.begin() + 32, okm.end());
+    encryption_key_.assign(key_raw.begin(), key_raw.end());
 
     auto res = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
     if (!res) return std::unexpected(CryptoError::OpenSSLError);
@@ -90,17 +95,17 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     auto user_priv_der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!user_priv_der) return std::unexpected(CryptoError::PrivateKeyLoadError);
 
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     auto secret = backend->eccDh(*user_priv_der, ephemeral_pubkey_);
     if (!secret) return std::unexpected(secret.error());
 
-    auto ikm = *secret;
-    std::vector<uint8_t> salt_v;
-    std::string info = "nkCryptoTool ECC Session Key";
-    auto okm = backend->hkdf(ikm, 32 + 12, salt_v, info, "SHA256");
+    shared_secret_ = *secret;
+    auto ikm = shared_secret_;
+    std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+    std::string info = "ecc-encryption";
+    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA256");
     
-    encryption_key_.assign(okm.begin(), okm.begin() + 32);
-    iv_.assign(okm.begin() + 32, okm.end());
+    encryption_key_.assign(key_raw.begin(), key_raw.end());
 
     auto res = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
     if (!res) return std::unexpected(CryptoError::OpenSSLError);
@@ -147,27 +152,62 @@ std::expected<void, CryptoError> ECCStrategy::finalizeDecryption(const std::vect
     return {};
 }
 
-size_t ECCStrategy::getHeaderSize() const { return 4 + 4 + ephemeral_pubkey_.size(); }
+size_t ECCStrategy::getHeaderSize() const {
+    return 4 + 2 + 1 + 
+        4 + curve_name_.size() + 
+        4 + digest_algo_.size() + 
+        4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size();
+}
 
 std::vector<char> ECCStrategy::serializeHeader() const {
     std::vector<char> header;
-    header.push_back('N'); header.push_back('K'); header.push_back('C'); header.push_back('T');
-    uint32_t len = (uint32_t)ephemeral_pubkey_.size();
-    header.push_back((char)(len & 0xFF));
-    header.push_back((char)((len >> 8) & 0xFF));
-    header.push_back((char)((len >> 16) & 0xFF));
-    header.push_back((char)((len >> 24) & 0xFF));
-    header.insert(header.end(), ephemeral_pubkey_.begin(), ephemeral_pubkey_.end());
+    header.insert(header.end(), {'N', 'K', 'C', 'T'});
+    write_u16_le(header, 1);
+    header.push_back((char)getStrategyType());
+
+    auto add_string = [&](const std::string& s) {
+        write_u32_le(header, (uint32_t)s.size());
+        header.insert(header.end(), s.begin(), s.end());
+    };
+    auto add_vec = [&](const std::vector<unsigned char>& vec) {
+        write_u32_le(header, (uint32_t)vec.size());
+        header.insert(header.end(), vec.begin(), vec.end());
+    };
+    add_string(curve_name_);
+    add_string(digest_algo_);
+    add_vec(ephemeral_pubkey_);
+    add_vec(salt_);
+    add_vec(iv_);
     return header;
 }
 
 std::expected<size_t, CryptoError> ECCStrategy::deserializeHeader(const std::vector<char>& data) {
-    if (data.size() < 8) return std::unexpected(CryptoError::ParameterError);
+    if (data.size() < 7) return std::unexpected(CryptoError::ParameterError);
     if (std::memcmp(data.data(), "NKCT", 4) != 0) return std::unexpected(CryptoError::ParameterError);
-    uint32_t len = (uint8_t)data[4] | ((uint8_t)data[5] << 8) | ((uint8_t)data[6] << 16) | ((uint8_t)data[7] << 24);
-    if (data.size() < 8 + len) return std::unexpected(CryptoError::ParameterError);
-    ephemeral_pubkey_.assign(data.begin() + 8, data.begin() + 8 + len);
-    return 8 + len;
+    
+    size_t pos = 7;
+    auto read_string = [&](std::string& s) {
+        uint32_t len;
+        if (!read_u32_le(data, pos, len)) return false;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len);
+        pos += len;
+        return true;
+    };
+    auto read_vec = [&](std::vector<unsigned char>& vec) {
+        uint32_t len;
+        if (!read_u32_le(data, pos, len)) return false;
+        if (pos + len > data.size()) return false;
+        vec.assign(data.begin() + pos, data.begin() + pos + len);
+        pos += len;
+        return true;
+    };
+
+    if (!read_string(curve_name_) || !read_string(digest_algo_) ||
+        !read_vec(ephemeral_pubkey_) || !read_vec(salt_) || !read_vec(iv_)) {
+        return std::unexpected(CryptoError::ParameterError);
+    }
+    return pos;
 }
 
 size_t ECCStrategy::getTagSize() const { return 16; }
@@ -181,7 +221,7 @@ std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::fil
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
-    auto pub_der = nk::backend::getBackend()->extractPublicKey(*der);
+    auto pub_der = ::get_nk_backend()->extractPublicKey(*der);
     if (!pub_der) return std::unexpected(pub_der.error());
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
     std::ofstream ofs(pub, std::ios::binary);
@@ -194,7 +234,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesyst
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     auto hash = backend->createHash(algo);
     if (!hash) return std::unexpected(hash.error());
     hash_backend_ = std::move(*hash);
@@ -206,7 +246,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::fil
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PUBLIC KEY");
     if (!der) return std::unexpected(der.error());
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     auto hash = backend->createHash(algo);
     if (!hash) return std::unexpected(hash.error());
     hash_backend_ = std::move(*hash);
@@ -228,14 +268,38 @@ std::expected<bool, CryptoError> ECCStrategy::verifyHash(const std::vector<char>
 }
 
 std::vector<char> ECCStrategy::serializeSignatureHeader() const {
-    std::vector<char> h;
-    h.push_back('N'); h.push_back('K'); h.push_back('C'); h.push_back('S');
-    return h;
+    std::vector<char> header;
+    header.insert(header.end(), {'N', 'K', 'C', 'S'});
+    write_u16_le(header, 1);
+    header.push_back((char)getStrategyType());
+
+    auto add_string = [&](const std::string& s) {
+        write_u32_le(header, (uint32_t)s.size());
+        header.insert(header.end(), s.begin(), s.end());
+    };
+    add_string(curve_name_);
+    add_string(digest_algo_);
+    return header;
 }
 
 std::expected<size_t, CryptoError> ECCStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
-    if (data.size() < 4 || std::memcmp(data.data(), "NKCS", 4) != 0) return std::unexpected(CryptoError::ParameterError);
-    return 4;
+    if (data.size() < 7) return std::unexpected(CryptoError::ParameterError);
+    if (std::memcmp(data.data(), "NKCS", 4) != 0) return std::unexpected(CryptoError::ParameterError);
+    
+    size_t pos = 7;
+    auto read_string = [&](std::string& s) {
+        uint32_t len;
+        if (!read_u32_le(data, pos, len)) return false;
+        if (pos + len > data.size()) return false;
+        s.assign(data.begin() + pos, data.begin() + pos + len);
+        pos += len;
+        return true;
+    };
+
+    if (!read_string(curve_name_) || !read_string(digest_algo_)) {
+        return std::unexpected(CryptoError::ParameterError);
+    }
+    return pos;
 }
 
 std::map<std::string, std::string> ECCStrategy::getMetadata(const std::string&) const { return {}; }

@@ -19,7 +19,11 @@ int main(int argc, char* argv[]) {
         ("gen-sign-key", "Generate signing key pair")
         ("key-dir", "Directory to store generated keys", cxxopts::value<std::string>()->default_value("keys"))
         ("recipient-pubkey", "The recipient's public key for encryption", cxxopts::value<std::string>())
+        ("recipient-ecdh-pubkey", "The recipient's ECDH public key", cxxopts::value<std::string>())
+        ("recipient-mlkem-pubkey", "The recipient's ML-KEM public key", cxxopts::value<std::string>())
         ("user-privkey", "The user's private key for decryption", cxxopts::value<std::string>())
+        ("user-ecdh-privkey", "The user's ECDH private key", cxxopts::value<std::string>())
+        ("user-mlkem-privkey", "The user's ML-KEM private key", cxxopts::value<std::string>())
         ("signing-privkey", "The signer's private key for signing", cxxopts::value<std::string>())
         ("signing-pubkey", "The signer's public key for verification", cxxopts::value<std::string>())
         ("signature", "Path to the signature file", cxxopts::value<std::string>())
@@ -56,7 +60,11 @@ int main(int argc, char* argv[]) {
         config.key_paths["key-dir"] = key_dir;
 
         if (result.count("recipient-pubkey")) config.key_paths["recipient-pubkey"] = result["recipient-pubkey"].as<std::string>();
+        if (result.count("recipient-ecdh-pubkey")) config.key_paths["recipient-ecdh-pubkey"] = result["recipient-ecdh-pubkey"].as<std::string>();
+        if (result.count("recipient-mlkem-pubkey")) config.key_paths["recipient-mlkem-pubkey"] = result["recipient-mlkem-pubkey"].as<std::string>();
         if (result.count("user-privkey")) config.key_paths["user-privkey"] = result["user-privkey"].as<std::string>();
+        if (result.count("user-ecdh-privkey")) config.key_paths["user-ecdh-privkey"] = result["user-ecdh-privkey"].as<std::string>();
+        if (result.count("user-mlkem-privkey")) config.key_paths["user-mlkem-privkey"] = result["user-mlkem-privkey"].as<std::string>();
         
         // CryptoProcessor.cpp の期待名 (signing-privkey / signing-pubkey) に合わせる
         if (result.count("signing-privkey")) config.key_paths["signing-privkey"] = result["signing-privkey"].as<std::string>();
@@ -78,8 +86,14 @@ int main(int argc, char* argv[]) {
                 config.key_paths["signing-pubkey"] = key_dir + "/public_sign_pqc.key";
         }
 
-        if (result.count("kem-algo")) config.pqc_kem_algo = result["kem-algo"].as<std::string>();
-        if (result.count("dsa-algo")) config.pqc_dsa_algo = result["dsa-algo"].as<std::string>();
+        if (result.count("kem-algo")) {
+            config.pqc_kem_algo = result["kem-algo"].as<std::string>();
+            config.key_paths["kem-algo"] = config.pqc_kem_algo;
+        }
+        if (result.count("dsa-algo")) {
+            config.pqc_dsa_algo = result["dsa-algo"].as<std::string>();
+            config.key_paths["dsa-algo"] = config.pqc_dsa_algo;
+        }
 
         if (config.operation == Operation::GenerateEncKey) {
             if (config.mode == CryptoMode::Hybrid) {

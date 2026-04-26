@@ -20,7 +20,7 @@ CryptoProcessor::CryptoProcessor(CryptoConfig config)
             strategy_ = std::make_shared<nk::ECCStrategy>();
             break;
         case CryptoMode::PQC: {
-            auto pqc = std::make_shared<PQCStrategy>();
+            auto pqc = std::make_shared<nk::PQCStrategy>();
             pqc->setKemAlgo(config_.pqc_kem_algo);
             pqc->setDsaAlgo(config_.pqc_dsa_algo);
             strategy_ = pqc;
@@ -119,6 +119,7 @@ void CryptoProcessor::run_internal() {
 
                     auto res = co_await current_handler_->verifySignature(io_context_, config_.input_files[0], config_.signature_file, key_path, config_.digest_algo, progress_callback_);
                     if (!res) throw std::system_error(make_error_code(std::errc::invalid_argument), toString(res.error()));
+                    std::cout << "Signature verified successfully." << std::endl;
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
                     if (p) {

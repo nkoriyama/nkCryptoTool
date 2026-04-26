@@ -33,7 +33,7 @@ fs::path key_dir = "./benchmark_keys";
 
 std::shared_ptr<ICryptoStrategy> CreateStrategy(int mode_val) {
     if (mode_val == 0) return std::make_shared<ECCStrategy>();
-    if (mode_val == 1) return std::make_shared<PQCStrategy>();
+    if (mode_val == 1) return std::make_shared<nk::PQCStrategy>();
     return std::make_shared<HybridStrategy>();
 }
 
@@ -109,7 +109,7 @@ void SetupKeys() {
         tool.generateEncryptionKeyPair(paths, pass);
     };
     gen(std::make_shared<ECCStrategy>(), "ecc");
-    gen(std::make_shared<PQCStrategy>(), "pqc");
+    gen(std::make_shared<nk::PQCStrategy>(), "pqc");
     gen(std::make_shared<HybridStrategy>(), "hybrid");
 }
 

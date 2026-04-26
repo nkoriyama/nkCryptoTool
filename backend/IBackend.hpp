@@ -10,7 +10,7 @@
 namespace nk::backend {
 
 /**
- * 認証付き暗号 (AEAD) バックエンドインターフェース
+ * 認証付き暗号 (AEAD) バックエンド インターフェース
  */
 class IAeadBackend {
 public:
@@ -22,7 +22,7 @@ public:
 };
 
 /**
- * ハッシュ・署名バックエンドインターフェース
+ * ハッシュ・署名バックエンド インターフェース
  */
 class IHashBackend {
 public:
@@ -35,37 +35,33 @@ public:
 };
 
 /**
- * バックエンド操作のファクトリ・ユーティリティ関数
+ * 抽象暗号バックエンド インターフェース
  */
 class ICryptoBackend {
 public:
     virtual ~ICryptoBackend() = default;
-    
-    // AEAD インスタンス作成
+
+    // AEAD 関連
     virtual std::expected<std::unique_ptr<IAeadBackend>, CryptoError> createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) = 0;
-    
-    // Hash インスタンス作成
+
+    // ハッシュ・署名関連
     virtual std::expected<std::unique_ptr<IHashBackend>, CryptoError> createHash(const std::string& algo_name) = 0;
-    
-    // 共通暗号プリミティブ
+
+    // ECC 関連
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generateEccKeyPair(const std::string& curve_name) = 0;
     virtual std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der) = 0;
     virtual std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der) = 0;
-    
-    // PQC 署名 (OpenSSL 3.5+ 互換)
+
+    // PQC 関連
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generatePqcSignKeyPair(const std::string& algo_name) = 0;
-    
-    // PQC KEM
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> pqcEncap(const std::vector<uint8_t>& pub_key_der) = 0;
     virtual std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) = 0;
 
-    // HKDF 鍵派生
+    // 鍵導出
     virtual std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) = 0;
 
-    // ランダムバイト生成
+    // ユーティリティ
     virtual std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) = 0;
-
-    // メモリの安全な消去
     virtual void cleanse(void* ptr, size_t len) = 0;
 
     // Base64 エンコード/デコード
@@ -73,9 +69,9 @@ public:
     virtual std::vector<uint8_t> base64Decode(const std::string& base64_str) = 0;
 };
 
-// 現在のビルド構成で最適なバックエンドを取得する
-std::shared_ptr<ICryptoBackend> getBackend();
-
 } // namespace nk::backend
+
+// 現在のビルド構成で最適なバックエンドを取得する (GLOBAL)
+std::shared_ptr<nk::backend::ICryptoBackend> get_nk_backend();
 
 #endif // NKCRYPTOTOOL_IBACKEND_HPP

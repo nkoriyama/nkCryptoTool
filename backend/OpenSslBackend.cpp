@@ -148,6 +148,8 @@ std::expected<bool, CryptoError> OpenSslHashBackend::finalizeVerify(const std::v
 
 // --- OpenSslBackend ---
 
+OpenSslBackend::OpenSslBackend() {}
+
 std::expected<std::unique_ptr<IAeadBackend>, CryptoError> OpenSslBackend::createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) {
     const EVP_CIPHER* cipher = EVP_get_cipherbyname(cipher_name.c_str());
     if (!cipher) return std::unexpected(CryptoError::OpenSSLError);
@@ -232,23 +234,14 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKe
     OPENSSL_free(pub);
     return pub_v;
 }
-
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generatePqcSignKeyPair(const std::string& algo_name) {
-    std::string name = algo_name;
-    if (name == "ML-DSA-87") name = "mldsa87";
-    else if (name == "ML-DSA-65") name = "mldsa65";
-    else if (name == "ML-DSA-44") name = "mldsa44";
-    else if (name == "ML-KEM-1024") name = "mlkem1024";
-    else if (name == "ML-KEM-768") name = "mlkem768";
-    else if (name == "ML-KEM-512") name = "mlkem512";
-
-    std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, name.c_str(), nullptr));
-    if (!pctx) return std::unexpected(CryptoError::OpenSSLError);
-    if (EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::KeyGenerationInitError);
-    
-    EVP_PKEY* pkey = nullptr; 
-    if (EVP_PKEY_keygen(pctx.get(), &pkey) <= 0) return std::unexpected(CryptoError::KeyGenerationError);
+    EVP_PKEY* pkey = EVP_PKEY_Q_keygen(nullptr, nullptr, algo_name.c_str());
+    if (!pkey) {
+        reportOpenSSLErrors("generatePqcSignKeyPair: EVP_PKEY_Q_keygen");
+        return std::unexpected(CryptoError::KeyGenerationError);
+    }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
+
     
     uint8_t *priv = nullptr, *pub = nullptr;
     int priv_len = i2d_PrivateKey(spkey.get(), &priv);
@@ -369,10 +362,16 @@ std::vector<uint8_t> OpenSslBackend::base64Decode(const std::string& base64_str)
     return decoded;
 }
 
-std::shared_ptr<ICryptoBackend> getBackend() {
-    static auto instance = std::make_shared<OpenSslBackend>();
+} // namespace nk::backend
+
+#ifdef USE_BACKEND_OPENSSL
+std::shared_ptr<nk::backend::ICryptoBackend> get_nk_backend() {
+    static auto instance = std::make_shared<nk::backend::OpenSslBackend>();
     return instance;
 }
+#endif
+
+namespace nk::backend {
 
 int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg) {
     if (arg == nullptr) return 0;

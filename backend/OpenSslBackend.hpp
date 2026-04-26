@@ -39,6 +39,7 @@ private:
 
 class OpenSslBackend : public ICryptoBackend {
 public:
+    OpenSslBackend();
     std::expected<std::unique_ptr<IAeadBackend>, CryptoError> createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) override;
     std::expected<std::unique_ptr<IHashBackend>, CryptoError> createHash(const std::string& algo_name) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generateEccKeyPair(const std::string& curve_name) override;

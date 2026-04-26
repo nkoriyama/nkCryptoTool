@@ -93,7 +93,7 @@ int run_crypto_op_json(const char* json_config_str) {
             // Clear the temporary string from nlohmann::json if possible, 
             // though nlohmann::json doesn't provide a direct way to wipe its internal strings.
             // At least our config.passphrase is now secure.
-            nk::backend::getBackend()->cleanse(pass.data(), pass.size());
+            ::get_nk_backend()->cleanse(pass.data(), pass.size());
             config.passphrase_was_provided = true;
         }
         if (json_config.contains("digest_algo")) {

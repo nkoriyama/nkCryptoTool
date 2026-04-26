@@ -10,7 +10,7 @@
 namespace nk {
 
 HybridStrategy::HybridStrategy() : 
-    pqc_strategy_(std::make_unique<PQCStrategy>()),
+    pqc_strategy_(std::make_unique<nk::PQCStrategy>()),
     ecc_strategy_(std::make_unique<ECCStrategy>()) {}
 
 HybridStrategy::~HybridStrategy() {}
@@ -118,7 +118,7 @@ std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::ma
     auto salt = ecc_strategy_->getSalt();
     iv_ = ecc_strategy_->getIV();
 
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     std::vector<uint8_t> salt_v(salt.begin(), salt.end());
     encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
 
@@ -154,7 +154,7 @@ std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::ma
     auto salt = ecc_strategy_->getSalt();
     iv_ = ecc_strategy_->getIV();
 
-    auto backend = nk::backend::getBackend();
+    auto backend = ::get_nk_backend();
     std::vector<uint8_t> salt_v(salt.begin(), salt.end());
     encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
 

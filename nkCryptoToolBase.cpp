@@ -1,9 +1,3 @@
-/*
- * Copyright (c) 2024-2026 Naohiro KORIYAMA <nkoriyama@gmail.com>
- *
- * This file is part of nkCryptoTool.
- */
-
 #include "nkCryptoToolBase.hpp"
 #include "PipelineManager.hpp"
 #include "CryptoConfig.hpp"
@@ -91,8 +85,8 @@ void nkCryptoToolBase::decryptFileWithPipeline(
     if (total_size < tag_size + 8) { completion_handler(std::make_error_code(std::errc::illegal_byte_sequence), "File too small"); return; }
 
     std::ifstream ifs(input_filepath, std::ios::binary);
-    std::vector<char> header_buf(2048);
-    ifs.read(header_buf.data(), 2048);
+    std::vector<char> header_buf(4096); // ECC SPKI is around 1KB, PQC SPKI is up to 3KB
+    ifs.read(header_buf.data(), 4096);
     auto read_bytes = ifs.gcount();
     header_buf.resize((size_t)read_bytes);
     ifs.clear();
@@ -229,11 +223,22 @@ std::expected<void, CryptoError> nkCryptoToolBase::unwrapPrivateKey(std::filesys
 
 std::expected<StrategyType, CryptoError> nkCryptoToolBase::detectStrategyType(const std::filesystem::path& path) {
     std::ifstream ifs(path, std::ios::binary);
-    char header[4];
-    if (!ifs.read(header, 4)) return std::unexpected(CryptoError::FileReadError);
-    if (std::memcmp(header, "NKCT", 4) == 0) return StrategyType::ECC;
-    if (std::memcmp(header, "NKCS", 4) == 0) return StrategyType::ECC;
-    return std::unexpected(CryptoError::ParameterError);
+    char magic[4];
+    if (!ifs.read(magic, 4)) return std::unexpected(CryptoError::FileReadError);
+    if (std::memcmp(magic, "NKCT", 4) != 0 && std::memcmp(magic, "NKCS", 4) != 0) return std::unexpected(CryptoError::ParameterError);
+
+    uint16_t version;
+    if (!ifs.read(reinterpret_cast<char*>(&version), 2)) {
+        return StrategyType::ECC;
+    }
+    
+    if (version == 1) {
+        uint8_t type;
+        if (!ifs.read(reinterpret_cast<char*>(&type), 1)) return std::unexpected(CryptoError::FileReadError);
+        return static_cast<StrategyType>(type);
+    }
+
+    return StrategyType::ECC;
 }
 
 bool nkCryptoToolBase::isPrivateKeyEncrypted(const std::filesystem::path& path) {
