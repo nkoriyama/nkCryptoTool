@@ -64,7 +64,8 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     auto ephem_pair = backend->generateEccKeyPair(curve_name_);
     if (!ephem_pair) return std::unexpected(ephem_pair.error());
     
-    auto secret = backend->eccDh(ephem_pair->first, *recipient_pub_der);
+    SecureString empty_pass;
+    auto secret = backend->eccDh(ephem_pair->first, *recipient_pub_der, empty_pass);
     if (!secret) return std::unexpected(secret.error());
 
     shared_secret_ = *secret;
@@ -98,11 +99,13 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     
+    passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
+
     auto user_priv_der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!user_priv_der) return std::unexpected(CryptoError::PrivateKeyLoadError);
 
     auto backend = ::get_nk_backend();
-    auto secret = backend->eccDh(*user_priv_der, ephemeral_pubkey_);
+    auto secret = backend->eccDh(*user_priv_der, ephemeral_pubkey_, passphrase);
     if (!secret) return std::unexpected(secret.error());
 
     shared_secret_ = *secret;
@@ -227,7 +230,9 @@ std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::fil
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
-    auto pub_der = ::get_nk_backend()->extractPublicKey(*der);
+    
+    SecureString empty_pass;
+    auto pub_der = ::get_nk_backend()->extractPublicKey(*der, empty_pass);
     if (!pub_der) return std::unexpected(pub_der.error());
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
     std::ofstream ofs(pub, std::ios::binary);
@@ -235,16 +240,20 @@ std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::fil
     return {};
 }
 
-std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesystem::path& priv, SecureString&, const std::string& algo) {
+std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesystem::path& priv, SecureString& passphrase, const std::string& algo) {
     std::ifstream ifs(priv, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    
+    passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
+
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
     auto backend = ::get_nk_backend();
     auto hash = backend->createHash(algo);
     if (!hash) return std::unexpected(hash.error());
     hash_backend_ = std::move(*hash);
-    return hash_backend_->initSign(*der);
+    return hash_backend_->initSign(*der, passphrase);
 }
 
 std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::filesystem::path& pub, const std::string& algo) {

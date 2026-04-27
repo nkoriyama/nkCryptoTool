@@ -11,7 +11,6 @@
 #include <string>
 #include <memory>
 #include <algorithm>
-#include "backend/IBackend.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -44,8 +43,11 @@ struct SecureAllocator {
 
     void deallocate(T* p, std::size_t n) noexcept {
         std::size_t size = n * sizeof(T);
-        // バックエンド経由で安全に消去
-        ::get_nk_backend()->cleanse(p, size);
+        // メモリを安全に消去 (最適化による削除を防止)
+        if (p) {
+            volatile unsigned char* v_ptr = reinterpret_cast<volatile unsigned char*>(p);
+            for (std::size_t i = 0; i < size; ++i) v_ptr[i] = 0;
+        }
 #ifdef _WIN32
         VirtualUnlock(p, size);
 #else

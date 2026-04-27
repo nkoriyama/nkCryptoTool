@@ -128,13 +128,14 @@ std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<s
         if (!unwrapped) return std::unexpected(unwrapped.error());
         priv_der = std::move(*unwrapped);
     } else {
+        passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
         auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
         if (!der) return std::unexpected(der.error());
         priv_der = std::move(*der);
     }
 
     auto backend = ::get_nk_backend();
-    auto secret = backend->pqcDecap(priv_der, kem_ct_);
+    auto secret = backend->pqcDecap(priv_der, kem_ct_, passphrase);
     if (!secret) return std::unexpected(secret.error());
 
     shared_secret_ = *secret;
@@ -256,13 +257,16 @@ std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::
     return {};
 }
 
-std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::filesystem::path& priv, const std::filesystem::path& pub, SecureString&) {
+std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::filesystem::path& priv, const std::filesystem::path& pub, SecureString& passphrase) {
     std::ifstream ifs(priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
+
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
-    auto pub_der = ::get_nk_backend()->extractPublicKey(*der);
+    auto pub_der = ::get_nk_backend()->extractPublicKey(*der, passphrase);
     if (!pub_der) return std::unexpected(pub_der.error());
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
     std::ofstream ofs(pub, std::ios::binary);
@@ -270,18 +274,21 @@ std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::fil
     return {};
 }
 
-std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesystem::path& priv, SecureString&, const std::string& algo) {
+std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesystem::path& priv, SecureString& passphrase, const std::string& algo) {
     digest_algo_ = algo;
     std::ifstream ifs(priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    
+    passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
+
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
     auto backend = ::get_nk_backend();
     auto hash = backend->createHash(algo);
     if (!hash) return std::unexpected(hash.error());
     hash_ctx_ = std::move(*hash);
-    return hash_ctx_->initSign(*der);
+    return hash_ctx_->initSign(*der, passphrase);
 }
 
 std::expected<void, CryptoError> PQCStrategy::prepareVerification(const std::filesystem::path& pub, const std::string& algo) {

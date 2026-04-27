@@ -73,6 +73,12 @@ std::string wrapToPem(const std::vector<uint8_t>& der, const std::string& label)
 // PEM 形式からのアンラップ (DERを返す)
 std::expected<std::vector<uint8_t>, CryptoError> unwrapFromPem(const std::string& pem, const std::string& label);
 
+// 秘密鍵が暗号化されているか判別する
+bool isEncryptedPem(const std::string& pem);
+
+// 必要に応じてパスフレーズを取得する
+SecureString getPassphraseIfNeeded(const std::string& content, const SecureString& provided_passphrase);
+
 } // namespace nkCryptoToolUtils
 
 #endif // NKCRYPTOTOOL_UTILS_HPP

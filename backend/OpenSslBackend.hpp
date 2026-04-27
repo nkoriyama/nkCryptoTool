@@ -31,7 +31,7 @@ class OpenSslHashBackend : public IHashBackend {
 public:
     OpenSslHashBackend(std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> ctx, const EVP_MD* md);
     std::expected<void, CryptoError> update(const uint8_t* data, size_t len) override;
-    std::expected<void, CryptoError> initSign(const std::vector<uint8_t>& priv_key_der) override;
+    std::expected<void, CryptoError> initSign(const std::vector<uint8_t>& priv_key_der, const SecureString& passphrase) override;
     std::expected<std::vector<uint8_t>, CryptoError> finalizeSign() override;
     std::expected<void, CryptoError> initVerify(const std::vector<uint8_t>& pub_key_der) override;
     std::expected<bool, CryptoError> finalizeVerify(const std::vector<uint8_t>& signature) override;
@@ -49,11 +49,11 @@ public:
     std::expected<std::unique_ptr<IAeadBackend>, CryptoError> createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) override;
     std::expected<std::unique_ptr<IHashBackend>, CryptoError> createHash(const std::string& algo_name) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generateEccKeyPair(const std::string& curve_name) override;
-    std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der) override;
-    std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der) override;
+    std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der, const SecureString& passphrase) override;
+    std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generatePqcSignKeyPair(const std::string& algo_name) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> pqcEncap(const std::vector<uint8_t>& pub_key_der) override;
-    std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) override;
+    std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) override;
     std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) override;
     std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) override;
     void cleanse(void* ptr, size_t len) override;
@@ -62,7 +62,7 @@ public:
 };
 
 // OpenSSL 3.0 以降のエンコーダ/デコーダ用パスフレーズコールバック
-int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg);
+int ossl_passphrase_cb(char *pass, int pass_max, int rwflag, void *arg);
 
 } // namespace nk::backend
 

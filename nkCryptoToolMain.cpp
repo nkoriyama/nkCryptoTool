@@ -143,7 +143,8 @@ int main(int argc, char* argv[]) {
         if (result.count("passphrase")) {
             config.passphrase = result["passphrase"].as<std::string>();
             config.passphrase_was_provided = true;
-        } else if (!no_pass && (config.operation != Operation::Verify && config.operation != Operation::None)) {
+        } else if (!no_pass && (config.operation == Operation::GenerateEncKey || 
+                               config.operation == Operation::GenerateSignKey)) {
              config.passphrase = get_masked_passphrase();
              config.passphrase_was_provided = true;
         }
