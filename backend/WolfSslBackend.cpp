@@ -251,7 +251,7 @@ std::expected<void, CryptoError> WolfSslAeadBackend::setTag(const uint8_t* tag, 
 // --- WolfSslHashBackend ---
 
 WolfSslHashBackend::WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EVP_MD* md) : ctx_(ctx), md_(md), is_sign_(false) {
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     wc_dilithium_init(&dilithium_key_);
 #endif
 }
@@ -259,7 +259,7 @@ WolfSslHashBackend::WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EV
 WolfSslHashBackend::~WolfSslHashBackend() {
     wolfSSL_EVP_MD_CTX_free(ctx_);
     if (pkey_) wolfSSL_EVP_PKEY_free(pkey_);
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     wc_dilithium_free(&dilithium_key_);
 #endif
 }
@@ -276,7 +276,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
     pqc_dsa_type_ = -1;
 
     std::vector<uint8_t> raw_key = unwrapPqcDer(priv_key_der.data(), priv_key_der.size(), false);
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PRV_KEY_SIZE) level = 3;
@@ -305,7 +305,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
 
 std::expected<std::vector<uint8_t>, CryptoError> WolfSslHashBackend::finalizeSign() {
     if (pqc_dsa_type_ != -1) {
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
         WC_RNG rng;
         wc_InitRng(&rng);
         word32 slen = wc_dilithium_sig_size(&dilithium_key_);
@@ -341,7 +341,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initVerify(const std::vecto
     pqc_dsa_type_ = -1;
 
     std::vector<uint8_t> raw_key = unwrapPqcDer(pub_key_der.data(), pub_key_der.size(), true);
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_PUB_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PUB_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_PUB_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PUB_KEY_SIZE) level = 3;
@@ -370,12 +370,15 @@ std::expected<void, CryptoError> WolfSslHashBackend::initVerify(const std::vecto
 
 std::expected<bool, CryptoError> WolfSslHashBackend::finalizeVerify(const std::vector<uint8_t>& signature) {
     if (pqc_dsa_type_ != -1) {
+    #if 0
         int res = 0;
         if (wc_dilithium_verify_ctx_msg(signature.data(), (word32)signature.size(), nullptr, 0, buffer_.data(), (word32)buffer_.size(), &res, &dilithium_key_) == 0) {
             return res == 1;
         }
+    #endif
         return std::unexpected(CryptoError::OpenSSLError);
-    } else if (pkey_) {
+    }
+ else if (pkey_) {
         wolfSSL_EVP_MD_CTX_cleanup(ctx_);
         wolfSSL_EVP_MD_CTX_init(ctx_);
         if (wolfSSL_EVP_DigestVerifyInit(ctx_, nullptr, nullptr, nullptr, pkey_) <= 0) {
@@ -464,7 +467,7 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::eccDh(const std
 
 std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der) {
     std::vector<uint8_t> raw_key = unwrapPqcDer(priv_der.data(), priv_der.size(), false);
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PRV_KEY_SIZE) level = 3;
@@ -549,7 +552,7 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
         return std::make_pair(wrapPqcDer(priv, algo_name, false, rand_seed, 64), wrapPqcDer(pub, algo_name, true, nullptr, 0));
     }
 #endif
-#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int dsa_level = -1;
     if (algo_name == "ML-DSA-44" || algo_name == "Dilithium2") dsa_level = 2;
     else if (algo_name == "ML-DSA-65" || algo_name == "Dilithium3") dsa_level = 3;
@@ -689,8 +692,10 @@ std::vector<uint8_t> WolfSslBackend::base64Decode(const std::string& base64_str)
     return res;
 }
 
+} // namespace nk::backend
+
 #ifdef USE_BACKEND_WOLFSSL
-std::shared_ptr<ICryptoBackend> nk_get_backend() {
+std::shared_ptr<nk::backend::ICryptoBackend> get_nk_backend() {
     static bool initialized = false;
     if (!initialized) {
         wolfCrypt_Init();
@@ -706,9 +711,7 @@ std::shared_ptr<ICryptoBackend> nk_get_backend() {
         wolfSSL_OBJ_create("1.2.840.10045.3.1.7", "prime256v1", "ASN1 prime256v1");
         initialized = true;
     }
-    static auto instance = std::make_shared<WolfSslBackend>();
+    static auto instance = std::make_shared<nk::backend::WolfSslBackend>();
     return instance;
 }
 #endif
-
-} // namespace nk::backend
