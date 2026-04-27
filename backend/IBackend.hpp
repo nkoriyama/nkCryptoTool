@@ -12,6 +12,7 @@
 #include <expected>
 #include <memory>
 #include "../CryptoError.hpp"
+#include "../SecureMemory.hpp"
 
 namespace nk::backend {
 
@@ -34,7 +35,7 @@ class IHashBackend {
 public:
     virtual ~IHashBackend() = default;
     virtual std::expected<void, CryptoError> update(const uint8_t* data, size_t len) = 0;
-    virtual std::expected<void, CryptoError> initSign(const std::vector<uint8_t>& priv_key_der) = 0;
+    virtual std::expected<void, CryptoError> initSign(const std::vector<uint8_t>& priv_key_der, const SecureString& passphrase) = 0;
     virtual std::expected<std::vector<uint8_t>, CryptoError> finalizeSign() = 0;
     virtual std::expected<void, CryptoError> initVerify(const std::vector<uint8_t>& pub_key_der) = 0;
     virtual std::expected<bool, CryptoError> finalizeVerify(const std::vector<uint8_t>& signature) = 0;
@@ -55,13 +56,13 @@ public:
 
     // ECC 関連
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generateEccKeyPair(const std::string& curve_name) = 0;
-    virtual std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der) = 0;
-    virtual std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der) = 0;
+    virtual std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der, const SecureString& passphrase) = 0;
+    virtual std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) = 0;
 
     // PQC 関連
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generatePqcSignKeyPair(const std::string& algo_name) = 0;
     virtual std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> pqcEncap(const std::vector<uint8_t>& pub_key_der) = 0;
-    virtual std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) = 0;
+    virtual std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) = 0;
 
     // 鍵導出
     virtual std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) = 0;

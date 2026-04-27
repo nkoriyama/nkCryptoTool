@@ -29,6 +29,23 @@ static void reportOpenSSLErrors(const std::string& context) {
     }
 }
 
+static EVP_PKEY* loadPrivateKeyRobust(const uint8_t* der, size_t len, const SecureString& passphrase) {
+    if (!der || len == 0) return nullptr;
+    const uint8_t* p = der;
+    
+    // Try auto first (handles unencrypted PKCS#8 or traditional formats)
+    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)len);
+    if (pkey) return pkey;
+
+    // If it fails, try encrypted PKCS#8
+    BIO* mem = BIO_new_mem_buf(der, (int)len);
+    if (!mem) return nullptr;
+    pkey = d2i_PKCS8PrivateKey_bio(mem, nullptr, ossl_passphrase_cb, (void*)&passphrase);
+    BIO_free(mem);
+    
+    return pkey;
+}
+
 // --- OpenSslAeadBackend ---
 
 OpenSslAeadBackend::OpenSslAeadBackend(std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx)
@@ -77,9 +94,8 @@ std::expected<void, CryptoError> OpenSslHashBackend::update(const uint8_t* data,
     return {};
 }
 
-std::expected<void, CryptoError> OpenSslHashBackend::initSign(const std::vector<uint8_t>& priv_key_der) {
-    const uint8_t* p = priv_key_der.data();
-    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_key_der.size());
+std::expected<void, CryptoError> OpenSslHashBackend::initSign(const std::vector<uint8_t>& priv_key_der, const SecureString& passphrase) {
+    EVP_PKEY* pkey = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
     if (!pkey) {
         reportOpenSSLErrors("initSign: Load Private Key");
         return std::unexpected(CryptoError::PrivateKeyLoadError);
@@ -201,12 +217,12 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
     return std::make_pair(priv_v, pub_v);
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der) {
-    const uint8_t* p1 = priv_der.data();
-    EVP_PKEY* priv = d2i_AutoPrivateKey(nullptr, &p1, (long)priv_der.size());
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der, const SecureString& passphrase) {
+    EVP_PKEY* priv = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
     const uint8_t* p2 = pub_der.data();
     EVP_PKEY* pub = d2i_PUBKEY(nullptr, &p2, (long)pub_der.size());
     if (!priv || !pub) {
+        if (priv) EVP_PKEY_free(priv);
         reportOpenSSLErrors("eccDh: Key Load");
         return std::unexpected(CryptoError::KeyGenerationError);
     }
@@ -223,9 +239,8 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std
     return secret;
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der) {
-    const uint8_t* p = priv_der.data();
-    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_der.size());
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) {
+    EVP_PKEY* pkey = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
     if (!pkey) {
         reportOpenSSLErrors("extractPublicKey: Load Private Key");
         return std::unexpected(CryptoError::PrivateKeyLoadError);
@@ -240,6 +255,7 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKe
     OPENSSL_free(pub);
     return pub_v;
 }
+
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generatePqcSignKeyPair(const std::string& algo_name) {
     EVP_PKEY* pkey = EVP_PKEY_Q_keygen(nullptr, nullptr, algo_name.c_str());
     if (!pkey) {
@@ -247,7 +263,6 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
         return std::unexpected(CryptoError::KeyGenerationError);
     }
     std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
-
     
     uint8_t *priv = nullptr, *pub = nullptr;
     int priv_len = i2d_PrivateKey(spkey.get(), &priv);
@@ -279,9 +294,8 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
     return std::make_pair(secret, ct);
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) {
-    const uint8_t* p = priv_key_der.data();
-    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)priv_key_der.size());
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) {
+    EVP_PKEY* pkey = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
     if (!pkey) {
         reportOpenSSLErrors("pqcDecap: Load Private Key");
         return std::unexpected(CryptoError::PrivateKeyLoadError);
@@ -379,15 +393,13 @@ std::shared_ptr<nk::backend::ICryptoBackend> get_nk_backend() {
 
 namespace nk::backend {
 
-int ossl_passphrase_cb(char *pass, size_t pass_max, size_t *pass_len, const OSSL_PARAM params[], void *arg) {
+int ossl_passphrase_cb(char *pass, int pass_max, int rwflag, void *arg) {
     if (arg == nullptr) return 0;
     const SecureString* passphrase = static_cast<const SecureString*>(arg);
-    size_t len = passphrase->length();
+    int len = (int)passphrase->length();
     if (len >= pass_max) return 0;
     std::memcpy(pass, passphrase->c_str(), len);
-    pass[len] = '\0';
-    if (pass_len) *pass_len = len;
-    return 1;
+    return len;
 }
 
 } // namespace nk::backend

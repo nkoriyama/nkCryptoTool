@@ -5,6 +5,7 @@
  */
 
 #include "WolfSslBackend.hpp"
+#include "nkCryptoToolUtils.hpp"
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/pem.h>
 #include <wolfssl/openssl/err.h>
@@ -37,6 +38,39 @@ static void printWolfError(const std::string& context) {
         std::cerr << "[WolfSSL] " << context << " FAILED: " << err_buf << std::endl;
         err = wolfSSL_ERR_get_error();
     }
+}
+
+static WOLFSSL_EVP_PKEY* loadPrivateKeyRobust(const uint8_t* der, size_t len, const SecureString& passphrase) {
+    if (!der || len == 0) return nullptr;
+    const uint8_t* p = der;
+    
+    // Try auto first (handles unencrypted)
+    WOLFSSL_EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)len);
+    if (pkey) return pkey;
+
+    // If it fails, try with passphrase if provided
+    if (!passphrase.empty()) {
+        WOLFSSL_BIO* mem = wolfSSL_BIO_new_mem_buf((void*)der, (int)len);
+        if (mem) {
+            // Note: wolfSSL_PEM_read_bio_PrivateKey might expect PEM, but we have DER.
+            // In WolfSSL, we should use wolfSSL_d2i_PKCS8PrivateKey_bio if available.
+            pkey = wolfSSL_d2i_PKCS8PrivateKey_bio(mem, nullptr, nullptr, (void*)passphrase.c_str());
+            wolfSSL_BIO_free(mem);
+            if (pkey) return pkey;
+        }
+    }
+
+    while (wolfSSL_ERR_get_error() != 0);
+    return nullptr;
+}
+
+static WOLFSSL_EVP_PKEY* loadPublicKeyRobust(const uint8_t* der, size_t len) {
+    if (!der || len == 0) return nullptr;
+    const uint8_t* p = der;
+    WOLFSSL_EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)len);
+    if (pkey) return pkey;
+    while (wolfSSL_ERR_get_error() != 0);
+    return nullptr;
 }
 
 // --- HKDF Manual Implementation to avoid wolfSSL build issues ---
@@ -95,27 +129,36 @@ static size_t read_asn1_len(const uint8_t* der, size_t len, size_t& pos) {
 
 static std::vector<uint8_t> unwrapPqcDer(const uint8_t* der, size_t len, bool is_public) {
     if (!der || len < 32) return {};
+    // すでに生のバイナリ（非ASN.1）の場合はそのまま返す
     if (der[0] != 0x30) return std::vector<uint8_t>(der, der + len);
 
+    auto is_pqc_size = [](size_t s) {
+        return s == 1632 || s == 2400 || s == 3168 || // Kyber Priv
+               s == 800 || s == 1184 || s == 1568 ||  // Kyber Pub
+               s == 2560 || s == 4032 || s == 4896 || // Dilithium Priv
+               s == 1312 || s == 1952 || s == 2592;   // Dilithium Pub
+    };
+
     std::vector<uint8_t> best;
+    // 浅い階層から順に、PQCサイズに合致する OCTET STRING (0x04) または BIT STRING (0x03) を探す
+    // 本ツールの構造では OCTET STRING の中にさらに ASN.1 が入っている場合があるため、
+    // 見つかったデータが ASN.1 (0x30) であればその中も探す
     for (size_t i = 0; i < len - 4; ++i) {
         uint8_t tag = der[i];
         if (tag == 0x04 || (is_public && tag == 0x03)) {
             size_t pos = i + 1;
             size_t o_len = read_asn1_len(der, len, pos);
             if (o_len > 0 && pos + o_len <= len) {
-                size_t actual_len = o_len;
                 const uint8_t* data = der + pos;
-                if (tag == 0x03) { // BIT STRING
-                    if (actual_len > 1 && data[0] == 0x00) {
-                        data++; actual_len--;
-                    } else continue;
-                }
-                if (actual_len == 1632 || actual_len == 2400 || actual_len == 3168 ||
-                    actual_len == 2560 || actual_len == 4032 || actual_len == 4896 ||
-                    actual_len == 800 || actual_len == 1184 || actual_len == 1568 ||
-                    actual_len == 1312 || actual_len == 1952 || actual_len == 2592) {
-                    return std::vector<uint8_t>(data, data + actual_len);
+                size_t actual_len = o_len;
+                if (tag == 0x03 && actual_len > 1 && data[0] == 0x00) { data++; actual_len--; }
+                
+                if (is_pqc_size(actual_len)) return std::vector<uint8_t>(data, data + actual_len);
+                
+                // ネストされた構造を 1段階だけ深く探す
+                if (actual_len > 32 && data[0] == 0x30) {
+                    auto inner = unwrapPqcDer(data, actual_len, is_public);
+                    if (is_pqc_size(inner.size())) return inner;
                 }
                 if (actual_len > best.size()) best.assign(data, data + actual_len);
             }
@@ -201,24 +244,6 @@ static std::vector<uint8_t> wrapPqcDer(const std::vector<uint8_t>& raw, const st
     }
 }
 
-static WOLFSSL_EVP_PKEY* loadPublicKeyRobust(const uint8_t* der, size_t len) {
-    if (!der || len == 0) return nullptr;
-    const uint8_t* p = der;
-    WOLFSSL_EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)len);
-    if (pkey) return pkey;
-    while (wolfSSL_ERR_get_error() != 0);
-    return nullptr;
-}
-
-static WOLFSSL_EVP_PKEY* loadPrivateKeyRobust(const uint8_t* der, size_t len) {
-    if (!der || len == 0) return nullptr;
-    const uint8_t* p = der;
-    WOLFSSL_EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, (long)len);
-    if (pkey) return pkey;
-    while (wolfSSL_ERR_get_error() != 0);
-    return nullptr;
-}
-
 // --- WolfSslAeadBackend ---
 
 WolfSslAeadBackend::WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx) : ctx_(ctx) {}
@@ -270,12 +295,24 @@ std::expected<void, CryptoError> WolfSslHashBackend::update(const uint8_t* data,
     return {};
 }
 
-std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<uint8_t>& priv_key_der) {
+std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<uint8_t>& priv_key_der, const SecureString& passphrase) {
     buffer_.clear();
     is_sign_ = true;
     pqc_dsa_type_ = -1;
 
-    std::vector<uint8_t> raw_key = unwrapPqcDer(priv_key_der.data(), priv_key_der.size(), false);
+    std::vector<uint8_t> working_der = priv_key_der;
+    WOLFSSL_EVP_PKEY* pkey_dec = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
+    if (pkey_dec) {
+        int len = i2d_PrivateKey(pkey_dec, nullptr);
+        if (len > 0) {
+            working_der.assign(len, 0);
+            uint8_t* p = working_der.data();
+            i2d_PrivateKey(pkey_dec, &p);
+        }
+        wolfSSL_EVP_PKEY_free(pkey_dec);
+    }
+
+    std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
 #if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
@@ -293,7 +330,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
     }
 #endif
 
-    WOLFSSL_EVP_PKEY* pkey = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size());
+    WOLFSSL_EVP_PKEY* pkey = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
     if (pkey) {
         if (pkey_) wolfSSL_EVP_PKEY_free(pkey_);
         pkey_ = pkey;
@@ -442,8 +479,8 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
     return std::make_pair(priv_v, pub_v);
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der) {
-    WOLFSSL_EVP_PKEY* priv = loadPrivateKeyRobust(priv_der.data(), priv_der.size());
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der, const SecureString& passphrase) {
+    WOLFSSL_EVP_PKEY* priv = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
     WOLFSSL_EVP_PKEY* pub = loadPublicKeyRobust(pub_der.data(), pub_der.size());
     if (!priv || !pub) {
         if (priv) wolfSSL_EVP_PKEY_free(priv);
@@ -465,8 +502,19 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::eccDh(const std
     return secret;
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der) {
-    std::vector<uint8_t> raw_key = unwrapPqcDer(priv_der.data(), priv_der.size(), false);
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) {
+    std::vector<uint8_t> working_der = priv_der;
+    WOLFSSL_EVP_PKEY* pkey_dec = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
+    if (pkey_dec) {
+        int len = i2d_PrivateKey(pkey_dec, nullptr);
+        if (len > 0) {
+            working_der.assign(len, 0);
+            uint8_t* p = working_der.data();
+            i2d_PrivateKey(pkey_dec, &p);
+        }
+        wolfSSL_EVP_PKEY_free(pkey_dec);
+    }
+    std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
 #if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
@@ -509,7 +557,7 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKe
     }
 #endif
 
-    WOLFSSL_EVP_PKEY* pkey = loadPrivateKeyRobust(priv_der.data(), priv_der.size());
+    WOLFSSL_EVP_PKEY* pkey = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
     if (pkey) {
         int pub_len = i2d_PUBKEY(pkey, nullptr);
         std::vector<uint8_t> pub_v(pub_len);
@@ -615,10 +663,22 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
     return std::unexpected(CryptoError::OpenSSLError);
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct) {
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) {
 #ifdef WOLFSSL_HAVE_KYBER
     struct KyberKey key;
-    std::vector<uint8_t> raw_key = unwrapPqcDer(priv_key_der.data(), priv_key_der.size(), false);
+    std::vector<uint8_t> working_der = priv_key_der;
+    WOLFSSL_EVP_PKEY* pkey_dec = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
+    if (pkey_dec) {
+        int len = i2d_PrivateKey(pkey_dec, nullptr);
+        if (len > 0) {
+            working_der.assign(len, 0);
+            uint8_t* p = working_der.data();
+            i2d_PrivateKey(pkey_dec, &p);
+        }
+        wolfSSL_EVP_PKEY_free(pkey_dec);
+    }
+
+    std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
     int kyber_type = -1;
     if (raw_key.size() == KYBER512_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_512;
     else if (raw_key.size() == KYBER768_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_768;

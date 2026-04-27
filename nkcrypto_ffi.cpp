@@ -15,6 +15,7 @@
 #include <map>
 #include <filesystem> // For std::filesystem::path used in CryptoProcessor construction
 #include <asio.hpp> // For asio::io_context
+#include "backend/IBackend.hpp"
 
 // FFI層で共有されるグローバルな進捗コールバック
 static FfiProgressCallback g_progress_callback = nullptr;

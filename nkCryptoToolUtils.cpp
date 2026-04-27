@@ -127,13 +127,23 @@ std::string wrapToPem(const std::vector<uint8_t>& der, const std::string& label)
 
 std::expected<std::vector<uint8_t>, CryptoError> unwrapFromPem(const std::string& pem, const std::string& label) {
     std::string header = "-----BEGIN " + label + "-----";
+    std::string encrypted_header = "-----BEGIN ENCRYPTED " + label + "-----";
     std::string footer = "-----END " + label + "-----";
+    std::string encrypted_footer = "-----END ENCRYPTED " + label + "-----";
     
     size_t start = pem.find(header);
-    if (start == std::string::npos) return std::unexpected(CryptoError::FileReadError);
-    start += header.length();
+    bool encrypted = false;
+    if (start == std::string::npos) {
+        start = pem.find(encrypted_header);
+        if (start == std::string::npos) return std::unexpected(CryptoError::FileReadError);
+        start += encrypted_header.length();
+        encrypted = true;
+    } else {
+        start += header.length();
+    }
     
-    size_t end = pem.find(footer, start);
+    std::string actual_footer = encrypted ? encrypted_footer : footer;
+    size_t end = pem.find(actual_footer, start);
     if (end == std::string::npos) return std::unexpected(CryptoError::FileReadError);
     
     std::string body = pem.substr(start, end - start);
@@ -143,6 +153,18 @@ std::expected<std::vector<uint8_t>, CryptoError> unwrapFromPem(const std::string
     }
     
     return TPMUtils::base64_decode(filtered);
+}
+
+bool isEncryptedPem(const std::string& pem) {
+    return pem.find("ENCRYPTED") != std::string::npos;
+}
+
+SecureString getPassphraseIfNeeded(const std::string& content, const SecureString& provided_passphrase) {
+    if (!provided_passphrase.empty()) return provided_passphrase;
+    if (isEncryptedPem(content)) {
+        return get_masked_passphrase();
+    }
+    return "";
 }
 
 } // namespace nkCryptoToolUtils
