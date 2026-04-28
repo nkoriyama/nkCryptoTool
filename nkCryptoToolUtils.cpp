@@ -55,6 +55,10 @@ void processDirectory(
 }
 
 SecureString get_masked_passphrase() {
+    const char* env_pass = std::getenv("NK_PASSPHRASE");
+    if (env_pass) {
+        return SecureString(env_pass);
+    }
     SecureString passphrase_input;
 #if defined(_WIN32) || defined(_WIN64)
     char ch;

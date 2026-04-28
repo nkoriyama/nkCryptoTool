@@ -37,8 +37,6 @@ int main(int argc, char* argv[]) {
         ("kem-algo", "PQC KEM algorithm", cxxopts::value<std::string>()->default_value("ML-KEM-768"))
         ("dsa-algo", "PQC DSA algorithm", cxxopts::value<std::string>()->default_value("ML-DSA-65"))
         ("tpm", "Use TPM to protect private keys")
-        ("no-passphrase", "Do not use a passphrase for private keys")
-        ("passphrase", "Passphrase for private keys", cxxopts::value<std::string>())
         ("r,recursive", "Process directories recursively")
         ("input-dir", "Directory for recursive input", cxxopts::value<std::string>())
         ("output-dir", "Directory for recursive output", cxxopts::value<std::string>())
@@ -137,15 +135,11 @@ int main(int argc, char* argv[]) {
         if (result.count("digest-algo")) config.digest_algo = result["digest-algo"].as<std::string>();
         
         bool tpm = result.count("tpm") > 0;
-        bool no_pass = result.count("no-passphrase") > 0;
         if (tpm) config.key_paths["use-tpm"] = "true";
 
-        if (result.count("passphrase")) {
-            config.passphrase = result["passphrase"].as<std::string>();
-            config.passphrase_was_provided = true;
-        } else if (!no_pass && (config.operation == Operation::GenerateEncKey || 
-                               config.operation == Operation::GenerateSignKey)) {
-             config.passphrase = get_masked_passphrase();
+        if (config.operation == Operation::GenerateEncKey || 
+            config.operation == Operation::GenerateSignKey) {
+             config.passphrase = get_and_verify_passphrase("Enter passphrase for new key pair: ");
              config.passphrase_was_provided = true;
         }
 
