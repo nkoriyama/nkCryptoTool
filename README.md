@@ -39,7 +39,16 @@
 ## **詳細情報 (More Information)**
 
 *   **高速化の秘訣**: 本ツールのパフォーマンス最適化に関する詳細な情報は、[nkCryptoTool_optimization_secrets.md](nkCryptoTool_optimization_secrets.md) をご覧ください。
-*   **ベンチマーク実績**: 5GBの大容量ファイルを用いた測定において、**最大 3.3 GiB/s** のスループットを実証しています。詳細は [nkCryptoToolBenchmark](#ベンチマーク) を実行してご確認ください。
+*   **ベンチマーク実績**: 2GiBの大容量ファイルを用いた測定において、C++版で **最大 3.0 GiB/s**、Rust版で **最大 3.8 GiB/s** のスループットを実証しています。
+
+| 実装 | バックエンド | モード | 暗号化速度 | 復号速度 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Rust** | **OpenSSL** | **Hybrid (PQC+ECC)** | **~3.4 GiB/s** | **~3.8 GiB/s** |
+| C++ | OpenSSL | Hybrid (PQC+ECC) | ~3.0 GiB/s | ~2.9 GiB/s |
+| C++ | wolfSSL | Hybrid (PQC+ECC) | ~2.1 GiB/s | ~2.0 GiB/s |
+| **Rust** | **RustCrypto** | ECC (P-256) | ~1.6 GiB/s | ~1.9 GiB/s |
+
+※ 測定環境: Gen4 NVMe / x86_64 / Linux。Rust 版は非同期 I/O パイプラインにより、C++ 版を凌駕する性能を発揮します。詳細は [nkCryptoToolBenchmark](#ベンチマーク) を実行してご確認ください。
 
 ## **ビルド方法**
 
