@@ -520,7 +520,16 @@ sequenceDiagram
     end 
 ```
 
-## License
+## **相互運用性 (Interoperability)**
+
+本プロジェクトは、異なる環境間での「完全な透明性」を目標に設計されています。
+
+*   **実装・バックエンド間の完全互換**: C++版（OpenSSL/wolfSSL）と Rust版（OpenSSL/RustCrypto）は、バイナリレベルで 100% 互換です。
+*   **鍵の交換可能性 (Key Interchangeability)**: いかなるバックエンドで生成された鍵ペア（ECC/PQC/Hybrid）も、他のすべてのバックエンドで**変換なしにそのまま利用可能**です。
+    *   例: Rust 純 Rust (RustCrypto) 版で生成した PQC 秘密鍵を、C++ wolfSSL版でロードして復号できます。
+*   **標準フォーマットの採用**: 鍵は PKCS#8/SPKI、署名は ASN.1 DER 形式、暗号化は標準的な AES-256-GCM (1 file, 1 tag) を採用しており、既存の暗号インフラとの高い親和性を確保しています。
+
+## **ライセンス**
 
 This project is licensed under the **MIT License**.
 
