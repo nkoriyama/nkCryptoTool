@@ -39,16 +39,24 @@
 ## **詳細情報 (More Information)**
 
 *   **高速化の秘訣**: 本ツールのパフォーマンス最適化に関する詳細な情報は、[nkCryptoTool_optimization_secrets.md](nkCryptoTool_optimization_secrets.md) をご覧ください。
-*   **ベンチマーク実績**: 2GiBの大容量ファイルを用いた測定において、C++版で **最大 3.0 GiB/s**、Rust版で **最大 3.8 GiB/s** のスループットを実証しています。
+*   **ベンチマーク実績**: 2.0 GiB の大容量ファイルを用いた最新のベンチマーク結果（Gen4 NVMe / x86_64 / Linux）。
 
-| 実装 | バックエンド | モード | 暗号化速度 | 復号速度 |
-| :--- | :--- | :--- | :--- | :--- |
-| **Rust** | **OpenSSL** | **Hybrid (PQC+ECC)** | **~3.4 GiB/s** | **~3.8 GiB/s** |
-| C++ | OpenSSL | Hybrid (PQC+ECC) | ~3.0 GiB/s | ~2.9 GiB/s |
-| C++ | wolfSSL | Hybrid (PQC+ECC) | ~2.1 GiB/s | ~2.0 GiB/s |
-| **Rust** | **RustCrypto** | ECC (P-256) | ~1.6 GiB/s | ~1.9 GiB/s |
+| バックエンド (言語) | モード | 暗号化速度 | 復号速度 |
+| :--- | :--- | :--- | :--- |
+| **OpenSSL (Rust)** | **Hybrid (PQC+ECC)** | **~3.7 GiB/s** | **~3.8 GiB/s** |
+| **OpenSSL (Rust)** | PQC (ML-KEM-1024) | ~3.7 GiB/s | ~3.8 GiB/s |
+| **OpenSSL (Rust)** | ECC (P-256) | ~3.5 GiB/s | ~3.8 GiB/s |
+| OpenSSL (C++) | Hybrid (PQC+ECC) | ~2.7 GiB/s | ~2.8 GiB/s |
+| OpenSSL (C++) | PQC (ML-KEM-1024) | ~3.0 GiB/s | ~3.1 GiB/s |
+| OpenSSL (C++) | ECC (P-256) | ~2.7 GiB/s | ~2.8 GiB/s |
+| wolfSSL (C++) | Hybrid (PQC+ECC) | ~2.1 GiB/s | ~2.1 GiB/s |
+| wolfSSL (C++) | PQC (ML-KEM-1024) | ~1.9 GiB/s | ~1.9 GiB/s |
+| wolfSSL (C++) | ECC (P-256) | ~1.9 GiB/s | ~1.9 GiB/s |
+| **RustCrypto (Rust)** | **Hybrid (PQC+ECC)** | **~1.6 GiB/s** | **~1.7 GiB/s** |
+| **RustCrypto (Rust)** | PQC (ML-KEM-1024) | ~1.5 GiB/s | ~1.7 GiB/s |
+| **RustCrypto (Rust)** | ECC (P-256) | ~1.7 GiB/s | ~1.7 GiB/s |
 
-※ 測定環境: Gen4 NVMe / x86_64 / Linux。Rust 版は非同期 I/O パイプラインにより、C++ 版を凌駕する性能を発揮します。詳細は [nkCryptoToolBenchmark](#ベンチマーク) を実行してご確認ください。
+※ Rust 版は Tokio 非同期パイプラインにより I/O と暗号化を高度に並列化しており、特に巨大ファイルにおいて C++ 版を上回る効率を発揮します。詳細は [nkCryptoToolBenchmark](#ベンチマーク) を実行してご確認ください。
 
 ## **ビルド方法**
 
