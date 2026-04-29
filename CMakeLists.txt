@@ -37,7 +37,7 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     set(WOLFSSL_EXPERIMENTAL ON CACHE BOOL "" FORCE)
     set(WOLFSSL_ASN_TEMPLATE ON CACHE BOOL "" FORCE)
     set(WOLFSSL_WERROR OFF CACHE BOOL "" FORCE)
-    set(WOLFSSL_DILITHIUM OFF CACHE BOOL "" FORCE)
+    set(WOLFSSL_DILITHIUM ON CACHE BOOL "" FORCE)
     
     add_compile_definitions(WOLFSSL_AESGCM_STREAM)
     add_compile_definitions(HAVE_AESGCM)
@@ -45,12 +45,14 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     add_compile_definitions(HAVE_ECC)
     add_compile_definitions(WOLFSSL_HAVE_KYBER)
     add_compile_definitions(WOLFSSL_WC_KYBER)
+    add_compile_definitions(HAVE_DILITHIUM)
+    add_compile_definitions(WOLFSSL_WC_DILITHIUM)
     add_compile_definitions(WOLFSSL_SHA3)
     add_compile_definitions(WOLFSSL_AESNI)
     add_compile_definitions(WOLFSSL_X86_64_BUILD)
 
-    set(CMAKE_C_FLAGS "-fPIC -maes -mpclmul -mavx2 -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER" CACHE STRING "" FORCE)
-    set(CMAKE_CXX_FLAGS "-fPIC -maes -mpclmul -mavx2 -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER" CACHE STRING "" FORCE)
+    set(CMAKE_C_FLAGS "-fPIC -maes -mpclmul -mavx2 -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS "-fPIC -maes -mpclmul -mavx2 -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
 
     FetchContent_Declare(wolfssl
         GIT_REPOSITORY https://github.com/wolfSSL/wolfssl.git
@@ -97,6 +99,7 @@ elseif(USE_BACKEND STREQUAL "WolfSSL")
     add_definitions(-DUSE_BACKEND_WOLFSSL)
     list(APPEND BACKEND_SOURCES 
         backend/WolfSslBackend.cpp
+        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/dilithium.c
     )
     list(APPEND BACKEND_LIBS wolfssl)
 endif()

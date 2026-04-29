@@ -80,6 +80,7 @@ private:
 
     std::string curve_name_ = "prime256v1";
     std::string digest_algo_ = "SHA3-512";
+    std::string aead_algo_ = "AES-256-GCM";
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
     std::vector<unsigned char> salt_;

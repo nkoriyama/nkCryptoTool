@@ -84,8 +84,10 @@ private:
     std::vector<uint8_t> verify_key_der_;
 
     std::string kem_algo_ = "ML-KEM-1024";
-    std::string dsa_algo_ = "ML-DSA-87";
+    std::string dsa_algo_ = "ML-DSA-65";
+    std::string pqc_kem_algo_ = "ML-KEM-768";
     std::string digest_algo_ = "SHA3-512";
+    std::string aead_algo_ = "AES-256-GCM";
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
     std::vector<unsigned char> salt_;

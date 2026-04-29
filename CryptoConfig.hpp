@@ -71,6 +71,7 @@ struct CryptoConfig {
     bool passphrase_was_provided = false;
     bool use_tpm = false;
     std::string digest_algo = "SHA3-512";
+    std::string aead_algo = "AES-256-GCM";
     std::string pqc_kem_algo = "ML-KEM-1024";
     std::string pqc_dsa_algo = "ML-DSA-87";
     bool sync_mode = false;

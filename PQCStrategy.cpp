@@ -38,7 +38,7 @@ static bool read_u32_le(const std::vector<char>& buf, size_t& pos, uint32_t& val
     return true;
 }
 
-PQCStrategy::PQCStrategy() : kem_algo_("ML-KEM-768"), dsa_algo_("ML-DSA-65"), digest_algo_("SHA3-512") {}
+PQCStrategy::PQCStrategy() : kem_algo_("ML-KEM-768"), dsa_algo_("ML-DSA-65"), digest_algo_("SHA3-512"), aead_algo_("AES-256-GCM") {}
 PQCStrategy::~PQCStrategy() = default;
 
 std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
@@ -79,6 +79,7 @@ std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const st
 
 std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
     if (key_paths.count("kem-algo")) kem_algo_ = key_paths.at("kem-algo");
+    if (key_paths.count("aead-algo")) aead_algo_ = key_paths.at("aead-algo");
     
     std::string pubkey_path;
     if (key_paths.count("public-key")) pubkey_path = key_paths.at("public-key");
@@ -106,7 +107,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<s
     auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "pqc-encryption", "SHA3-256");
     encryption_key_.assign(key_raw.begin(), key_raw.end());
     
-    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
+    auto aead = backend->createAead(aead_algo_, encryption_key_, iv_, true);
     if (!aead) return std::unexpected(aead.error());
     aead_ctx_ = std::move(*aead);
     return {};
@@ -143,7 +144,7 @@ std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<s
     auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "pqc-encryption", "SHA3-256");
     encryption_key_.assign(key_raw.begin(), key_raw.end());
     
-    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
+    auto aead = backend->createAead(aead_algo_, encryption_key_, iv_, false);
     if (!aead) return std::unexpected(aead.error());
     aead_ctx_ = std::move(*aead);
     return {};
@@ -186,13 +187,13 @@ std::expected<void, CryptoError> PQCStrategy::finalizeDecryption(const std::vect
 }
 
 size_t PQCStrategy::getHeaderSize() const {
-    return 4 + 2 + 1 + 4 + kem_algo_.size() + 4 + dsa_algo_.size() + 4 + kem_ct_.size() + 4 + salt_.size() + 4 + iv_.size();
+    return 4 + 2 + 1 + 4 + kem_algo_.size() + 4 + dsa_algo_.size() + 4 + kem_ct_.size() + 4 + salt_.size() + 4 + iv_.size() + 4 + aead_algo_.size();
 }
 
 std::vector<char> PQCStrategy::serializeHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'T'});
-    write_u16_le(header, 1);
+    write_u16_le(header, 2);
     header.push_back((char)getStrategyType());
 
     auto add_string = [&](const std::string& s) {
@@ -208,12 +209,18 @@ std::vector<char> PQCStrategy::serializeHeader() const {
     add_vec(kem_ct_);
     add_vec(salt_);
     add_vec(iv_);
+    add_string(aead_algo_);
     return header;
 }
 
 std::expected<size_t, CryptoError> PQCStrategy::deserializeHeader(const std::vector<char>& data) {
     if (data.size() < 7 || std::memcmp(data.data(), "NKCT", 4) != 0) return std::unexpected(CryptoError::ParameterError);
-    size_t pos = 7;
+    
+    size_t pos = 4;
+    uint16_t version;
+    if (!read_u16_le(data, pos, version)) return std::unexpected(CryptoError::ParameterError);
+    pos = 7;
+
     auto read_string = [&](std::string& s) {
         uint32_t len;
         if (!read_u32_le(data, pos, len)) return false;
@@ -229,6 +236,13 @@ std::expected<size_t, CryptoError> PQCStrategy::deserializeHeader(const std::vec
         return true;
     };
     if (!read_string(kem_algo_) || !read_string(dsa_algo_) || !read_vec(kem_ct_) || !read_vec(salt_) || !read_vec(iv_)) return std::unexpected(CryptoError::ParameterError);
+    
+    if (version >= 2) {
+        if (!read_string(aead_algo_)) return std::unexpected(CryptoError::ParameterError);
+    } else {
+        aead_algo_ = "AES-256-GCM";
+    }
+
     return pos;
 }
 
