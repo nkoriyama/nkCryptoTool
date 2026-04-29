@@ -81,7 +81,8 @@ run_bench() {
 # Run all combinations
 backends=("C++ OpenSSL ./nkCryptoTool/build/nkCryptoTool" 
           "C++ wolfSSL ./nkCryptoTool/build_wolfssl/nkCryptoTool"
-          "Rust OpenSSL ./nkCryptoTool-rust/target/release/nk-crypto-tool")
+          "Rust OpenSSL ./nkCryptoTool-rust/target/release/nk-crypto-tool"
+          "Rust RustCrypto ./nkCryptoTool-rust/target_rustcrypto/release/nk-crypto-tool")
 
 aeads=("AES-256-GCM" "ChaCha20-Poly1305")
 modes=("ecc" "hybrid")
