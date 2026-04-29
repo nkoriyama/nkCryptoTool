@@ -11,6 +11,7 @@
 #include <string>
 #include <expected>
 #include <memory>
+#include <cstdint>
 #include "../CryptoError.hpp"
 #include "../SecureMemory.hpp"
 

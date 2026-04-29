@@ -69,7 +69,7 @@ std::expected<size_t, CryptoError> OpenSslAeadBackend::finalize(uint8_t* out) {
 }
 
 std::expected<void, CryptoError> OpenSslAeadBackend::getTag(uint8_t* tag, size_t tag_len) {
-    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_GET_TAG, (int)tag_len, tag) <= 0) {
+    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_AEAD_GET_TAG, (int)tag_len, tag) <= 0) {
         reportOpenSSLErrors("AEAD GetTag");
         return std::unexpected(CryptoError::OpenSSLError);
     }
@@ -77,7 +77,7 @@ std::expected<void, CryptoError> OpenSslAeadBackend::getTag(uint8_t* tag, size_t
 }
 
 std::expected<void, CryptoError> OpenSslAeadBackend::setTag(const uint8_t* tag, size_t tag_len) {
-    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag) <= 0) {
+    if (EVP_CIPHER_CTX_ctrl(ctx_.get(), EVP_CTRL_AEAD_SET_TAG, (int)tag_len, (void*)tag) <= 0) {
         reportOpenSSLErrors("AEAD SetTag");
         return std::unexpected(CryptoError::OpenSSLError);
     }
@@ -174,16 +174,25 @@ OpenSslBackend::OpenSslBackend() {}
 
 std::expected<std::unique_ptr<IAeadBackend>, CryptoError> OpenSslBackend::createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) {
     const EVP_CIPHER* cipher = EVP_get_cipherbyname(cipher_name.c_str());
+    if (!cipher) {
+        std::string normalized = cipher_name;
+        for (auto& c : normalized) c = (char)std::tolower(c);
+        cipher = EVP_get_cipherbyname(normalized.c_str());
+    }
+    if (!cipher) {
+        if (cipher_name == "ChaCha20-Poly1305") cipher = EVP_chacha20_poly1305();
+    }
+    
     if (!cipher) return std::unexpected(CryptoError::OpenSSLError);
     
     std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx(EVP_CIPHER_CTX_new());
     if (encrypt) {
         if (EVP_EncryptInit_ex(ctx.get(), cipher, nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-        if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+        if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN, (int)iv.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
         if (EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), iv.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     } else {
         if (EVP_DecryptInit_ex(ctx.get(), cipher, nullptr, nullptr, nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
-        if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+        if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN, (int)iv.size(), nullptr) <= 0) return std::unexpected(CryptoError::OpenSSLError);
         if (EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(), iv.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     }
     

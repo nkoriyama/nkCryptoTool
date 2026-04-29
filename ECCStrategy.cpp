@@ -13,7 +13,7 @@
 
 namespace nk {
 
-ECCStrategy::ECCStrategy() : curve_name_("prime256v1"), digest_algo_("SHA3-512") {}
+ECCStrategy::ECCStrategy() : curve_name_("prime256v1"), digest_algo_("SHA3-512"), aead_algo_("AES-256-GCM") {}
 ECCStrategy::~ECCStrategy() = default;
 
 std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
@@ -47,6 +47,7 @@ std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const st
 
 std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {
     if (key_paths.count("digest-algo")) digest_algo_ = key_paths.at("digest-algo");
+    if (key_paths.count("aead-algo")) aead_algo_ = key_paths.at("aead-algo");
     
     std::string pubkey_path;
     if (key_paths.count("public-key")) pubkey_path = key_paths.at("public-key");
@@ -81,7 +82,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
     
     encryption_key_.assign(key_raw.begin(), key_raw.end());
 
-    auto res = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
+    auto res = backend->createAead(aead_algo_, encryption_key_, iv_, true);
     if (!res) return std::unexpected(CryptoError::OpenSSLError);
     aead_ctx_ = std::move(*res);
 
@@ -116,7 +117,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     
     encryption_key_.assign(key_raw.begin(), key_raw.end());
 
-    auto res = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);
+    auto res = backend->createAead(aead_algo_, encryption_key_, iv_, false);
     if (!res) return std::unexpected(CryptoError::OpenSSLError);
     aead_ctx_ = std::move(*res);
 
@@ -165,13 +166,14 @@ size_t ECCStrategy::getHeaderSize() const {
     return 4 + 2 + 1 + 
         4 + curve_name_.size() + 
         4 + digest_algo_.size() + 
-        4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size();
+        4 + ephemeral_pubkey_.size() + 4 + salt_.size() + 4 + iv_.size() +
+        4 + aead_algo_.size();
 }
 
 std::vector<char> ECCStrategy::serializeHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'T'});
-    write_u16_le(header, 1);
+    write_u16_le(header, 2); // Version 2
     header.push_back((char)getStrategyType());
 
     auto add_string = [&](const std::string& s) {
@@ -187,6 +189,7 @@ std::vector<char> ECCStrategy::serializeHeader() const {
     add_vec(ephemeral_pubkey_);
     add_vec(salt_);
     add_vec(iv_);
+    add_string(aead_algo_);
     return header;
 }
 
@@ -194,7 +197,11 @@ std::expected<size_t, CryptoError> ECCStrategy::deserializeHeader(const std::vec
     if (data.size() < 7) return std::unexpected(CryptoError::ParameterError);
     if (std::memcmp(data.data(), "NKCT", 4) != 0) return std::unexpected(CryptoError::ParameterError);
     
-    size_t pos = 7;
+    size_t pos = 4;
+    uint16_t version;
+    if (!read_u16_le(data, pos, version)) return std::unexpected(CryptoError::ParameterError);
+    pos = 7; // Skip type byte (read separately if needed, but here it's already known to be ECC)
+
     auto read_string = [&](std::string& s) {
         uint32_t len;
         if (!read_u32_le(data, pos, len)) return false;
@@ -216,6 +223,13 @@ std::expected<size_t, CryptoError> ECCStrategy::deserializeHeader(const std::vec
         !read_vec(ephemeral_pubkey_) || !read_vec(salt_) || !read_vec(iv_)) {
         return std::unexpected(CryptoError::ParameterError);
     }
+
+    if (version >= 2) {
+        if (!read_string(aead_algo_)) return std::unexpected(CryptoError::ParameterError);
+    } else {
+        aead_algo_ = "AES-256-GCM";
+    }
+
     return pos;
 }
 

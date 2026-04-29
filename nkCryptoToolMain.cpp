@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
         ("signing-pubkey", "The signer's public key for verification", cxxopts::value<std::string>())
         ("signature", "Path to the signature file", cxxopts::value<std::string>())
         ("digest-algo", "Hashing algorithm", cxxopts::value<std::string>()->default_value("SHA3-512"))
+        ("aead-algo", "AEAD algorithm: 'AES-256-GCM' or 'ChaCha20-Poly1305'", cxxopts::value<std::string>()->default_value("AES-256-GCM"))
         ("kem-algo", "PQC KEM algorithm", cxxopts::value<std::string>()->default_value("ML-KEM-768"))
         ("dsa-algo", "PQC DSA algorithm", cxxopts::value<std::string>()->default_value("ML-DSA-65"))
         ("tpm", "Use TPM to protect private keys")
@@ -133,6 +134,10 @@ int main(int argc, char* argv[]) {
         }
 
         if (result.count("digest-algo")) config.digest_algo = result["digest-algo"].as<std::string>();
+        if (result.count("aead-algo")) {
+            config.aead_algo = result["aead-algo"].as<std::string>();
+            config.key_paths["aead-algo"] = config.aead_algo;
+        }
         
         bool tpm = result.count("tpm") > 0;
         if (tpm) config.key_paths["use-tpm"] = "true";

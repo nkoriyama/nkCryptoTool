@@ -264,19 +264,22 @@ std::expected<size_t, CryptoError> WolfSslAeadBackend::finalize(uint8_t* out) {
 }
 
 std::expected<void, CryptoError> WolfSslAeadBackend::getTag(uint8_t* tag, size_t tag_len) {
-    if (wolfSSL_EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_GCM_GET_TAG, (int)tag_len, tag) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (wolfSSL_EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_AEAD_GET_TAG, (int)tag_len, tag) <= 0) {
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return {};
 }
 
 std::expected<void, CryptoError> WolfSslAeadBackend::setTag(const uint8_t* tag, size_t tag_len) {
-    if (wolfSSL_EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_GCM_SET_TAG, (int)tag_len, (void*)tag) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (wolfSSL_EVP_CIPHER_CTX_ctrl(ctx_, EVP_CTRL_AEAD_SET_TAG, (int)tag_len, (void*)tag) <= 0) {
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
     return {};
 }
-
 // --- WolfSslHashBackend ---
 
 WolfSslHashBackend::WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EVP_MD* md) : ctx_(ctx), md_(md), is_sign_(false) {
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     wc_dilithium_init(&dilithium_key_);
 #endif
 }
@@ -284,7 +287,7 @@ WolfSslHashBackend::WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EV
 WolfSslHashBackend::~WolfSslHashBackend() {
     wolfSSL_EVP_MD_CTX_free(ctx_);
     if (pkey_) wolfSSL_EVP_PKEY_free(pkey_);
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     wc_dilithium_free(&dilithium_key_);
 #endif
 }
@@ -313,7 +316,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
     }
 
     std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PRV_KEY_SIZE) level = 3;
@@ -342,7 +345,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
 
 std::expected<std::vector<uint8_t>, CryptoError> WolfSslHashBackend::finalizeSign() {
     if (pqc_dsa_type_ != -1) {
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
         WC_RNG rng;
         wc_InitRng(&rng);
         word32 slen = wc_dilithium_sig_size(&dilithium_key_);
@@ -378,7 +381,7 @@ std::expected<void, CryptoError> WolfSslHashBackend::initVerify(const std::vecto
     pqc_dsa_type_ = -1;
 
     std::vector<uint8_t> raw_key = unwrapPqcDer(pub_key_der.data(), pub_key_der.size(), true);
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_PUB_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PUB_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_PUB_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PUB_KEY_SIZE) level = 3;
@@ -407,12 +410,12 @@ std::expected<void, CryptoError> WolfSslHashBackend::initVerify(const std::vecto
 
 std::expected<bool, CryptoError> WolfSslHashBackend::finalizeVerify(const std::vector<uint8_t>& signature) {
     if (pqc_dsa_type_ != -1) {
-    #if 0
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
         int res = 0;
         if (wc_dilithium_verify_ctx_msg(signature.data(), (word32)signature.size(), nullptr, 0, buffer_.data(), (word32)buffer_.size(), &res, &dilithium_key_) == 0) {
             return res == 1;
         }
-    #endif
+#endif
         return std::unexpected(CryptoError::OpenSSLError);
     }
  else if (pkey_) {
@@ -432,15 +435,21 @@ std::expected<bool, CryptoError> WolfSslHashBackend::finalizeVerify(const std::v
 // --- WolfSslBackend ---
 
 std::expected<std::unique_ptr<IAeadBackend>, CryptoError> WolfSslBackend::createAead(const std::string& cipher_name, const std::vector<uint8_t>& key, const std::vector<uint8_t>& iv, bool encrypt) {
-    const WOLFSSL_EVP_CIPHER* cipher = (cipher_name == "AES-256-GCM") ? wolfSSL_EVP_aes_256_gcm() : wolfSSL_EVP_aes_128_gcm();
+    std::string normalized = cipher_name;
+    for (auto& c : normalized) c = (char)std::tolower(c);
+
+    const WOLFSSL_EVP_CIPHER* cipher = wolfSSL_EVP_aes_256_gcm();
+    if (normalized == "chacha20-poly1305") cipher = wolfSSL_EVP_chacha20_poly1305();
+    else if (normalized == "aes-128-gcm") cipher = wolfSSL_EVP_aes_128_gcm();
+
     WOLFSSL_EVP_CIPHER_CTX* ctx = wolfSSL_EVP_CIPHER_CTX_new();
     if (encrypt) {
         wolfSSL_EVP_EncryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr);
-        wolfSSL_EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr);
+        wolfSSL_EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, (int)iv.size(), nullptr);
         if (wolfSSL_EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), iv.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     } else {
         wolfSSL_EVP_DecryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr);
-        wolfSSL_EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv.size(), nullptr);
+        wolfSSL_EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, (int)iv.size(), nullptr);
         if (wolfSSL_EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), iv.data()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     }
     return std::make_unique<WolfSslAeadBackend>(ctx);
