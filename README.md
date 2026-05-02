@@ -29,6 +29,33 @@
 * **ヘッダーバージョン 2**: 最新バージョンでは、使用した AEAD アルゴリズム情報をヘッダーに含めることで動的なアルゴリズムの切り替えをサポートしています。
 * **後方互換性 (Backward Compatibility)**: 以前のバージョン (v1) で暗号化された AES-256-GCM 固定のファイルも、最新のツールで自動的に識別し、そのまま復号可能です。
 
+#### **バイナリレイアウト (.nkct / 暗号化ファイル)**
+
+```mermaid
+packet-beta
+0-31: "Magic (NKCT)"
+32-47: "Version (2)"
+48-55: "Strategy Type (1:ECC / 2:PQC / 3:Hybrid)"
+56-119: "Strategy Data (Variable Length ...)"
+```
+
+**Strategy Data の構成 (Version 2):**
+*   **ECC**: `CurveName`, `DigestAlgo`, `EphemeralPubKey`, `Salt`, `IV`, `AEADAlgo`
+*   **PQC**: `KEMAlgo`, `DSAAlgo`, `KEM-CT`, `Salt`, `IV`, `AEADAlgo`
+*   **Hybrid**: `ECCHeaderLength`, `ECCHeader`, `PQCHeaderLength`, `PQCHeader` (Hybrid自体の外枠バージョンは1)
+
+#### **バイナリレイアウト (.nkcs / 署名ファイル)**
+
+```mermaid
+packet-beta
+0-31: "Magic (NKCS)"
+32-47: "Version (1)"
+48-55: "Strategy Type (1:ECC / 2:PQC / 3:Hybrid)"
+56-119: "Signature Data (Variable Length ...)"
+```
+
+※ 文字列やバイナリ配列は、`[4バイトの長さ(uint32_t)][実データ]` の形式で連続して格納されます。数値はすべてリトルエンディアンです。
+
 以下の詳細については [SECURITY.md](./SECURITY.md) を参照してください。
 - 鍵のライフサイクル設計
 - メモリ保護モデル
