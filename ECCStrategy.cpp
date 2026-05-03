@@ -78,7 +78,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareEncryption(const std::map<s
 
     std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
     std::string info = "ecc-encryption";
-    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA256");
+    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA3-256");
     
     encryption_key_.assign(key_raw.begin(), key_raw.end());
 
@@ -113,7 +113,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareDecryption(const std::map<s
     auto ikm = shared_secret_;
     std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
     std::string info = "ecc-encryption";
-    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA256");
+    auto key_raw = backend->hkdf(ikm, 32, salt_v, info, "SHA3-256");
     
     encryption_key_.assign(key_raw.begin(), key_raw.end());
 

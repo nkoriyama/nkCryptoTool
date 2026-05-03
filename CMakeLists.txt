@@ -85,24 +85,10 @@ FetchContent_MakeAvailable(nlohmann_json)
 find_package(Threads REQUIRED)
 
 # --- バックエンド固有の設定 ---
-set(BACKEND_SOURCES)
-set(BACKEND_LIBS)
-
-if(USE_BACKEND STREQUAL "OpenSSL")
-    message(STATUS "Using OpenSSL backend")
-    add_definitions(-DUSE_BACKEND_OPENSSL)
-    find_package(OpenSSL 3.0 REQUIRED)
-    list(APPEND BACKEND_SOURCES backend/OpenSslBackend.cpp)
-    list(APPEND BACKEND_LIBS OpenSSL::SSL OpenSSL::Crypto)
-elseif(USE_BACKEND STREQUAL "WolfSSL")
-    message(STATUS "Using WolfSSL backend")
-    add_definitions(-DUSE_BACKEND_WOLFSSL)
-    list(APPEND BACKEND_SOURCES 
-        backend/WolfSslBackend.cpp
-        ${wolfssl_SOURCE_DIR}/wolfcrypt/src/dilithium.c
-    )
-    list(APPEND BACKEND_LIBS wolfssl)
-endif()
+set(BACKEND_SOURCES backend/OpenSslBackend.cpp)
+set(BACKEND_LIBS OpenSSL::SSL OpenSSL::Crypto)
+set(BACKEND_DEFS USE_BACKEND_OPENSSL)
+find_package(OpenSSL 3.0 REQUIRED)
 
 # ソースファイル
 set(NKCRYPTO_SHARED_SOURCES
@@ -117,7 +103,9 @@ set(NKCRYPTO_SHARED_SOURCES
     ${BACKEND_SOURCES}
 )
 
+message(STATUS "NKCRYPTO_SHARED_SOURCES: ${NKCRYPTO_SHARED_SOURCES}")
 add_library(nkcrypto_shared STATIC ${NKCRYPTO_SHARED_SOURCES})
+target_compile_definitions(nkcrypto_shared PUBLIC ${BACKEND_DEFS})
 set_target_properties(nkcrypto_shared PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(nkcrypto_shared PUBLIC
@@ -134,18 +122,45 @@ target_link_libraries(nkcrypto_shared PUBLIC
     Threads::Threads
     nlohmann_json::nlohmann_json
 )
-if(UNIX AND NOT APPLE)
-  target_link_libraries(nkcrypto_shared PUBLIC uring)
-endif()
+# if(UNIX AND NOT APPLE)
+#   target_link_libraries(nkcrypto_shared PUBLIC uring)
+# endif()
 
-add_executable(nkCryptoTool nkCryptoToolMain.cpp)
-target_include_directories(nkCryptoTool PRIVATE ${cxxopts_SOURCE_DIR}/include)
-target_link_libraries(nkCryptoTool PRIVATE nkcrypto_shared benchmark benchmark_main)
+add_executable(nkCryptoTool 
+    nkCryptoToolMain.cpp
+    ${NKCRYPTO_SHARED_SOURCES}
+)
+target_include_directories(nkCryptoTool PRIVATE 
+    ${PROJECT_SOURCE_DIR}
+    ${asio_SOURCE_DIR}/asio/include
+    ${cxxopts_SOURCE_DIR}/include
+)
+target_compile_definitions(nkCryptoTool PRIVATE ${BACKEND_DEFS})
+target_link_libraries(nkCryptoTool PRIVATE 
+    benchmark 
+    benchmark_main
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+    ${BACKEND_LIBS}
+)
 
 # --- ユニットテスト ---
-add_executable(unit_tests tests/unit/unit_tests.cpp)
-target_include_directories(unit_tests PRIVATE ${PROJECT_SOURCE_DIR})
-target_link_libraries(unit_tests PRIVATE nkcrypto_shared GTest::gtest_main GTest::gmock Threads::Threads)
+add_executable(unit_tests 
+    tests/unit/unit_tests.cpp
+    ${NKCRYPTO_SHARED_SOURCES}
+)
+target_include_directories(unit_tests PRIVATE 
+    ${PROJECT_SOURCE_DIR}
+    ${asio_SOURCE_DIR}/asio/include
+)
+target_compile_definitions(unit_tests PRIVATE ${BACKEND_DEFS})
+target_link_libraries(unit_tests PRIVATE 
+    GTest::gtest_main 
+    GTest::gmock 
+    Threads::Threads
+    nlohmann_json::nlohmann_json
+    ${BACKEND_LIBS}
+)
 include(GoogleTest)
 gtest_discover_tests(unit_tests)
 

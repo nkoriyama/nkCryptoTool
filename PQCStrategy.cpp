@@ -56,7 +56,7 @@ std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const st
     }
 
     auto backend = ::get_nk_backend();
-    auto pair = backend->generatePqcSignKeyPair(kem_algo_);
+    auto pair = backend->generatePqcKemKeyPair(kem_algo_);
     if (!pair) return std::unexpected(pair.error());
 
     if (key_paths.count("use-tpm") && key_paths.at("use-tpm") == "true") {

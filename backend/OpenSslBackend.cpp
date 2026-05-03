@@ -242,9 +242,9 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::eccDh(const std
     if (EVP_PKEY_derive_set_peer(ecdh_ctx.get(), spub.get()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     
     size_t slen; 
-    EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen);
+    if (EVP_PKEY_derive(ecdh_ctx.get(), nullptr, &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     std::vector<uint8_t> secret(slen);
-    EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen);
+    if (EVP_PKEY_derive(ecdh_ctx.get(), secret.data(), &slen) <= 0) return std::unexpected(CryptoError::OpenSSLError);
     return secret;
 }
 
@@ -263,6 +263,10 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::extractPublicKe
     std::vector<uint8_t> pub_v(pub, pub + pub_len);
     OPENSSL_free(pub);
     return pub_v;
+}
+
+std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generatePqcKemKeyPair(const std::string& algo_name) {
+    return generatePqcSignKeyPair(algo_name);
 }
 
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generatePqcSignKeyPair(const std::string& algo_name) {
