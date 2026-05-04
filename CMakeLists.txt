@@ -85,10 +85,16 @@ FetchContent_MakeAvailable(nlohmann_json)
 find_package(Threads REQUIRED)
 
 # --- バックエンド固有の設定 ---
-set(BACKEND_SOURCES backend/OpenSslBackend.cpp)
-set(BACKEND_LIBS OpenSSL::SSL OpenSSL::Crypto)
-set(BACKEND_DEFS USE_BACKEND_OPENSSL)
-find_package(OpenSSL 3.0 REQUIRED)
+if(USE_BACKEND STREQUAL "WolfSSL")
+    set(BACKEND_SOURCES backend/WolfSslBackend.cpp)
+    set(BACKEND_LIBS wolfssl)
+    set(BACKEND_DEFS USE_BACKEND_WOLFSSL)
+else()
+    set(BACKEND_SOURCES backend/OpenSslBackend.cpp)
+    set(BACKEND_LIBS OpenSSL::SSL OpenSSL::Crypto)
+    set(BACKEND_DEFS USE_BACKEND_OPENSSL)
+    find_package(OpenSSL 3.0 REQUIRED)
+endif()
 
 # ソースファイル
 set(NKCRYPTO_SHARED_SOURCES

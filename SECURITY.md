@@ -174,6 +174,28 @@ For maximum security:
 
 ---
 
+## Key Management Best Practices
+
+### Long-term Signing Key Rotation
+Since nkCryptoTool does not utilize a central Certificate Authority (CA) or Revocation List (CRL), the security of the system relies entirely on the secrecy of long-term signing keys.
+
+* **Rotation:** It is strongly recommended to rotate signing key pairs periodically (e.g., annually).
+* **Compromise:** If a private signing key is suspected to be compromised, the corresponding public key must be immediately revoked out-of-band by notifying all peers, and a new key pair must be generated.
+* **Storage:** Use TPM-backed protection (`--use-tpm`) whenever possible to prevent the private key from being extracted even if the file system is compromised.
+
+### Availability and Anti-Replay
+To ensure server availability and protect against session-level attacks, the following mechanisms are in place:
+
+*   **Idle Timeouts:** All network connections are subject to a strict idle timeout (currently 300 seconds) across all stages of the data transfer phase (headers, data, and tags), both for reading and writing. This prevents inactive or malicious connections from indefinitely occupying server tasks.
+*   **Cumulative Session Timeout:** To prevent "Slow Sender" attacks where a client sends data just fast enough to avoid idle timeouts, an aggregate timeout (currently 2 hours) is applied to the entire data transfer session.
+*   **Resource Capping:** Simultaneous connections are limited via a global semaphore (default: 100). The server holds these slots until the entire operation, including potentially slow disk I/O or terminal output, is completed. This ensures predictable resource usage and prevents disk-exhaustion from unmanaged pending tasks.
+*   **Anti-Replay (Chat Mode):** A memory-limited history of used nonces is maintained per session. This protects against immediate packet replay attacks while capping memory usage to 10,000 entries.
+*   **CPU Load Mitigation:** While session termination on nonce history limit exists, the cumulative cost of handshakes (ML-KEM keygen) and per-message AEAD processing, combined with strict timeouts, provides a robust defense against sustained CPU exhaustion.
+*   **Roadmap:** Future versions will move to a strictly monotonic 64-bit counter for nonces to provide infinite replay protection with O(1) memory overhead and further reduced processing costs.
+
+
+---
+
 ## Reporting Security Issues
 
 If you discover a security vulnerability, please report it responsibly:
