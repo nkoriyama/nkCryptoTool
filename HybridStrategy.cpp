@@ -80,27 +80,26 @@ std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::
     return pos;
 }
 
-std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+std::expected<void, CryptoError> HybridStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
     std::map<std::string, std::string> ecc_paths = key_paths;
     std::map<std::string, std::string> pqc_paths = key_paths;
-
     if (key_paths.count("public-ecdh-key")) ecc_paths["public-key"] = key_paths.at("public-ecdh-key");
     if (key_paths.count("private-ecdh-key")) ecc_paths["private-key"] = key_paths.at("private-ecdh-key");
     if (key_paths.count("public-mlkem-key")) pqc_paths["public-key"] = key_paths.at("public-mlkem-key");
     if (key_paths.count("private-mlkem-key")) pqc_paths["private-key"] = key_paths.at("private-mlkem-key");
 
-    auto ecc_res = ecc_strategy_->generateEncryptionKeyPair(ecc_paths, passphrase);
+    auto ecc_res = ecc_strategy_->generateEncryptionKeyPair(ecc_paths, passphrase, force);
     if (!ecc_res) return ecc_res;
-    return pqc_strategy_->generateEncryptionKeyPair(pqc_paths, passphrase);
+    return pqc_strategy_->generateEncryptionKeyPair(pqc_paths, passphrase, force);
 }
 
-std::expected<void, CryptoError> HybridStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+std::expected<void, CryptoError> HybridStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
     // ハイブリッド署名鍵生成 (現在は PQC 鍵のみ生成)
-    return pqc_strategy_->generateSigningKeyPair(key_paths, passphrase);
+    return pqc_strategy_->generateSigningKeyPair(key_paths, passphrase, force);
 }
 
-std::expected<void, CryptoError> HybridStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) {
-    return pqc_strategy_->regeneratePublicKey(priv_path, pub_path, passphrase);
+std::expected<void, CryptoError> HybridStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase, bool force) {
+    return pqc_strategy_->regeneratePublicKey(priv_path, pub_path, passphrase, force);
 }
 
 std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::map<std::string, std::string>& key_paths) {

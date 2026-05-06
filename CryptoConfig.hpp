@@ -72,11 +72,12 @@ struct CryptoConfig {
     bool use_tpm = false;
     std::string digest_algo = "SHA3-512";
     std::string aead_algo = "AES-256-GCM";
-    std::string pqc_kem_algo = "ML-KEM-1024";
-    std::string pqc_dsa_algo = "ML-DSA-87";
+    std::string pqc_kem_algo = "ML-KEM-768";
+    std::string pqc_dsa_algo = "ML-DSA-65";
     bool sync_mode = false;
     bool use_parallel = false;
     bool is_recursive = false;
+    bool force = false;
 
     // For regenerate-pubkey
     std::string regenerate_privkey_path;

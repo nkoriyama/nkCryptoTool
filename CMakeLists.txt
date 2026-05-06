@@ -42,21 +42,28 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     add_compile_definitions(WOLFSSL_AESGCM_STREAM)
     add_compile_definitions(HAVE_AESGCM)
     add_compile_definitions(HAVE_HKDF)
-    add_compile_definitions(HAVE_ECC)
+    add_compile_definitions(WOLFSSL_SHA3)
+    add_compile_definitions(WOLFSSL_AESNI)
+    add_compile_definitions(WOLFSSL_X86_64_BUILD)
     add_compile_definitions(WOLFSSL_HAVE_KYBER)
     add_compile_definitions(WOLFSSL_WC_KYBER)
     add_compile_definitions(HAVE_DILITHIUM)
     add_compile_definitions(WOLFSSL_WC_DILITHIUM)
-    add_compile_definitions(WOLFSSL_SHA3)
-    add_compile_definitions(WOLFSSL_AESNI)
-    add_compile_definitions(WOLFSSL_X86_64_BUILD)
+    add_compile_definitions(HAVE_ECC)
+
+    # wolfSSL settings
+    set(WOLFSSL_KYBER ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_DILITHIUM ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_SHA3 ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_AESNI ON CACHE BOOL "" FORCE)
+    set(WOLFSSL_AESGCM ON CACHE BOOL "" FORCE)
 
     set(CMAKE_C_FLAGS "-fPIC -maes -mpclmul -mavx2 -Wno-error -Wno-stringop-overflow -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
     set(CMAKE_CXX_FLAGS "-fPIC -maes -mpclmul -mavx2 -fcoroutines -Wno-error -DWOLFSSL_AESGCM_STREAM -DHAVE_AESGCM -DHAVE_HKDF -DHAVE_ECC -DWOLFSSL_HAVE_KYBER -DWOLFSSL_WC_KYBER -DHAVE_DILITHIUM -DWOLFSSL_WC_DILITHIUM" CACHE STRING "" FORCE)
 
     FetchContent_Declare(wolfssl
         GIT_REPOSITORY https://github.com/wolfSSL/wolfssl.git
-        GIT_TAG v5.7.6-stable
+        GIT_TAG v5.9.1-stable
     )
     FetchContent_MakeAvailable(wolfssl)
 endif()
@@ -91,9 +98,9 @@ if(USE_BACKEND STREQUAL "WolfSSL")
     set(BACKEND_DEFS USE_BACKEND_WOLFSSL)
 else()
     set(BACKEND_SOURCES backend/OpenSslBackend.cpp)
-    set(BACKEND_LIBS OpenSSL::SSL OpenSSL::Crypto)
-    set(BACKEND_DEFS USE_BACKEND_OPENSSL)
     find_package(OpenSSL 3.0 REQUIRED)
+    set(BACKEND_LIBS ${OPENSSL_LIBRARIES})
+    set(BACKEND_DEFS USE_BACKEND_OPENSSL)
 endif()
 
 # ソースファイル

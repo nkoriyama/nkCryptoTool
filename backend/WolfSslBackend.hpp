@@ -10,6 +10,9 @@
 #include "IBackend.hpp"
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/evp.h>
+#ifdef WOLFSSL_HAVE_MLKEM
+#include <wolfssl/wolfcrypt/wc_mlkem.h>
+#endif
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
 #include <wolfssl/wolfcrypt/dilithium.h>
 #endif
@@ -47,7 +50,7 @@ private:
     std::vector<uint8_t> buffer_;
     int pqc_dsa_type_ = -1;
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
-    dilithium_key dilithium_key_;
+    MlDsaKey mldsa_key_;
 #endif
 };
 
@@ -58,6 +61,7 @@ public:
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generateEccKeyPair(const std::string& curve_name) override;
     std::expected<std::vector<uint8_t>, CryptoError> eccDh(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& pub_der, const SecureString& passphrase) override;
     std::expected<std::vector<uint8_t>, CryptoError> extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) override;
+    std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generatePqcKemKeyPair(const std::string& algo_name) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> generatePqcSignKeyPair(const std::string& algo_name) override;
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> pqcEncap(const std::vector<uint8_t>& pub_key_der) override;
     std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) override;

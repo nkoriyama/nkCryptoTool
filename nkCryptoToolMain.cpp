@@ -39,6 +39,7 @@ int main(int argc, char* argv[]) {
         ("dsa-algo", "PQC DSA algorithm", cxxopts::value<std::string>()->default_value("ML-DSA-65"))
         ("tpm", "Use TPM to protect private keys")
         ("r,recursive", "Process directories recursively")
+        ("force", "Overwrite existing files")
         ("input-dir", "Directory for recursive input", cxxopts::value<std::string>())
         ("output-dir", "Directory for recursive output", cxxopts::value<std::string>())
         ("input-files", "Input files", cxxopts::value<std::vector<std::string>>());
@@ -48,8 +49,15 @@ int main(int argc, char* argv[]) {
     try {
         auto result = options.parse(argc, argv);
 
+        if (result.count("help")) {
+            std::cout << options.help() << std::endl;
+            return 0;
+        }
+
         CryptoConfig config;
         config.mode = get_mode_from_string(result["mode"].as<std::string>());
+        config.force = result.count("force") > 0;
+        config.is_recursive = result.count("recursive") > 0;
         
         if (result.count("encrypt")) config.operation = Operation::Encrypt;
         else if (result.count("decrypt")) config.operation = Operation::Decrypt;

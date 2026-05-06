@@ -207,16 +207,16 @@ asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> 
     co_return strategy_->getMetadata(input_filepath.string()); 
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return strategy_->generateEncryptionKeyPair(key_paths, passphrase);
+std::expected<void, CryptoError> nkCryptoToolBase::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
+    return strategy_->generateEncryptionKeyPair(key_paths, passphrase, force);
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return strategy_->generateSigningKeyPair(key_paths, passphrase);
+std::expected<void, CryptoError> nkCryptoToolBase::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
+    return strategy_->generateSigningKeyPair(key_paths, passphrase, force);
 }
 
-std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass) {
-    return strategy_->regeneratePublicKey(priv, pub, pass);
+std::expected<void, CryptoError> nkCryptoToolBase::regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass, bool force) {
+    return strategy_->regeneratePublicKey(priv, pub, pass, force);
 }
 
 std::expected<void, CryptoError> nkCryptoToolBase::wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass) {

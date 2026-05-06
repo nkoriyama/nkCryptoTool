@@ -36,9 +36,9 @@ public:
     virtual void setKeyProvider(std::shared_ptr<nk::IKeyProvider> provider) = 0;
 
     // --- 鍵生成 ---
-    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
-    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) = 0;
-    virtual std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) = 0;
+    virtual std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) = 0;
+    virtual std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) = 0;
+    virtual std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase, bool force) = 0;
 
     // --- 暗号化・復号のパイプライン処理用 ---
     virtual std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) = 0;

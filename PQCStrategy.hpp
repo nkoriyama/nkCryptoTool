@@ -35,9 +35,9 @@ public:
     }
 
     // 鍵生成 ---
-    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
-    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) override;
-    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase) override;
+    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) override;
+    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) override;
+    std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase, bool force) override;
 
     // パイプライン・トランスフォーマー
     std::expected<void, CryptoError> prepareEncryption(const std::map<std::string, std::string>& key_paths) override;
@@ -83,7 +83,7 @@ private:
     std::vector<uint8_t> sign_key_der_;
     std::vector<uint8_t> verify_key_der_;
 
-    std::string kem_algo_ = "ML-KEM-1024";
+    std::string kem_algo_ = "ML-KEM-768";
     std::string dsa_algo_ = "ML-DSA-65";
     std::string pqc_kem_algo_ = "ML-KEM-768";
     std::string digest_algo_ = "SHA3-512";

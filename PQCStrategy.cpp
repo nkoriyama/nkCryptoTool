@@ -41,7 +41,7 @@ static bool read_u32_le(const std::vector<char>& buf, size_t& pos, uint32_t& val
 PQCStrategy::PQCStrategy() : kem_algo_("ML-KEM-768"), dsa_algo_("ML-DSA-65"), digest_algo_("SHA3-512"), aead_algo_("AES-256-GCM") {}
 PQCStrategy::~PQCStrategy() = default;
 
-std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
     if (key_paths.count("kem-algo")) kem_algo_ = key_paths.at("kem-algo");
     
     std::string pub, priv;
@@ -55,24 +55,26 @@ std::expected<void, CryptoError> PQCStrategy::generateEncryptionKeyPair(const st
         return std::unexpected(CryptoError::ParameterError);
     }
 
-    auto backend = ::get_nk_backend();
-    auto pair = backend->generatePqcKemKeyPair(kem_algo_);
+    auto pair = ::get_nk_backend()->generatePqcKemKeyPair(kem_algo_);
     if (!pair) return std::unexpected(pair.error());
 
     if (key_paths.count("use-tpm") && key_paths.at("use-tpm") == "true") {
         auto wrapped = key_provider_.wrap(pair->first, passphrase);
         if (!wrapped) return std::unexpected(wrapped.error());
-        std::ofstream ofs(priv, std::ios::binary);
-        ofs.write(wrapped->data(), (std::streamsize)wrapped->size());
+        std::vector<uint8_t> wrapped_v(wrapped->begin(), wrapped->end());
+        auto res = nkCryptoToolUtils::secureWrite(priv, wrapped_v, force);
+        if (!res) return std::unexpected(res.error());
     } else {
         std::string pem = nkCryptoToolUtils::wrapToPem(pair->first, "PRIVATE KEY");
-        std::ofstream ofs(priv, std::ios::binary);
-        ofs.write(pem.data(), (std::streamsize)pem.size());
+        std::vector<uint8_t> pem_v(pem.begin(), pem.end());
+        auto res = nkCryptoToolUtils::secureWrite(priv, pem_v, force);
+        if (!res) return std::unexpected(res.error());
     }
 
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(pair->second, "PUBLIC KEY");
-    std::ofstream ofs_pub(pub, std::ios::binary);
-    ofs_pub.write(pub_pem.data(), (std::streamsize)pub_pem.size());
+    std::vector<uint8_t> pub_pem_v(pub_pem.begin(), pub_pem.end());
+    auto res_pub = nkCryptoToolUtils::secureWrite(pub, pub_pem_v, force);
+    if (!res_pub) return std::unexpected(res_pub.error());
 
     return {};
 }
@@ -248,7 +250,7 @@ std::expected<size_t, CryptoError> PQCStrategy::deserializeHeader(const std::vec
 
 size_t PQCStrategy::getTagSize() const { return 16; }
 
-std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
     if (key_paths.count("dsa-algo")) dsa_algo_ = key_paths.at("dsa-algo");
     std::string pub, priv;
     if (key_paths.count("signing-public-key") && key_paths.count("signing-private-key")) {
@@ -263,15 +265,19 @@ std::expected<void, CryptoError> PQCStrategy::generateSigningKeyPair(const std::
     auto pair = ::get_nk_backend()->generatePqcSignKeyPair(dsa_algo_);
     if (!pair) return std::unexpected(pair.error());
     std::string pem = nkCryptoToolUtils::wrapToPem(pair->first, "PRIVATE KEY");
-    std::ofstream ofs(priv, std::ios::binary);
-    ofs.write(pem.data(), (std::streamsize)pem.size());
+    std::vector<uint8_t> pem_v(pem.begin(), pem.end());
+    auto res = nkCryptoToolUtils::secureWrite(priv, pem_v, force);
+    if (!res) return std::unexpected(res.error());
+
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(pair->second, "PUBLIC KEY");
-    std::ofstream ofs_pub(pub, std::ios::binary);
-    ofs_pub.write(pub_pem.data(), (std::streamsize)pub_pem.size());
+    std::vector<uint8_t> pub_pem_v(pub_pem.begin(), pub_pem.end());
+    auto res_pub = nkCryptoToolUtils::secureWrite(pub, pub_pem_v, force);
+    if (!res_pub) return std::unexpected(res_pub.error());
+    
     return {};
 }
 
-std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::filesystem::path& priv, const std::filesystem::path& pub, SecureString& passphrase) {
+std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::filesystem::path& priv, const std::filesystem::path& pub, SecureString& passphrase, bool force) {
     std::ifstream ifs(priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -283,8 +289,9 @@ std::expected<void, CryptoError> PQCStrategy::regeneratePublicKey(const std::fil
     auto pub_der = ::get_nk_backend()->extractPublicKey(*der, passphrase);
     if (!pub_der) return std::unexpected(pub_der.error());
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
-    std::ofstream ofs(pub, std::ios::binary);
-    ofs.write(pub_pem.data(), (std::streamsize)pub_pem.size());
+    std::vector<uint8_t> pub_pem_v(pub_pem.begin(), pub_pem.end());
+    auto res = nkCryptoToolUtils::secureWrite(pub, pub_pem_v, force);
+    if (!res) return std::unexpected(res.error());
     return {};
 }
 

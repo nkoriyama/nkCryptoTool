@@ -139,7 +139,7 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::GenerateEncKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    auto res = current_handler_->generateEncryptionKeyPair(config_.key_paths, config_.passphrase);
+                    auto res = current_handler_->generateEncryptionKeyPair(config_.key_paths, config_.passphrase, config_.force);
                     if (!res) throw std::system_error(std::make_error_code(std::errc::invalid_argument), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
@@ -154,7 +154,7 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::GenerateSignKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    auto res = current_handler_->generateSigningKeyPair(config_.key_paths, config_.passphrase);
+                    auto res = current_handler_->generateSigningKeyPair(config_.key_paths, config_.passphrase, config_.force);
                     if (!res) throw std::system_error(std::make_error_code(std::errc::invalid_argument), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {
@@ -169,7 +169,7 @@ void CryptoProcessor::run_internal() {
                 break;
             case Operation::RegeneratePubKey:
                 asio::co_spawn(io_context_, [this]() -> asio::awaitable<void> {
-                    auto res = current_handler_->regeneratePublicKey(config_.regenerate_privkey_path, config_.regenerate_pubkey_path, config_.passphrase);
+                    auto res = current_handler_->regeneratePublicKey(config_.regenerate_privkey_path, config_.regenerate_pubkey_path, config_.passphrase, config_.force);
                     if (!res) throw std::system_error(make_error_code(std::errc::invalid_argument), toString(res.error()));
                     co_return;
                 }, [completion_handler](std::exception_ptr p) mutable {

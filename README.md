@@ -1,12 +1,28 @@
-# **nkCryptoTool**
+# **nkCryptoTool (C++ Reference Implementation)**
 
 **nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽にセキュアに実行できるツールです。**
 
-> **🚧 現在開発中（Alpha段階）**  
-> CLIのみ対応です。本格的な利用はまだおすすめしていません。  
-> C++版とRust版で完全な相互互換性があります。
-
-**nkCryptoToolは、次世代暗号技術を含む高度な暗号処理をコマンドラインで手軽にセキュアに実行できるツールです。**
+> ## **📌 本実装の位置付け**
+>
+> **本 C++ 版は、nkCryptoTool プロジェクトのオリジナル実装かつバイナリ互換性のリファレンス実装**です。CLI のみ対応。C++ 版と [Rust 版](../nkCryptoTool-rust/) で完全な相互互換性があります。
+>
+> ### 開発・保守ポリシー
+>
+> - **新機能の追加開発は [Rust 版](../nkCryptoTool-rust/) で行います**。例: チャットモード、`--peer-allowlist`、PeerId ベース DoS 防御、Lazy Loading 秘密鍵等は Rust 版のみで提供。
+> - **本 C++ 版は基本的にソースに積極的な変更を加えません**が、廃止予定もありません。
+>   - 致命的なセキュリティ脆弱性 (CVE 級) は両方に適用します
+>   - OpenSSL / wolfSSL の API 破壊的変更には追従します
+>   - その他のバグ修正・機能追加は Rust 版優先となります
+> - **本 C++ 版を選ぶ理由**:
+>   - **wolfSSL バックエンド**を使いたい場合 (Rust 版に未実装、FIPS 認証用途等)
+>   - 既存の **C/C++ アプリケーションへの統合** (`nkcrypto_ffi.cpp` 経由)
+>   - Rust toolchain がサポートしない**特殊 OS / CPU ターゲット**
+>   - 最小バイナリサイズが必要な組込み用途
+> - **新規プロジェクトや一般的な利用には [Rust 版](../nkCryptoTool-rust/) を推奨します**(性能同等以上、メモリ安全、運用機能が豊富)。
+>
+> ### バイナリ互換性
+>
+> 本 C++ 版で生成された鍵・暗号化ファイル・署名は、**Rust 版でそのまま復号・検証できます**(逆方向も同様)。これは品質保証の一環として継続的に確認されます。
 
 **初めてお使いの方や、暗号技術に詳しくない方は、まずこちらの [GETTING_STARTED.md](GETTING_STARTED.md) をご覧ください。**
 
@@ -77,19 +93,14 @@ packet-beta
 
 | バックエンド (言語) | モード | 暗号化速度 | 復号速度 |
 | :--- | :--- | :--- | :--- |
-| **OpenSSL (Rust)** | **Hybrid (PQC+ECC)** | **~3.7 GiB/s** | **~3.8 GiB/s** |
-| **OpenSSL (Rust)** | PQC (ML-KEM-1024) | ~3.7 GiB/s | ~3.8 GiB/s |
-| **OpenSSL (Rust)** | ECC (P-256) | ~3.5 GiB/s | ~3.8 GiB/s |
-| OpenSSL (C++) | Hybrid (PQC+ECC) | ~2.7 GiB/s | ~2.8 GiB/s |
-| OpenSSL (C++) | PQC (ML-KEM-1024) | ~3.0 GiB/s | ~3.1 GiB/s |
-| OpenSSL (C++) | ECC (P-256) | ~2.7 GiB/s | ~2.8 GiB/s |
-| wolfSSL (C++) | Hybrid (PQC+ECC) | ~2.1 GiB/s | ~2.1 GiB/s |
-| wolfSSL (C++) | PQC (ML-KEM-1024) | ~1.9 GiB/s | ~1.9 GiB/s |
-| wolfSSL (C++) | ECC (P-256) | ~1.9 GiB/s | ~1.9 GiB/s |
-| **RustCrypto (Rust)** | **Hybrid (PQC+ECC)** | **~1.6 GiB/s** | **~1.7 GiB/s** |
-| **RustCrypto (Rust)** | PQC (ML-KEM-1024) | ~1.5 GiB/s | ~1.7 GiB/s |
-| **RustCrypto (Rust)** | ECC (P-256) | ~1.7 GiB/s | ~1.7 GiB/s |
-
+| **OpenSSL (C++)** | ECC (P-256) | ~3.4 GiB/s | ~3.9 GiB/s |
+| **OpenSSL (C++)** | PQC (ML-KEM-768) | ~3.4 GiB/s | ~3.4 GiB/s |
+| **OpenSSL (C++)** | Hybrid (ML-KEM-768 + P-256) | ~3.4 GiB/s | ~3.4 GiB/s |
+| **wolfSSL (C++)** | ECC (P-256) | ~2.3 GiB/s | ~2.3 GiB/s |
+| **wolfSSL (C++)** | PQC (ML-KEM-768) | ~2.2 GiB/s | ~2.3 GiB/s |
+| **RustCrypto (Rust)** | Hybrid (ML-KEM-768+ECC) | ~1.2 GiB/s | ~1.2 GiB/s |
+| **RustCrypto (Rust)** | PQC (ML-KEM-768) | ~1.2 GiB/s | ~1.3 GiB/s |
+| **RustCrypto (Rust)** | ECC (P-256) | ~1.3 GiB/s | ~1.3 GiB/s |
 ※ Rust 版は Tokio 非同期パイプラインにより I/O と暗号化を高度に並列化しており、特に巨大ファイルにおいて C++ 版を上回る効率を発揮します。詳細は [nkCryptoToolBenchmark](#ベンチマーク) を実行してご確認ください。
 
 ## **ビルド方法**

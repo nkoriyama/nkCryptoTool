@@ -11,7 +11,7 @@
 #include <string>
 #include <memory>
 #include <algorithm>
-#include <openssl/crypto.h>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -46,7 +46,10 @@ struct SecureAllocator {
         std::size_t size = n * sizeof(T);
         // メモリを安全に消去 (最適化による削除を防止)
         if (p) {
-            OPENSSL_cleanse(p, size);
+            volatile unsigned char* volatile_p = reinterpret_cast<volatile unsigned char*>(p);
+            for (std::size_t i = 0; i < size; ++i) {
+                volatile_p[i] = 0;
+            }
         }
 #ifdef _WIN32
         VirtualUnlock(p, size);

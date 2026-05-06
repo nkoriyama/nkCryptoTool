@@ -79,6 +79,9 @@ bool isEncryptedPem(const std::string& pem);
 // 必要に応じてパスフレーズを取得する
 SecureString getPassphraseIfNeeded(const std::string& content, const SecureString& provided_passphrase);
 
+// ファイルを安全に書き込む (一時ファイル -> rename)
+std::expected<void, CryptoError> secureWrite(const std::filesystem::path& path, const std::vector<uint8_t>& data, bool force);
+
 } // namespace nkCryptoToolUtils
 
 #endif // NKCRYPTOTOOL_UTILS_HPP

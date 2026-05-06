@@ -62,10 +62,10 @@ public:
     // ファイル情報のインスペクト
     asio::awaitable<std::expected<std::map<std::string, std::string>, CryptoError>> inspectFile(asio::io_context& io_context, std::filesystem::path input_filepath, ProgressCallback progress_callback = nullptr);
 
-    // 鍵管理ユーティリティ (バックエンド非依存)
-    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
-    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase);
-    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass);
+    // --- 鍵生成 ---
+    std::expected<void, CryptoError> generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force);
+    std::expected<void, CryptoError> generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force);
+    std::expected<void, CryptoError> regeneratePublicKey(std::filesystem::path priv, std::filesystem::path pub, SecureString& pass, bool force);
     std::expected<void, CryptoError> wrapPrivateKey(std::filesystem::path raw_priv, std::filesystem::path wrapped_priv, SecureString& pass);
     std::expected<void, CryptoError> unwrapPrivateKey(std::filesystem::path wrapped_priv, std::filesystem::path raw_priv, SecureString& pass);
 

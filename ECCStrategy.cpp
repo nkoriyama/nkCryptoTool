@@ -13,10 +13,39 @@
 
 namespace nk {
 
+static void write_u16_le(std::vector<char>& buf, uint16_t val) {
+    buf.push_back((char)(val & 0xff));
+    buf.push_back((char)((val >> 8) & 0xff));
+}
+
+static void write_u32_le(std::vector<char>& buf, uint32_t val) {
+    buf.push_back((char)(val & 0xff));
+    buf.push_back((char)((val >> 8) & 0xff));
+    buf.push_back((char)((val >> 16) & 0xff));
+    buf.push_back((char)((val >> 24) & 0xff));
+}
+
+static bool read_u16_le(const std::vector<char>& buf, size_t& pos, uint16_t& val) {
+    if (pos + 2 > buf.size()) return false;
+    val = (uint16_t)(unsigned char)buf[pos] | ((uint16_t)(unsigned char)buf[pos+1] << 8);
+    pos += 2;
+    return true;
+}
+
+static bool read_u32_le(const std::vector<char>& buf, size_t& pos, uint32_t& val) {
+    if (pos + 4 > buf.size()) return false;
+    val = (uint32_t)(unsigned char)buf[pos] | 
+          ((uint32_t)(unsigned char)buf[pos+1] << 8) | 
+          ((uint32_t)(unsigned char)buf[pos+2] << 16) | 
+          ((uint32_t)(unsigned char)buf[pos+3] << 24);
+    pos += 4;
+    return true;
+}
+
 ECCStrategy::ECCStrategy() : curve_name_("prime256v1"), digest_algo_("SHA3-512"), aead_algo_("AES-256-GCM") {}
 ECCStrategy::~ECCStrategy() = default;
 
-std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
+std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
     std::string pub, priv;
     if (key_paths.count("public-key") && key_paths.count("private-key")) {
         pub = key_paths.at("public-key");
@@ -33,15 +62,38 @@ std::expected<void, CryptoError> ECCStrategy::generateEncryptionKeyPair(const st
     if (!key_pair) return std::unexpected(key_pair.error());
 
     std::string priv_pem = nkCryptoToolUtils::wrapToPem(key_pair->first, "PRIVATE KEY");
-    std::ofstream ofs_priv(priv, std::ios::binary);
-    if (!ofs_priv) return std::unexpected(CryptoError::FileCreationError);
-    ofs_priv.write(priv_pem.data(), (std::streamsize)priv_pem.size());
+    std::vector<uint8_t> priv_v(priv_pem.begin(), priv_pem.end());
+    auto res_priv = nkCryptoToolUtils::secureWrite(priv, priv_v, force);
+    if (!res_priv) return std::unexpected(res_priv.error());
 
     std::string pub_pem = nkCryptoToolUtils::wrapToPem(key_pair->second, "PUBLIC KEY");
-    std::ofstream ofs_pub(pub, std::ios::binary);
-    if (!ofs_pub) return std::unexpected(CryptoError::FileCreationError);
-    ofs_pub.write(pub_pem.data(), (std::streamsize)pub_pem.size());
+    std::vector<uint8_t> pub_v(pub_pem.begin(), pub_pem.end());
+    auto res_pub = nkCryptoToolUtils::secureWrite(pub, pub_v, force);
+    if (!res_pub) return std::unexpected(res_pub.error());
 
+    return {};
+}
+
+std::expected<void, CryptoError> ECCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase, bool force) {
+    return generateEncryptionKeyPair(key_paths, passphrase, force);
+}
+
+std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::filesystem::path& priv_path, const std::filesystem::path& pub_path, SecureString& passphrase, bool force) {
+    std::ifstream ifs(priv_path, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::FileReadError);
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    
+    passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
+    auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
+    if (!der) return std::unexpected(der.error());
+    auto pub_der = ::get_nk_backend()->extractPublicKey(*der, passphrase);
+    if (!pub_der) return std::unexpected(pub_der.error());
+    
+    std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
+    std::vector<uint8_t> pub_v(pub_pem.begin(), pub_pem.end());
+    auto res = nkCryptoToolUtils::secureWrite(pub_path, pub_v, force);
+    if (!res) return std::unexpected(res.error());
+    
     return {};
 }
 
@@ -235,25 +287,6 @@ std::expected<size_t, CryptoError> ECCStrategy::deserializeHeader(const std::vec
 
 size_t ECCStrategy::getTagSize() const { return 16; }
 
-std::expected<void, CryptoError> ECCStrategy::generateSigningKeyPair(const std::map<std::string, std::string>& key_paths, SecureString& passphrase) {
-    return generateEncryptionKeyPair(key_paths, passphrase);
-}
-
-std::expected<void, CryptoError> ECCStrategy::regeneratePublicKey(const std::filesystem::path& priv, const std::filesystem::path& pub, SecureString& pass) {
-    std::ifstream ifs(priv, std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
-    if (!der) return std::unexpected(der.error());
-    
-    SecureString empty_pass;
-    auto pub_der = ::get_nk_backend()->extractPublicKey(*der, empty_pass);
-    if (!pub_der) return std::unexpected(pub_der.error());
-    std::string pub_pem = nkCryptoToolUtils::wrapToPem(*pub_der, "PUBLIC KEY");
-    std::ofstream ofs(pub, std::ios::binary);
-    ofs.write(pub_pem.data(), (std::streamsize)pub_pem.size());
-    return {};
-}
-
 std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesystem::path& priv, SecureString& passphrase, const std::string& algo) {
     std::ifstream ifs(priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
@@ -272,6 +305,7 @@ std::expected<void, CryptoError> ECCStrategy::prepareSigning(const std::filesyst
 
 std::expected<void, CryptoError> ECCStrategy::prepareVerification(const std::filesystem::path& pub, const std::string& algo) {
     std::ifstream ifs(pub, std::ios::binary);
+    if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PUBLIC KEY");
     if (!der) return std::unexpected(der.error());

@@ -18,7 +18,13 @@
 #else
 #include <termios.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <random>
 #endif
+
+#include <fstream>
+#include <system_error>
 
 void processDirectory(
     asio::io_context& io_context,
@@ -169,6 +175,52 @@ SecureString getPassphraseIfNeeded(const std::string& content, const SecureStrin
         return get_masked_passphrase();
     }
     return "";
+}
+
+std::expected<void, CryptoError> secureWrite(const std::filesystem::path& path, const std::vector<uint8_t>& data, bool force) {
+    if (!force && std::filesystem::exists(path)) {
+        std::cerr << "Error: File already exists: " << path.string() << ". Use --force to overwrite." << std::endl;
+        return std::unexpected(CryptoError::FileWriteError);
+    }
+
+    // Create a temporary file in the same directory
+    std::filesystem::path temp_path = path;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint64_t> dis;
+    temp_path.replace_filename(path.filename().string() + ".tmp." + std::to_string(dis(gen)));
+
+#if defined(_WIN32) || defined(_WIN64)
+    std::ofstream ofs(temp_path, std::ios::binary);
+    if (!ofs) return std::unexpected(CryptoError::FileWriteError);
+    ofs.write(reinterpret_cast<const char*>(data.data()), (std::streamsize)data.size());
+    ofs.close();
+#else
+    int fd = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+    if (fd < 0) return std::unexpected(CryptoError::FileWriteError);
+    
+    size_t written = 0;
+    while (written < data.size()) {
+        ssize_t r = write(fd, data.data() + written, data.size() - written);
+        if (r < 0) {
+            close(fd);
+            std::filesystem::remove(temp_path);
+            return std::unexpected(CryptoError::FileWriteError);
+        }
+        written += (size_t)r;
+    }
+    fsync(fd);
+    close(fd);
+#endif
+
+    std::error_code ec;
+    std::filesystem::rename(temp_path, path, ec);
+    if (ec) {
+        std::filesystem::remove(temp_path);
+        return std::unexpected(CryptoError::FileWriteError);
+    }
+
+    return {};
 }
 
 } // namespace nkCryptoToolUtils

@@ -19,7 +19,7 @@
 #include <wolfssl/openssl/ecdh.h>
 #include <wolfssl/openssl/evp.h>
 #include <wolfssl/wolfcrypt/settings.h>
-#include <wolfssl/wolfcrypt/wc_kyber.h>
+#include <wolfssl/wolfcrypt/wc_mlkem.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/hash.h>
@@ -133,9 +133,11 @@ static std::vector<uint8_t> unwrapPqcDer(const uint8_t* der, size_t len, bool is
     if (der[0] != 0x30) return std::vector<uint8_t>(der, der + len);
 
     auto is_pqc_size = [](size_t s) {
-        return s == 1632 || s == 2400 || s == 3168 || // Kyber Priv
+        return s == 1632 || s == 2400 || s == 3168 || // Kyber Priv (expanded)
+               s == 64 ||                             // Kyber seed
                s == 800 || s == 1184 || s == 1568 ||  // Kyber Pub
-               s == 2560 || s == 4032 || s == 4896 || // Dilithium Priv
+               s == 2560 || s == 4032 || s == 4896 || // Dilithium Priv (expanded)
+               s == 32 ||                             // Dilithium seed
                s == 1312 || s == 1952 || s == 2592;   // Dilithium Pub
     };
 
@@ -280,7 +282,7 @@ std::expected<void, CryptoError> WolfSslAeadBackend::setTag(const uint8_t* tag, 
 
 WolfSslHashBackend::WolfSslHashBackend(WOLFSSL_EVP_MD_CTX* ctx, const WOLFSSL_EVP_MD* md) : ctx_(ctx), md_(md), is_sign_(false) {
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
-    wc_dilithium_init(&dilithium_key_);
+    wc_dilithium_init(&mldsa_key_);
 #endif
 }
 
@@ -288,7 +290,7 @@ WolfSslHashBackend::~WolfSslHashBackend() {
     wolfSSL_EVP_MD_CTX_free(ctx_);
     if (pkey_) wolfSSL_EVP_PKEY_free(pkey_);
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
-    wc_dilithium_free(&dilithium_key_);
+    wc_dilithium_free(&mldsa_key_);
 #endif
 }
 
@@ -323,10 +325,18 @@ std::expected<void, CryptoError> WolfSslHashBackend::initSign(const std::vector<
     else if (raw_key.size() == DILITHIUM_LEVEL5_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_87_PRV_KEY_SIZE) level = 5;
 
     if (level != -1) {
-        wc_dilithium_free(&dilithium_key_);
-        wc_dilithium_init(&dilithium_key_);
-        wc_dilithium_set_level(&dilithium_key_, level);
-        if (wc_dilithium_import_private(raw_key.data(), (word32)raw_key.size(), &dilithium_key_) == 0) {
+        wc_dilithium_free(&mldsa_key_);
+        wc_dilithium_init(&mldsa_key_);
+        wc_dilithium_set_level(&mldsa_key_, level);
+        
+        int import_ret = -1;
+        if (raw_key.size() == 32) {
+            import_ret = wc_dilithium_make_key_from_seed(&mldsa_key_, (unsigned char*)raw_key.data());
+        } else {
+            import_ret = wc_dilithium_import_private(raw_key.data(), (word32)raw_key.size(), &mldsa_key_);
+        }
+
+        if (import_ret == 0) {
             pqc_dsa_type_ = level;
             return {};
         }
@@ -348,9 +358,9 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslHashBackend::finalizeSig
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
         WC_RNG rng;
         wc_InitRng(&rng);
-        word32 slen = wc_dilithium_sig_size(&dilithium_key_);
+        word32 slen = wc_dilithium_sig_size(&mldsa_key_);
         std::vector<uint8_t> sig(slen);
-        if (wc_dilithium_sign_ctx_msg(nullptr, 0, buffer_.data(), (word32)buffer_.size(), sig.data(), &slen, &dilithium_key_, &rng) == 0) {
+        if (wc_dilithium_sign_ctx_msg(nullptr, 0, buffer_.data(), (word32)buffer_.size(), sig.data(), &slen, &mldsa_key_, &rng) == 0) {
             sig.resize(slen);
             wc_FreeRng(&rng);
             return sig;
@@ -388,10 +398,10 @@ std::expected<void, CryptoError> WolfSslHashBackend::initVerify(const std::vecto
     else if (raw_key.size() == DILITHIUM_LEVEL5_PUB_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_87_PUB_KEY_SIZE) level = 5;
 
     if (level != -1) {
-        wc_dilithium_free(&dilithium_key_);
-        wc_dilithium_init(&dilithium_key_);
-        wc_dilithium_set_level(&dilithium_key_, level);
-        if (wc_dilithium_import_public(raw_key.data(), (word32)raw_key.size(), &dilithium_key_) == 0) {
+        wc_dilithium_free(&mldsa_key_);
+        wc_dilithium_init(&mldsa_key_);
+        wc_dilithium_set_level(&mldsa_key_, level);
+        if (wc_dilithium_import_public(raw_key.data(), (word32)raw_key.size(), &mldsa_key_) == 0) {
             pqc_dsa_type_ = level;
             return {};
         }
@@ -412,7 +422,7 @@ std::expected<bool, CryptoError> WolfSslHashBackend::finalizeVerify(const std::v
     if (pqc_dsa_type_ != -1) {
 #if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
         int res = 0;
-        if (wc_dilithium_verify_ctx_msg(signature.data(), (word32)signature.size(), nullptr, 0, buffer_.data(), (word32)buffer_.size(), &res, &dilithium_key_) == 0) {
+        if (wc_dilithium_verify_ctx_msg(signature.data(), (word32)signature.size(), nullptr, 0, buffer_.data(), (word32)buffer_.size(), &res, &mldsa_key_) == 0) {
             return res == 1;
         }
 #endif
@@ -498,17 +508,29 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::eccDh(const std
     }
     WOLFSSL_EC_KEY* ec_priv = wolfSSL_EVP_PKEY_get1_EC_KEY(priv);
     WOLFSSL_EC_KEY* ec_pub = wolfSSL_EVP_PKEY_get1_EC_KEY(pub);
-    std::vector<uint8_t> secret(64);
-    int secret_len = wolfSSL_ECDH_compute_key(secret.data(), (int)secret.size(),
+    
+    // F-58 Fix: Ensure shared secret is exactly 32 bytes for P-256 (OpenSSL compatibility).
+    // wolfSSL_ECDH_compute_key might return fewer than 32 bytes if there are leading zeros.
+    std::vector<uint8_t> tmp_secret(64);
+    int secret_len = wolfSSL_ECDH_compute_key(tmp_secret.data(), (int)tmp_secret.size(),
                                            wolfSSL_EC_KEY_get0_public_key(ec_pub),
                                            ec_priv, nullptr);
+    
     wolfSSL_EC_KEY_free(ec_priv);
     wolfSSL_EC_KEY_free(ec_pub);
     wolfSSL_EVP_PKEY_free(priv);
     wolfSSL_EVP_PKEY_free(pub);
+    
     if (secret_len <= 0) return std::unexpected(CryptoError::OpenSSLError);
-    secret.resize(secret_len);
-    return secret;
+    
+    if (secret_len < 32) {
+        std::vector<uint8_t> padded(32, 0);
+        std::memcpy(padded.data() + (32 - secret_len), tmp_secret.data(), secret_len);
+        return padded;
+    }
+    
+    tmp_secret.resize(32);
+    return tmp_secret;
 }
 
 std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKey(const std::vector<uint8_t>& priv_der, const SecureString& passphrase) {
@@ -524,17 +546,26 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKe
         wolfSSL_EVP_PKEY_free(pkey_dec);
     }
     std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int level = -1;
     if (raw_key.size() == DILITHIUM_LEVEL2_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_44_PRV_KEY_SIZE) level = 2;
     else if (raw_key.size() == DILITHIUM_LEVEL3_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_65_PRV_KEY_SIZE) level = 3;
     else if (raw_key.size() == DILITHIUM_LEVEL5_KEY_SIZE || raw_key.size() == DILITHIUM_ML_DSA_87_PRV_KEY_SIZE) level = 5;
+    else if (raw_key.size() == 32) level = 3; // Default to level 3 for seed
 
     if (level != -1) {
-        dilithium_key key;
+        MlDsaKey key;
         wc_dilithium_init(&key);
         wc_dilithium_set_level(&key, level);
-        if (wc_dilithium_import_private(raw_key.data(), (word32)raw_key.size(), &key) == 0) {
+        
+        int import_ret = -1;
+        if (raw_key.size() == 32) {
+            import_ret = wc_dilithium_make_key_from_seed(&key, (unsigned char*)raw_key.data());
+        } else {
+            import_ret = wc_dilithium_import_private(raw_key.data(), (word32)raw_key.size(), &key);
+        }
+
+        if (import_ret == 0) {
             word32 pub_sz = wc_dilithium_pub_size(&key);
             std::vector<uint8_t> pub(pub_sz);
             wc_dilithium_export_public(&key, pub.data(), &pub_sz);
@@ -545,24 +576,33 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKe
     }
 #endif
 
-#ifdef WOLFSSL_HAVE_KYBER
+#ifdef WOLFSSL_HAVE_MLKEM
     int kyber_type = -1;
-    if (raw_key.size() == KYBER512_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_512;
-    else if (raw_key.size() == KYBER768_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_768;
-    else if (raw_key.size() == KYBER1024_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_1024;
+    if (raw_key.size() == 1632) kyber_type = WC_ML_KEM_512;
+    else if (raw_key.size() == 2400) kyber_type = WC_ML_KEM_768;
+    else if (raw_key.size() == 3168) kyber_type = WC_ML_KEM_1024;
+    else if (raw_key.size() == 64) kyber_type = WC_ML_KEM_768; // Default to 768 for seed
 
     if (kyber_type != -1) {
-        struct KyberKey key;
-        wc_KyberKey_Init(kyber_type, &key, nullptr, INVALID_DEVID);
-        if (wc_KyberKey_DecodePrivateKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size()) == 0) {
+        MlKemKey key;
+        wc_MlKemKey_Init(&key, kyber_type, nullptr, INVALID_DEVID);
+        
+        int decode_ret = -1;
+        if (raw_key.size() == 64) {
+            decode_ret = wc_MlKemKey_MakeKeyWithRandom(&key, (unsigned char*)raw_key.data(), 64);
+        } else {
+            decode_ret = wc_MlKemKey_DecodePrivateKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size());
+        }
+
+        if (decode_ret == 0) {
             word32 pub_sz = 0;
-            wc_KyberKey_PublicKeySize(&key, &pub_sz);
+            wc_MlKemKey_PublicKeySize(&key, &pub_sz);
             std::vector<uint8_t> pub(pub_sz);
-            wc_KyberKey_EncodePublicKey(&key, pub.data(), pub_sz);
-            wc_KyberKey_Free(&key);
+            wc_MlKemKey_EncodePublicKey(&key, pub.data(), pub_sz);
+            wc_MlKemKey_Free(&key);
             return wrapPqcDer(pub, (kyber_type==WC_ML_KEM_512?"ML-KEM-512":kyber_type==WC_ML_KEM_768?"ML-KEM-768":"ML-KEM-1024"), true, nullptr, 0);
         }
-        wc_KyberKey_Free(&key);
+        wc_MlKemKey_Free(&key);
     }
 #endif
 
@@ -579,7 +619,7 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::extractPublicKe
     return std::unexpected(CryptoError::PrivateKeyLoadError);
 }
 
-std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generatePqcSignKeyPair(const std::string& algo_name) {
+std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generatePqcKemKeyPair(const std::string& algo_name) {
     WC_RNG rng;
     wc_InitRng(&rng);
 
@@ -590,33 +630,41 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
     else if (algo_name == "ML-KEM-1024" || algo_name == "Kyber1024") kyber_type = WC_ML_KEM_1024;
 
     if (kyber_type != -1) {
-        struct KyberKey key;
-        if (wc_KyberKey_Init(kyber_type, &key, nullptr, INVALID_DEVID) != 0) { wc_FreeRng(&rng); return std::unexpected(CryptoError::KeyGenerationInitError); }
+        MlKemKey key;
+        if (wc_MlKemKey_Init(&key, kyber_type, nullptr, INVALID_DEVID) != 0) { wc_FreeRng(&rng); return std::unexpected(CryptoError::KeyGenerationInitError); }
         
         uint8_t rand_seed[64];
         wc_RNG_GenerateBlock(&rng, rand_seed, 64);
-        if (wc_KyberKey_MakeKeyWithRandom(&key, rand_seed, 64) != 0) {
-            wc_KyberKey_Free(&key); wc_FreeRng(&rng);
+        if (wc_MlKemKey_MakeKeyWithRandom(&key, rand_seed, 64) != 0) {
+            wc_MlKemKey_Free(&key); wc_FreeRng(&rng);
             return std::unexpected(CryptoError::KeyGenerationError);
         }
         word32 priv_sz = 0, pub_sz = 0;
-        wc_KyberKey_PrivateKeySize(&key, &priv_sz);
-        wc_KyberKey_PublicKeySize(&key, &pub_sz);
+        wc_MlKemKey_PrivateKeySize(&key, &priv_sz);
+        wc_MlKemKey_PublicKeySize(&key, &pub_sz);
         std::vector<uint8_t> priv(priv_sz), pub(pub_sz);
-        wc_KyberKey_EncodePrivateKey(&key, priv.data(), priv_sz);
-        wc_KyberKey_EncodePublicKey(&key, pub.data(), pub_sz);
-        wc_KyberKey_Free(&key); wc_FreeRng(&rng);
+        wc_MlKemKey_EncodePrivateKey(&key, priv.data(), priv_sz);
+        wc_MlKemKey_EncodePublicKey(&key, pub.data(), pub_sz);
+        wc_MlKemKey_Free(&key); wc_FreeRng(&rng);
         return std::make_pair(wrapPqcDer(priv, algo_name, false, rand_seed, 64), wrapPqcDer(pub, algo_name, true, nullptr, 0));
     }
 #endif
-#if 0 // defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
+    wc_FreeRng(&rng);
+    return std::unexpected(CryptoError::OpenSSLError);
+}
+
+std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generatePqcSignKeyPair(const std::string& algo_name) {
+    WC_RNG rng;
+    wc_InitRng(&rng);
+
+#if defined(HAVE_DILITHIUM) && defined(WOLFSSL_WC_DILITHIUM)
     int dsa_level = -1;
     if (algo_name == "ML-DSA-44" || algo_name == "Dilithium2") dsa_level = 2;
     else if (algo_name == "ML-DSA-65" || algo_name == "Dilithium3") dsa_level = 3;
     else if (algo_name == "ML-DSA-87" || algo_name == "Dilithium5") dsa_level = 5;
 
     if (dsa_level != -1) {
-        dilithium_key key;
+        MlDsaKey key;
         if (wc_dilithium_init(&key) != 0) { wc_FreeRng(&rng); return std::unexpected(CryptoError::KeyGenerationInitError); }
         wc_dilithium_set_level(&key, dsa_level);
         
@@ -645,28 +693,28 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
 
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::pqcEncap(const std::vector<uint8_t>& pub_key_der) {
 #ifdef WOLFSSL_HAVE_KYBER
-    struct KyberKey key;
+    MlKemKey key;
     std::vector<uint8_t> raw_key = unwrapPqcDer(pub_key_der.data(), pub_key_der.size(), true);
     int kyber_type = -1;
-    if (raw_key.size() == KYBER512_PUBLIC_KEY_SIZE) kyber_type = WC_ML_KEM_512;
-    else if (raw_key.size() == KYBER768_PUBLIC_KEY_SIZE) kyber_type = WC_ML_KEM_768;
-    else if (raw_key.size() == KYBER1024_PUBLIC_KEY_SIZE) kyber_type = WC_ML_KEM_1024;
+    if (raw_key.size() == 800) kyber_type = WC_ML_KEM_512;
+    else if (raw_key.size() == 1184) kyber_type = WC_ML_KEM_768;
+    else if (raw_key.size() == 1568) kyber_type = WC_ML_KEM_1024;
 
     if (kyber_type == -1) kyber_type = WC_ML_KEM_768;
 
-    if (wc_KyberKey_Init(kyber_type, &key, nullptr, INVALID_DEVID) != 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (wc_KyberKey_DecodePublicKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size()) != 0) {
-        wc_KyberKey_Free(&key); return std::unexpected(CryptoError::PublicKeyLoadError);
+    if (wc_MlKemKey_Init(&key, kyber_type, nullptr, INVALID_DEVID) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    if (wc_MlKemKey_DecodePublicKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size()) != 0) {
+        wc_MlKemKey_Free(&key); return std::unexpected(CryptoError::PublicKeyLoadError);
     }
     word32 ct_sz = 0, ss_sz = 0;
-    wc_KyberKey_CipherTextSize(&key, &ct_sz);
-    wc_KyberKey_SharedSecretSize(&key, &ss_sz);
+    wc_MlKemKey_CipherTextSize(&key, &ct_sz);
+    wc_MlKemKey_SharedSecretSize(&key, &ss_sz);
     std::vector<uint8_t> ct(ct_sz), ss(ss_sz);
     WC_RNG rng; wc_InitRng(&rng);
-    if (wc_KyberKey_Encapsulate(&key, ct.data(), ss.data(), &rng) != 0) {
-        wc_KyberKey_Free(&key); wc_FreeRng(&rng); return std::unexpected(CryptoError::OpenSSLError);
+    if (wc_MlKemKey_Encapsulate(&key, ct.data(), ss.data(), &rng) != 0) {
+        wc_MlKemKey_Free(&key); wc_FreeRng(&rng); return std::unexpected(CryptoError::OpenSSLError);
     }
-    wc_KyberKey_Free(&key); wc_FreeRng(&rng);
+    wc_MlKemKey_Free(&key); wc_FreeRng(&rng);
     return std::make_pair(ss, ct);
 #endif
     return std::unexpected(CryptoError::OpenSSLError);
@@ -674,7 +722,7 @@ std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError
 
 std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) {
 #ifdef WOLFSSL_HAVE_KYBER
-    struct KyberKey key;
+    MlKemKey key;
     std::vector<uint8_t> working_der = priv_key_der;
     WOLFSSL_EVP_PKEY* pkey_dec = loadPrivateKeyRobust(priv_key_der.data(), priv_key_der.size(), passphrase);
     if (pkey_dec) {
@@ -689,23 +737,31 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::pqcDecap(const 
 
     std::vector<uint8_t> raw_key = unwrapPqcDer(working_der.data(), working_der.size(), false);
     int kyber_type = -1;
-    if (raw_key.size() == KYBER512_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_512;
-    else if (raw_key.size() == KYBER768_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_768;
-    else if (raw_key.size() == KYBER1024_PRIVATE_KEY_SIZE) kyber_type = WC_ML_KEM_1024;
+    if (raw_key.size() == 1632) kyber_type = WC_ML_KEM_512;
+    else if (raw_key.size() == 2400) kyber_type = WC_ML_KEM_768;
+    else if (raw_key.size() == 3168) kyber_type = WC_ML_KEM_1024;
 
     if (kyber_type == -1) kyber_type = WC_ML_KEM_768;
 
-    if (wc_KyberKey_Init(kyber_type, &key, nullptr, INVALID_DEVID) != 0) return std::unexpected(CryptoError::OpenSSLError);
-    if (wc_KyberKey_DecodePrivateKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size()) != 0) {
-        wc_KyberKey_Free(&key); return std::unexpected(CryptoError::PrivateKeyLoadError);
+    if (wc_MlKemKey_Init(&key, kyber_type, nullptr, INVALID_DEVID) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    
+    int decode_ret = -1;
+    if (raw_key.size() == 64) {
+        decode_ret = wc_MlKemKey_MakeKeyWithRandom(&key, (unsigned char*)raw_key.data(), 64);
+    } else {
+        decode_ret = wc_MlKemKey_DecodePrivateKey(&key, (unsigned char*)raw_key.data(), (word32)raw_key.size());
+    }
+
+    if (decode_ret != 0) {
+        wc_MlKemKey_Free(&key); return std::unexpected(CryptoError::PrivateKeyLoadError);
     }
     word32 ss_sz = 0;
-    wc_KyberKey_SharedSecretSize(&key, &ss_sz);
+    wc_MlKemKey_SharedSecretSize(&key, &ss_sz);
     std::vector<uint8_t> ss(ss_sz);
-    if (wc_KyberKey_Decapsulate(&key, ss.data(), (unsigned char*)kem_ct.data(), (word32)kem_ct.size()) != 0) {
-        wc_KyberKey_Free(&key); return std::unexpected(CryptoError::OpenSSLError);
+    if (wc_MlKemKey_Decapsulate(&key, ss.data(), (unsigned char*)kem_ct.data(), (word32)kem_ct.size()) != 0) {
+        wc_MlKemKey_Free(&key); return std::unexpected(CryptoError::OpenSSLError);
     }
-    wc_KyberKey_Free(&key);
+    wc_MlKemKey_Free(&key);
     return ss;
 #endif
     return std::unexpected(CryptoError::OpenSSLError);
