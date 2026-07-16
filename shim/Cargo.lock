@@ -2467,11 +2467,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "nkct-keyring-shim"
+name = "nkct-shim"
 version = "0.1.0"
 dependencies = [
+ "crc",
+ "data-encoding",
  "hex",
+ "iroh",
  "nk-crypto-tool",
+ "once_cell",
+ "tokio",
 ]
 
 [[package]]

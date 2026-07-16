@@ -38,6 +38,6 @@ tests/temp_*
 build-interop/
 build-wolf/
 build-p2p/
-p2p-shim/target/
 build-kr/
-keyring-shim/target/
+build-both/
+shim/target/

@@ -141,73 +141,61 @@ target_link_libraries(nkcrypto_shared PUBLIC
 #   target_link_libraries(nkcrypto_shared PUBLIC uring)
 # endif()
 
-# --- P2P (iroh transport via the Rust shim) ---
-# Opt-in: needs a Rust toolchain (cargo) to build p2p-shim/, and the OpenSSL
-# backend (the P2P handshake uses OpenSSL EVP directly). Off by default so the
-# core crypto build has no Rust dependency.
-option(NKCT_ENABLE_P2P "Build the iroh-based P2P chat (requires cargo + OpenSSL backend)" OFF)
-set(NKCT_P2P_SOURCES "")
-set(NKCT_P2P_LIBS "")
-if(NKCT_ENABLE_P2P)
+# --- P2P + Keyring (unified Rust shim: shim/) ---
+# ONE shim crate provides the iroh P2P transport (always) and, under its
+# `keyring` cargo feature, the shared-keyring.db wrapper. Merging them into a
+# single crate means both share ONE iroh build (cargo unifies the iroh the P2P
+# code uses directly with the one nk-crypto-tool pulls in), so the two options
+# can be enabled together — no duplicate-symbol conflict.
+#
+# Both need cargo + the OpenSSL backend. NKCT_ENABLE_KEYRING additionally needs
+# nkCryptoTool-rust as a sibling checkout (the `keyring` feature's path dep);
+# P2P alone stays self-contained on published crates only.
+option(NKCT_ENABLE_P2P "Build the iroh-based P2P chat/scp (requires cargo + OpenSSL backend)" OFF)
+option(NKCT_ENABLE_KEYRING "Build shared-keyring.db support (requires cargo + nkCryptoTool-rust sibling)" OFF)
+set(NKCT_SHIM_SOURCES "")
+set(NKCT_SHIM_LIBS "")
+if(NKCT_ENABLE_P2P OR NKCT_ENABLE_KEYRING)
     if(NOT USE_BACKEND STREQUAL "OpenSSL")
-        message(FATAL_ERROR "NKCT_ENABLE_P2P requires -DUSE_BACKEND=OpenSSL")
+        message(FATAL_ERROR "NKCT_ENABLE_P2P / NKCT_ENABLE_KEYRING require -DUSE_BACKEND=OpenSSL")
     endif()
     find_program(CARGO cargo REQUIRED)
-    set(SHIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/p2p-shim)
-    set(SHIM_LIB ${SHIM_DIR}/target/release/libnkct_p2p.a)
+    set(SHIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+    set(SHIM_LIB ${SHIM_DIR}/target/release/libnkct_shim.a)
+    set(SHIM_FEATURES "")
+    if(NKCT_ENABLE_KEYRING)
+        set(SHIM_FEATURES --features keyring)
+    endif()
     add_custom_command(
         OUTPUT ${SHIM_LIB}
-        COMMAND ${CARGO} build --release --manifest-path ${SHIM_DIR}/Cargo.toml
+        COMMAND ${CARGO} build --release --manifest-path ${SHIM_DIR}/Cargo.toml ${SHIM_FEATURES}
         WORKING_DIRECTORY ${SHIM_DIR}
-        COMMENT "Building the iroh P2P shim (cargo)"
+        COMMENT "Building the nkct Rust shim (cargo)"
         VERBATIM)
-    add_custom_target(nkct_p2p_shim DEPENDS ${SHIM_LIB})
-    set(NKCT_P2P_SOURCES nkP2P.cpp)
-    # The Rust staticlib pulls in these system libs (tokio, quinn, ring).
-    set(NKCT_P2P_LIBS ${SHIM_LIB} dl m)
-    add_compile_definitions(NKCT_ENABLE_P2P)
-endif()
-
-# --- Keyring (shared keyring.db with nkCryptoTool-rust) ---
-# Opt-in: wraps the Rust keyring via a shim, so C++ and Rust share ONE
-# keyring.db. Needs cargo + nkCryptoTool-rust as a sibling checkout. Cannot be
-# combined with NKCT_ENABLE_P2P yet: both statically link iroh (the keyring
-# shim via nk-crypto-tool, the P2P shim directly), which duplicates symbols.
-option(NKCT_ENABLE_KEYRING "Build shared-keyring.db support (requires cargo + nkCryptoTool-rust sibling)" OFF)
-set(NKCT_KEYRING_SOURCES "")
-set(NKCT_KEYRING_LIBS "")
-if(NKCT_ENABLE_KEYRING)
+    add_custom_target(nkct_shim DEPENDS ${SHIM_LIB})
     if(NKCT_ENABLE_P2P)
-        message(FATAL_ERROR "NKCT_ENABLE_KEYRING and NKCT_ENABLE_P2P cannot both be ON yet (duplicate iroh symbols)")
+        list(APPEND NKCT_SHIM_SOURCES nkP2P.cpp)
     endif()
-    find_program(CARGO cargo REQUIRED)
-    set(KR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/keyring-shim)
-    set(KR_LIB ${KR_DIR}/target/release/libnkct_keyring.a)
-    add_custom_command(
-        OUTPUT ${KR_LIB}
-        COMMAND ${CARGO} build --release --manifest-path ${KR_DIR}/Cargo.toml
-        WORKING_DIRECTORY ${KR_DIR}
-        COMMENT "Building the keyring shim (cargo)"
-        VERBATIM)
-    add_custom_target(nkct_keyring_shim DEPENDS ${KR_LIB})
-    set(NKCT_KEYRING_SOURCES nkKeyring.cpp)
-    set(NKCT_KEYRING_LIBS ${KR_LIB} dl m)
-    add_compile_definitions(NKCT_ENABLE_KEYRING)
+    if(NKCT_ENABLE_KEYRING)
+        list(APPEND NKCT_SHIM_SOURCES nkKeyring.cpp)
+    endif()
+    # The Rust staticlib pulls in these system libs (tokio, quinn, ring).
+    set(NKCT_SHIM_LIBS ${SHIM_LIB} dl m)
 endif()
 
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
-    ${NKCT_P2P_SOURCES}
-    ${NKCT_KEYRING_SOURCES}
+    ${NKCT_SHIM_SOURCES}
     ${NKCRYPTO_SHARED_SOURCES}
 )
-if(NKCT_ENABLE_KEYRING)
-    add_dependencies(nkCryptoTool nkct_keyring_shim)
-    target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_KEYRING)
+if(NKCT_ENABLE_P2P OR NKCT_ENABLE_KEYRING)
+    add_dependencies(nkCryptoTool nkct_shim)
 endif()
 if(NKCT_ENABLE_P2P)
-    add_dependencies(nkCryptoTool nkct_p2p_shim)
     target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_P2P)
+endif()
+if(NKCT_ENABLE_KEYRING)
+    target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_KEYRING)
 endif()
 target_include_directories(nkCryptoTool PRIVATE
     ${PROJECT_SOURCE_DIR}
@@ -221,8 +209,7 @@ target_link_libraries(nkCryptoTool PRIVATE
     Threads::Threads
     nlohmann_json::nlohmann_json
     ${BACKEND_LIBS}
-    ${NKCT_P2P_LIBS}
-    ${NKCT_KEYRING_LIBS}
+    ${NKCT_SHIM_LIBS}
 )
 
 # --- ユニットテスト ---

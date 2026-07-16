@@ -1,0 +1,29 @@
+[package]
+name = "nkct-shim"
+version = "0.1.0"
+edition = "2021"
+
+# Unified C-ABI shim for the C++ nkCryptoTool: the iroh P2P transport (always)
+# plus, under the `keyring` feature, the shared-keyring.db wrapper. Merged into
+# ONE crate so both share a SINGLE iroh build (cargo unifies the iroh the P2P
+# code depends on directly with the one nk-crypto-tool pulls in) — no duplicate
+# symbols, so NKCT_ENABLE_P2P and NKCT_ENABLE_KEYRING can coexist. Without the
+# `keyring` feature the crate needs no nkCryptoTool-rust checkout (P2P stays
+# self-contained on published crates only).
+
+[lib]
+name = "nkct_shim"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+iroh = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+once_cell = "1"
+data-encoding = "2"
+crc = "3"
+# keyring: pulls the Rust keyring (and its own iroh 1.0 — unified with ours).
+nk-crypto-tool = { path = "../../nkCryptoTool-rust", optional = true }
+hex = { version = "0.4", optional = true }
+
+[features]
+keyring = ["dep:nk-crypto-tool", "dep:hex"]
