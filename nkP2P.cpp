@@ -29,8 +29,19 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <pty.h>
 #include <csignal>
+// forkpty() lives in a different header per platform. It does NOT exist on
+// Windows (no fork/PTY; Windows needs ConPTY instead), so the PTY shell server
+// is POSIX-only — the shell client's raw mode is termios-based likewise.
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__FreeBSD__) || defined(__DragonFly__)
+#include <libutil.h>
+#elif defined(__OpenBSD__) || defined(__NetBSD__)
+#include <util.h>
+#else
+#include <pty.h>
+#endif
 
 #ifdef NKCT_ENABLE_KEYRING
 extern "C" int nkct_kr_pairing_register(const char* db, const unsigned char* bundle, size_t bundle_len,
