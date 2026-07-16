@@ -141,22 +141,55 @@ target_link_libraries(nkcrypto_shared PUBLIC
 #   target_link_libraries(nkcrypto_shared PUBLIC uring)
 # endif()
 
-add_executable(nkCryptoTool 
+# --- P2P (iroh transport via the Rust shim) ---
+# Opt-in: needs a Rust toolchain (cargo) to build p2p-shim/, and the OpenSSL
+# backend (the P2P handshake uses OpenSSL EVP directly). Off by default so the
+# core crypto build has no Rust dependency.
+option(NKCT_ENABLE_P2P "Build the iroh-based P2P chat (requires cargo + OpenSSL backend)" OFF)
+set(NKCT_P2P_SOURCES "")
+set(NKCT_P2P_LIBS "")
+if(NKCT_ENABLE_P2P)
+    if(NOT USE_BACKEND STREQUAL "OpenSSL")
+        message(FATAL_ERROR "NKCT_ENABLE_P2P requires -DUSE_BACKEND=OpenSSL")
+    endif()
+    find_program(CARGO cargo REQUIRED)
+    set(SHIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/p2p-shim)
+    set(SHIM_LIB ${SHIM_DIR}/target/release/libnkct_p2p.a)
+    add_custom_command(
+        OUTPUT ${SHIM_LIB}
+        COMMAND ${CARGO} build --release --manifest-path ${SHIM_DIR}/Cargo.toml
+        WORKING_DIRECTORY ${SHIM_DIR}
+        COMMENT "Building the iroh P2P shim (cargo)"
+        VERBATIM)
+    add_custom_target(nkct_p2p_shim DEPENDS ${SHIM_LIB})
+    set(NKCT_P2P_SOURCES nkP2P.cpp)
+    # The Rust staticlib pulls in these system libs (tokio, quinn, ring).
+    set(NKCT_P2P_LIBS ${SHIM_LIB} dl m)
+    add_compile_definitions(NKCT_ENABLE_P2P)
+endif()
+
+add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
+    ${NKCT_P2P_SOURCES}
     ${NKCRYPTO_SHARED_SOURCES}
 )
-target_include_directories(nkCryptoTool PRIVATE 
+if(NKCT_ENABLE_P2P)
+    add_dependencies(nkCryptoTool nkct_p2p_shim)
+    target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_P2P)
+endif()
+target_include_directories(nkCryptoTool PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${asio_SOURCE_DIR}/asio/include
     ${cxxopts_SOURCE_DIR}/include
 )
 target_compile_definitions(nkCryptoTool PRIVATE ${BACKEND_DEFS})
-target_link_libraries(nkCryptoTool PRIVATE 
-    benchmark 
+target_link_libraries(nkCryptoTool PRIVATE
+    benchmark
     benchmark_main
     Threads::Threads
     nlohmann_json::nlohmann_json
     ${BACKEND_LIBS}
+    ${NKCT_P2P_LIBS}
 )
 
 # --- ユニットテスト ---

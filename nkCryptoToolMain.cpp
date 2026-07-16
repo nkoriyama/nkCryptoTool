@@ -8,6 +8,9 @@
 #include "TpmKeyProvider.hpp"
 #include "nkCryptoToolUtils.hpp"
 #include "nkKeyBundle.hpp"
+#ifdef NKCT_ENABLE_P2P
+#include "nkP2P.hpp"
+#endif
 #include "backend/IBackend.hpp"
 #include <iostream>
 #include <fstream>
@@ -202,6 +205,9 @@ int main(int argc, char* argv[]) {
         ("keybundle-expiry-secs", "KeyBundle key expiry (seconds from now)", cxxopts::value<uint64_t>())
         ("recipient-keybundle", "Recipient's signed KeyBundle for encryption", cxxopts::value<std::string>())
         ("recipient-fingerprint", "Pinned owner fingerprint (64-hex) for --recipient-keybundle", cxxopts::value<std::string>())
+        ("serve-chat", "P2P: listen for one chat peer over iroh (prints a ticket)")
+        ("connect", "P2P: connect to a chat peer by its nkct1 ticket", cxxopts::value<std::string>())
+        ("allow-unauth", "P2P: accept an anonymous (unauthenticated) peer")
         ("key-dir", "Directory to store generated keys", cxxopts::value<std::string>()->default_value("keys"))
         ("recipient-pubkey", "The recipient's public key for encryption", cxxopts::value<std::string>())
         ("recipient-ecdh-pubkey", "The recipient's ECDH public key", cxxopts::value<std::string>())
@@ -239,6 +245,22 @@ int main(int argc, char* argv[]) {
         if (result.count("gen-keybundle")) {
             std::string kd = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
             return runGenKeybundle(result, config.mode, kd);
+        }
+
+        if (result.count("serve-chat") || result.count("connect")) {
+#ifdef NKCT_ENABLE_P2P
+            std::string sp = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>() : "";
+            std::string su = result.count("signing-pubkey")  ? result["signing-pubkey"].as<std::string>()  : "";
+            if (result.count("connect")) {
+                return nk::p2p::connectChat(result["connect"].as<std::string>(), sp, su);
+            }
+            return nk::p2p::serveChat(sp, su, result.count("allow-unauth") > 0);
+#else
+            std::cerr << "Error: this build has no P2P support. Rebuild with "
+                         "-DNKCT_ENABLE_P2P=ON -DUSE_BACKEND=OpenSSL (needs a Rust toolchain)."
+                      << std::endl;
+            return 1;
+#endif
         }
         config.force = result.count("force") > 0;
         config.is_recursive = result.count("recursive") > 0;

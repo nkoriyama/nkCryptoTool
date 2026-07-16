@@ -37,3 +37,5 @@ tests/temp_*
 
 build-interop/
 build-wolf/
+build-p2p/
+p2p-shim/target/
