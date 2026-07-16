@@ -21,6 +21,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 once_cell = "1"
 data-encoding = "2"
 crc = "3"
+# Cross-platform PTY for the C++ shell server: openpty on unix, ConPTY on
+# Windows, behind one API — the same crate the Rust binary's shell uses.
+portable-pty = "0.8"
 # keyring: pulls the Rust keyring (and its own iroh 1.0 — unified with ours).
 nk-crypto-tool = { path = "../../nkCryptoTool-rust", optional = true }
 hex = { version = "0.4", optional = true }

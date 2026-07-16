@@ -2476,6 +2476,7 @@ dependencies = [
  "iroh",
  "nk-crypto-tool",
  "once_cell",
+ "portable-pty",
  "tokio",
 ]
 

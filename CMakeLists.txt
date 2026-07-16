@@ -179,8 +179,8 @@ if(NKCT_ENABLE_P2P OR NKCT_ENABLE_KEYRING)
     if(NKCT_ENABLE_KEYRING)
         list(APPEND NKCT_SHIM_SOURCES nkKeyring.cpp)
     endif()
-    # The Rust staticlib pulls in these system libs (tokio, quinn, ring).
-    # `util` provides forkpty() for the shell server on glibc < 2.34 (newer
+    # The Rust staticlib pulls in these system libs (tokio, quinn, ring, and
+    # portable-pty's openpty). `util` provides openpty on glibc < 2.34 (newer
     # glibc folds it into libc, where the stub still links cleanly).
     set(NKCT_SHIM_LIBS ${SHIM_LIB} dl m util)
 endif()

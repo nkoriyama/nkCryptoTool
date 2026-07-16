@@ -25,23 +25,13 @@
 #include <openssl/pem.h>
 #include <openssl/bio.h>
 
+// The shell SERVER's pseudo-terminal is handled cross-platform by the Rust shim
+// (portable-pty: openpty on unix, ConPTY on Windows) — no forkpty here. These
+// POSIX headers are only for the interactive shell CLIENT's local terminal
+// (raw mode + initial window size); that path is still POSIX-only.
 #include <termios.h>
 #include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <unistd.h>
-#include <csignal>
-// forkpty() lives in a different header per platform. It does NOT exist on
-// Windows (no fork/PTY; Windows needs ConPTY instead), so the PTY shell server
-// is POSIX-only — the shell client's raw mode is termios-based likewise.
-#if defined(__APPLE__)
-#include <util.h>
-#elif defined(__FreeBSD__) || defined(__DragonFly__)
-#include <libutil.h>
-#elif defined(__OpenBSD__) || defined(__NetBSD__)
-#include <util.h>
-#else
-#include <pty.h>
-#endif
 
 #ifdef NKCT_ENABLE_KEYRING
 extern "C" int nkct_kr_pairing_register(const char* db, const unsigned char* bundle, size_t bundle_len,
@@ -68,6 +58,14 @@ long   nkct_stream_read(void*, uint8_t*, size_t);
 void   nkct_stream_free(void*);
 void   nkct_conn_free(void*);
 void   nkct_endpoint_free(void*);
+// Cross-platform PTY (openpty on unix, ConPTY on Windows) for the shell server.
+void*  nkct_pty_spawn(const char*, uint16_t, uint16_t);
+long   nkct_pty_read(void*, uint8_t*, size_t);
+long   nkct_pty_write(void*, const uint8_t*, size_t);
+void   nkct_pty_resize(void*, uint16_t, uint16_t);
+int    nkct_pty_wait(void*);
+void   nkct_pty_kill(void*);
+void   nkct_pty_free(void*);
 }
 
 namespace {
@@ -587,43 +585,37 @@ int serveShell(const std::string& signing_priv, const std::string& allowed_clien
     std::fprintf(stderr,"[p2p] shell open (%ux%u, term=%s, %s)\n", cols, rows,
                  term.c_str(), cmd.empty()?"login shell":("cmd: "+cmd).c_str());
 
-    // Spawn the shell under a PTY sized to the client's window.
-    struct winsize ws{}; ws.ws_col=cols; ws.ws_row=rows;
-    int master=-1; pid_t pid=forkpty(&master, nullptr, nullptr, &ws);
-    if(pid<0) fail("forkpty");
-    if(pid==0){
-        const char* sh=getenv("SHELL"); if(!sh||!*sh) sh="/bin/sh";
-        if(cmd.empty()) execl(sh, sh, "-i", (char*)nullptr);
-        else            execl(sh, sh, "-c", cmd.c_str(), (char*)nullptr);
-        _exit(127);
-    }
+    // Spawn the shell under a cross-platform PTY via the shim (openpty on unix,
+    // ConPTY on Windows). The C++ side owns only the frame bridge below.
+    void* pty=nkct_pty_spawn(cmd.empty()?"":cmd.c_str(), cols, rows);
+    if(!pty) fail("pty spawn");
 
-    // master -> client (Data frames), then on child EOF reap + send Exit and
-    // close our write side. The tx counter is owned solely by this thread, so it
-    // can send Exit without racing. This drives shutdown for --shell-cmd (where
-    // the client sends no stdin and just waits for output + Exit).
+    // PTY output -> client (Data frames), then on child EOF wait for the exit
+    // code, send Exit, and close our write side. The tx counter is owned solely
+    // by this thread, so it can send Exit without racing. This drives shutdown
+    // for --shell-cmd (the client sends no stdin, just awaits output + Exit).
     std::atomic<int> ecode{0};
     std::thread out([&]{
         uint8_t b[16384];
-        for(;;){ ssize_t n=::read(master,b,sizeof b); if(n<=0) break; scp_send(st,s2c,tx, data_frame(b,(size_t)n)); }
-        int status=0; waitpid(pid,&status,0);
-        int code = WIFEXITED(status)?WEXITSTATUS(status):(WIFSIGNALED(status)?128+WTERMSIG(status):0);
+        for(;;){ long n=nkct_pty_read(pty,b,sizeof b); if(n<=0) break; scp_send(st,s2c,tx, data_frame(b,(size_t)n)); }
+        int code=nkct_pty_wait(pty);
         ecode=code; scp_send(st,s2c,tx, exit_frame(code)); nkct_stream_finish(st);
     });
-    // client -> master (stdin / winsize). rx counter owned by this thread. Ends
-    // when the client closes its send side (interactive Ctrl-D) or the peer goes
-    // away after receiving our Exit (--shell-cmd).
+    // client -> PTY (stdin / winsize). rx counter owned by this thread. Ends when
+    // the client closes its send side (interactive Ctrl-D) or the peer goes away
+    // after receiving our Exit (--shell-cmd).
     for(;;){
         Bytes f; if(!scp_recv(st,c2s,rx,f)||f.empty()) break;
-        if(f[0]==T_DATA){ if(f.size()>1){ ssize_t w=::write(master,f.data()+1,f.size()-1); (void)w; } }
-        else if(f[0]==T_WINSZ && f.size()>=5){ struct winsize w2{}; w2.ws_col=((uint16_t)f[1]<<8)|f[2]; w2.ws_row=((uint16_t)f[3]<<8)|f[4]; ioctl(master,TIOCSWINSZ,&w2); }
+        if(f[0]==T_DATA){ if(f.size()>1) nkct_pty_write(pty,f.data()+1,f.size()-1); }
+        else if(f[0]==T_WINSZ && f.size()>=5){ nkct_pty_resize(pty, (uint16_t)(((uint16_t)f[1]<<8)|f[2]), (uint16_t)(((uint16_t)f[3]<<8)|f[4])); }
         else if(f[0]==T_EXIT||f[0]==T_ERROR) break;
     }
-    // Client stdin closed: an interactive child now sees EOF on its PTY and
-    // exits, which unblocks the out thread (master EOF → Exit). Harmless if the
-    // child already exited (--shell-cmd).
-    ::close(master);
+    // Client stdin closed: terminate the child if it is still running (an
+    // interactive shell that never got `exit`), which EOFs the PTY and lets the
+    // out thread send Exit. No-op if the child already exited (--shell-cmd).
+    nkct_pty_kill(pty);
     out.join();
+    nkct_pty_free(pty);
     std::fprintf(stderr,"[p2p] shell session ended (exit %d).\n", ecode.load());
     nkct_stream_free(st); nkct_conn_free(conn); nkct_endpoint_free(ep); return 0;
 }
