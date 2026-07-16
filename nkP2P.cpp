@@ -78,7 +78,7 @@ namespace {
 
 using Bytes = std::vector<uint8_t>;
 constexpr const char* ALPN_CHAT = "nkct/chat/2";
-constexpr const char* ALPN_SCP = "nkct/scp/2";
+constexpr const char* ALPN_SCP = "nkct/scp/3";
 constexpr const char* ALPN_SHELL = "nkct/shell/2";
 constexpr const char* ALPN_PAIRING = "nkct/pairing/1";
 constexpr const char* HS_CTX = "nkct-handshake-iroh-v1";
@@ -279,7 +279,7 @@ int chat_loop(void* st, const Bytes& tx_key, const Bytes& rx_key){
     done=true; nkct_stream_finish(st); rx.join(); return 0;
 }
 
-// ---- scp (nkct/scp/2) frame protocol -------------------------------------
+// ---- scp (nkct/scp/3) frame protocol -------------------------------------
 // Packets are counter-nonce framed: u32 LE len + AES-256-GCM(pt, nonce, no AAD),
 // nonce = 4 zero bytes || u64 BE counter, counter++ per packet (per direction).
 constexpr uint8_t T_PUT=0x01,T_DATA=0x03,T_EOF=0x04,T_ACK=0x05,T_FAIL=0x06,T_GET=0x07,T_DONE=0x08,T_ERR=0x09;
