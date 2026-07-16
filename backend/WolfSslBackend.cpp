@@ -495,22 +495,113 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::sha3_256(const 
     return digest;
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::mldsaSignCtx(const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&, const SecureString&) {
-    // KeyBundle (context-string ML-DSA) is currently supported on the OpenSSL
-    // backend only; build with -DUSE_BACKEND=OpenSSL to use --gen-keybundle.
-    return std::unexpected(CryptoError::NotImplementedError);
+namespace {
+// SPKI = SEQUENCE { SEQUENCE{OID}, BIT STRING(0x00 || raw) }. For ML-DSA/ML-KEM
+// "raw" is exactly the BIT STRING content (FIPS encoding), so raw<->SPKI is a
+// generic ASN.1 (un)wrap — no per-key crypto import needed. Verified against
+// the OpenSSL-produced SPKI headers.
+bool asnLen(const std::vector<uint8_t>& b, size_t& off, size_t& len) {
+    if (off >= b.size()) return false;
+    uint8_t l0 = b[off++];
+    if (l0 < 0x80) { len = l0; return true; }
+    int n = l0 & 0x7f;
+    if (n == 0 || n > 4 || off + n > b.size()) return false;
+    len = 0;
+    for (int i = 0; i < n; ++i) len = (len << 8) | b[off++];
+    return true;
+}
+void putAsnLen(std::vector<uint8_t>& b, size_t len) {
+    if (len < 0x80) { b.push_back((uint8_t)len); return; }
+    std::vector<uint8_t> tmp;
+    while (len) { tmp.push_back((uint8_t)(len & 0xff)); len >>= 8; }
+    b.push_back((uint8_t)(0x80 | tmp.size()));
+    for (auto it = tmp.rbegin(); it != tmp.rend(); ++it) b.push_back(*it);
+}
+// SEQUENCE{OID} AlgorithmIdentifier prefixes (no params) by algo name.
+const std::vector<uint8_t>* algIdFor(const std::string& algo) {
+    static const std::vector<uint8_t> ml_kem_512  = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x04,0x01};
+    static const std::vector<uint8_t> ml_kem_768  = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x04,0x02};
+    static const std::vector<uint8_t> ml_kem_1024 = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x04,0x03};
+    static const std::vector<uint8_t> ml_dsa_44   = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x11};
+    static const std::vector<uint8_t> ml_dsa_65   = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x12};
+    static const std::vector<uint8_t> ml_dsa_87   = {0x30,0x0b,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x03,0x13};
+    if (algo == "ML-KEM-512") return &ml_kem_512;
+    if (algo == "ML-KEM-768") return &ml_kem_768;
+    if (algo == "ML-KEM-1024") return &ml_kem_1024;
+    if (algo == "ML-DSA-44") return &ml_dsa_44;
+    if (algo == "ML-DSA-65") return &ml_dsa_65;
+    if (algo == "ML-DSA-87") return &ml_dsa_87;
+    return nullptr;
+}
+} // namespace
+
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::rawPublicKeyFromSpki(const std::vector<uint8_t>& spki) {
+    size_t off = 0, len = 0;
+    if (spki.empty() || spki[off++] != 0x30 || !asnLen(spki, off, len)) return std::unexpected(CryptoError::WireFormatError);
+    // AlgorithmIdentifier SEQUENCE — skip it.
+    if (off >= spki.size() || spki[off++] != 0x30 || !asnLen(spki, off, len)) return std::unexpected(CryptoError::WireFormatError);
+    off += len;
+    // BIT STRING.
+    if (off >= spki.size() || spki[off++] != 0x03 || !asnLen(spki, off, len)) return std::unexpected(CryptoError::WireFormatError);
+    if (len < 1 || off + len > spki.size()) return std::unexpected(CryptoError::WireFormatError);
+    if (spki[off] != 0x00) return std::unexpected(CryptoError::WireFormatError); // unused-bits must be 0
+    return std::vector<uint8_t>(spki.begin() + off + 1, spki.begin() + off + len);
 }
 
-std::expected<bool, CryptoError> WolfSslBackend::mldsaVerifyCtx(const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&) {
-    return std::unexpected(CryptoError::NotImplementedError);
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::spkiFromRawPublicKey(const std::vector<uint8_t>& raw, const std::string& algo_name) {
+    const auto* algid = algIdFor(algo_name);
+    if (!algid) return std::unexpected(CryptoError::ParameterError);
+    std::vector<uint8_t> bitstr = {0x03};
+    putAsnLen(bitstr, raw.size() + 1);
+    bitstr.push_back(0x00);
+    bitstr.insert(bitstr.end(), raw.begin(), raw.end());
+    std::vector<uint8_t> body(algid->begin(), algid->end());
+    body.insert(body.end(), bitstr.begin(), bitstr.end());
+    std::vector<uint8_t> out = {0x30};
+    putAsnLen(out, body.size());
+    out.insert(out.end(), body.begin(), body.end());
+    return out;
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::rawPublicKeyFromSpki(const std::vector<uint8_t>&) {
-    return std::unexpected(CryptoError::NotImplementedError);
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::mldsaSignCtx(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& ctx, const SecureString&) {
+    if (ctx.size() > 255) return std::unexpected(CryptoError::ParameterError);
+    dilithium_key key;
+    if (wc_dilithium_init(&key) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    wc_dilithium_set_level(&key, WC_ML_DSA_65);
+    word32 idx = 0;
+    // Unencrypted PKCS#8 DER (the KeyBundle signing key). Encrypted keys are not
+    // supported on the wolfSSL KeyBundle path.
+    if (wc_Dilithium_PrivateKeyDecode(priv_der.data(), &idx, &key, (word32)priv_der.size()) != 0) {
+        wc_dilithium_free(&key); return std::unexpected(CryptoError::PrivateKeyLoadError);
+    }
+    WC_RNG rng;
+    if (wc_InitRng(&rng) != 0) { wc_dilithium_free(&key); return std::unexpected(CryptoError::OpenSSLError); }
+    word32 sig_len = ML_DSA_LEVEL3_SIG_SIZE;
+    std::vector<uint8_t> sig(sig_len);
+    int rc = wc_dilithium_sign_ctx_msg(ctx.empty() ? nullptr : ctx.data(), (byte)ctx.size(),
+                                       msg.data(), (word32)msg.size(), sig.data(), &sig_len, &key, &rng);
+    wc_FreeRng(&rng); wc_dilithium_free(&key);
+    if (rc != 0) return std::unexpected(CryptoError::OpenSSLError);
+    sig.resize(sig_len);
+    return sig;
 }
 
-std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::spkiFromRawPublicKey(const std::vector<uint8_t>&, const std::string&) {
-    return std::unexpected(CryptoError::NotImplementedError);
+std::expected<bool, CryptoError> WolfSslBackend::mldsaVerifyCtx(const std::vector<uint8_t>& pub_spki_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& sig, const std::vector<uint8_t>& ctx) {
+    if (ctx.size() > 255) return std::unexpected(CryptoError::ParameterError);
+    dilithium_key key;
+    if (wc_dilithium_init(&key) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    wc_dilithium_set_level(&key, WC_ML_DSA_65);
+    word32 idx = 0;
+    if (wc_Dilithium_PublicKeyDecode(pub_spki_der.data(), &idx, &key, (word32)pub_spki_der.size()) != 0) {
+        wc_dilithium_free(&key); return std::unexpected(CryptoError::PublicKeyLoadError);
+    }
+    int res = 0;
+    int rc = wc_dilithium_verify_ctx_msg(sig.data(), (word32)sig.size(),
+                                         ctx.empty() ? nullptr : ctx.data(), (byte)ctx.size(),
+                                         msg.data(), (word32)msg.size(), &res, &key);
+    wc_dilithium_free(&key);
+    if (rc != 0) return false;
+    return res == 1;
 }
 
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generateEccKeyPair(const std::string&) {
