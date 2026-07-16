@@ -1,0 +1,17 @@
+[package]
+name = "nkct-keyring-shim"
+version = "0.1.0"
+edition = "2021"
+
+# C-ABI wrapper over nkCryptoTool-rust's keyring (redb `keyring.db`, the
+# my-identities store), so the C++ nkCryptoTool can share ONE keyring.db with
+# the Rust implementation: keys generated/imported by either binary are usable
+# by both. Depends on nk-crypto-tool as a sibling path checkout.
+
+[lib]
+name = "nkct_keyring"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+nk-crypto-tool = { path = "../../nkCryptoTool-rust" }
+hex = "0.4"

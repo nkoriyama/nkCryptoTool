@@ -8,6 +8,9 @@
 #include "TpmKeyProvider.hpp"
 #include "nkCryptoToolUtils.hpp"
 #include "nkKeyBundle.hpp"
+#ifdef NKCT_ENABLE_KEYRING
+#include "nkKeyring.hpp"
+#endif
 #ifdef NKCT_ENABLE_P2P
 #include "nkP2P.hpp"
 #endif
@@ -19,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <cxxopts.hpp>
+#include <unistd.h>
 
 std::shared_ptr<nk::backend::ICryptoBackend> get_nk_backend();
 
@@ -210,6 +214,10 @@ int main(int argc, char* argv[]) {
         ("allow-unauth", "P2P: accept an anonymous (unauthenticated) peer")
         ("scp-get", "P2P: download REMOTE from the peer (with --connect)", cxxopts::value<std::string>())
         ("scp-local", "P2P: local path for --scp-get", cxxopts::value<std::string>())
+        ("keyring-cmd", "Keyring subcommand (gen-my-key|import-my-key|list-my-keys) — shared keyring.db", cxxopts::value<std::string>())
+        ("keyring-db", "Path to the shared keyring.db (default <key-dir>/keyring.db)", cxxopts::value<std::string>())
+        ("key-algo", "Key algorithm for gen-my-key", cxxopts::value<std::string>())
+        ("key-role", "enc|sign (required for P-256 import/gen)", cxxopts::value<std::string>())
         ("key-dir", "Directory to store generated keys", cxxopts::value<std::string>()->default_value("keys"))
         ("recipient-pubkey", "The recipient's public key for encryption", cxxopts::value<std::string>())
         ("recipient-ecdh-pubkey", "The recipient's ECDH public key", cxxopts::value<std::string>())
@@ -243,6 +251,32 @@ int main(int argc, char* argv[]) {
 
         CryptoConfig config;
         config.mode = get_mode_from_string(result["mode"].as<std::string>());
+
+        if (result.count("keyring-cmd")) {
+#ifdef NKCT_ENABLE_KEYRING
+            std::string kd = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
+            std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (kd + "/keyring.db");
+            std::string cmd = result["keyring-cmd"].as<std::string>();
+            std::string handle = result.count("keybundle-handle") ? result["keybundle-handle"].as<std::string>() : "me";
+            std::string role = result.count("key-role") ? result["key-role"].as<std::string>() : "";
+            if (cmd == "gen-my-key") {
+                if (!result.count("key-algo")) { std::cerr << "Error: gen-my-key requires --key-algo" << std::endl; return 1; }
+                return nk::keyring_db::genMyKey(db, result["key-algo"].as<std::string>(), role, handle);
+            } else if (cmd == "import-my-key") {
+                if (!result.count("user-privkey")) { std::cerr << "Error: import-my-key requires --user-privkey <key>" << std::endl; return 1; }
+                return nk::keyring_db::importMyKey(db, result["user-privkey"].as<std::string>(), role, handle);
+            } else if (cmd == "list-my-keys") {
+                return nk::keyring_db::listMyKeys(db);
+            }
+            std::cerr << "Error: unknown --keyring-cmd (gen-my-key|import-my-key|list-my-keys)" << std::endl;
+            return 1;
+#else
+            std::cerr << "Error: this build has no keyring support. Rebuild with "
+                         "-DNKCT_ENABLE_KEYRING=ON -DUSE_BACKEND=OpenSSL (needs a Rust toolchain "
+                         "and nkCryptoTool-rust as a sibling checkout)." << std::endl;
+            return 1;
+#endif
+        }
 
         if (result.count("gen-keybundle")) {
             std::string kd = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
@@ -296,6 +330,33 @@ int main(int argc, char* argv[]) {
         // CryptoProcessor.cpp の期待名 (signing-privkey / signing-pubkey) に合わせる
         if (result.count("signing-privkey")) config.key_paths["signing-privkey"] = result["signing-privkey"].as<std::string>();
         if (result.count("signing-pubkey")) config.key_paths["signing-pubkey"] = result["signing-pubkey"].as<std::string>();
+
+        std::vector<std::string> keyring_tmp; // temp PEMs materialised from keyring.db (cleaned below)
+#ifdef NKCT_ENABLE_KEYRING
+        // Sign auto-match: --sign with no --signing-privkey resolves the signing
+        // key from the shared keyring.db (slot me:sign:<algo>, algo by mode) —
+        // the C++ twin of the Rust keyring_automatch_sign.
+        if (config.operation == Operation::Sign && !result.count("signing-privkey")) {
+            std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (key_dir + "/keyring.db");
+            if (std::filesystem::exists(db)) {
+                std::string algo = (config.mode == CryptoMode::ECC) ? "P-256"
+                                   : (result.count("dsa-algo") ? result["dsa-algo"].as<std::string>() : "ML-DSA-65");
+                auto pem = nk::keyring_db::getUnlockedPem(db, "me", "sign", algo, "");
+                if (pem) {
+                    std::string tp = std::filesystem::temp_directory_path().string() +
+                                     "/nkct-kr-sign-" + std::to_string(::getpid()) + ".pem";
+                    std::ofstream ofs(tp); ofs << *pem; ofs.close();
+                    config.key_paths["signing-privkey"] = tp;
+                    keyring_tmp.push_back(tp);
+                    std::fprintf(stderr, "[keyring] signing with me:sign:%s from %s\n", algo.c_str(), db.c_str());
+                } else {
+                    std::cerr << "Error: --sign with no --signing-privkey and no me:sign key in " << db << std::endl;
+                    return 1;
+                }
+            }
+        }
+#endif
+        struct KrTmpCleanup { std::vector<std::string>& p; ~KrTmpCleanup(){ for(auto&f:p){ std::error_code e; std::filesystem::remove(f,e);} } } kr_cleanup{keyring_tmp};
         
         if (config.mode == CryptoMode::Hybrid) {
             if (!result.count("recipient-ecdh-pubkey") && !result.count("recipient-pubkey"))

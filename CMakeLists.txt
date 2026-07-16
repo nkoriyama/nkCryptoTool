@@ -168,11 +168,43 @@ if(NKCT_ENABLE_P2P)
     add_compile_definitions(NKCT_ENABLE_P2P)
 endif()
 
+# --- Keyring (shared keyring.db with nkCryptoTool-rust) ---
+# Opt-in: wraps the Rust keyring via a shim, so C++ and Rust share ONE
+# keyring.db. Needs cargo + nkCryptoTool-rust as a sibling checkout. Cannot be
+# combined with NKCT_ENABLE_P2P yet: both statically link iroh (the keyring
+# shim via nk-crypto-tool, the P2P shim directly), which duplicates symbols.
+option(NKCT_ENABLE_KEYRING "Build shared-keyring.db support (requires cargo + nkCryptoTool-rust sibling)" OFF)
+set(NKCT_KEYRING_SOURCES "")
+set(NKCT_KEYRING_LIBS "")
+if(NKCT_ENABLE_KEYRING)
+    if(NKCT_ENABLE_P2P)
+        message(FATAL_ERROR "NKCT_ENABLE_KEYRING and NKCT_ENABLE_P2P cannot both be ON yet (duplicate iroh symbols)")
+    endif()
+    find_program(CARGO cargo REQUIRED)
+    set(KR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/keyring-shim)
+    set(KR_LIB ${KR_DIR}/target/release/libnkct_keyring.a)
+    add_custom_command(
+        OUTPUT ${KR_LIB}
+        COMMAND ${CARGO} build --release --manifest-path ${KR_DIR}/Cargo.toml
+        WORKING_DIRECTORY ${KR_DIR}
+        COMMENT "Building the keyring shim (cargo)"
+        VERBATIM)
+    add_custom_target(nkct_keyring_shim DEPENDS ${KR_LIB})
+    set(NKCT_KEYRING_SOURCES nkKeyring.cpp)
+    set(NKCT_KEYRING_LIBS ${KR_LIB} dl m)
+    add_compile_definitions(NKCT_ENABLE_KEYRING)
+endif()
+
 add_executable(nkCryptoTool
     nkCryptoToolMain.cpp
     ${NKCT_P2P_SOURCES}
+    ${NKCT_KEYRING_SOURCES}
     ${NKCRYPTO_SHARED_SOURCES}
 )
+if(NKCT_ENABLE_KEYRING)
+    add_dependencies(nkCryptoTool nkct_keyring_shim)
+    target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_KEYRING)
+endif()
 if(NKCT_ENABLE_P2P)
     add_dependencies(nkCryptoTool nkct_p2p_shim)
     target_compile_definitions(nkCryptoTool PRIVATE NKCT_ENABLE_P2P)
@@ -190,6 +222,7 @@ target_link_libraries(nkCryptoTool PRIVATE
     nlohmann_json::nlohmann_json
     ${BACKEND_LIBS}
     ${NKCT_P2P_LIBS}
+    ${NKCT_KEYRING_LIBS}
 )
 
 # --- ユニットテスト ---
