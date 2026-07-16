@@ -110,7 +110,22 @@ void term_size(uint16_t& cols, uint16_t& rows) {
     }
 }
 long stdin_read(uint8_t* buf, size_t n) { return (long)_read(_fileno(stdin), buf, (unsigned)n); }
-bool running_as_root() { return false; } // Windows: no euid (Administrator check TBD)
+// Windows analogue of "running as root": is the effective token a member of the
+// built-in Administrators group? The shell/pairing servers refuse to run
+// elevated (no privilege drop), matching the Rust build. NOTE: Wine runs as
+// Administrator by default, so the shell SERVER cannot be exercised under Wine —
+// run it as a standard user on real Windows.
+bool running_as_root() {
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID admins = nullptr;
+    BOOL is_member = FALSE;
+    if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)) {
+        if (!CheckTokenMembership(nullptr, admins, &is_member)) is_member = FALSE;
+        FreeSid(admins);
+    }
+    return is_member != FALSE;
+}
 #else
 struct RawGuard {
     termios oldt{}; bool active = false;
