@@ -32,9 +32,9 @@ void PipelineManager::run(const std::string& in_path, async_file_t out_file, uin
         return; 
     }
 
-    if (::lseek(input_file_.native_handle(), (off_t)read_offset, SEEK_SET) == -1) {
-        ec.assign(errno, std::system_category());
-        call_completion_handler(ec, "Failed to seek input file"); 
+    input_file_.seek(read_offset, ec);
+    if (ec) {
+        call_completion_handler(ec, "Failed to seek input file");
         return;
     }
 

@@ -14,15 +14,32 @@
 #include <sstream>
 #include <fstream>
 #include <memory>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <cstring>
 #include "IKeyProvider.hpp"
 #include "TPMConstants.hpp"
-#include "TpmSecure.hpp"
 #include "backend/IBackend.hpp"
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/stat.h>
+#include "TpmSecure.hpp"   // posix_spawn-based tpm2 CLI driver (POSIX only)
+#endif
 
 namespace nk {
+
+#ifdef _WIN32
+// Windows has no tpm2 CLI / posix_spawn path; report the provider unavailable so
+// the caller falls back to the software key provider (see setKeyProvider).
+class TpmKeyProvider : public IKeyProvider {
+public:
+    std::expected<SecureString, CryptoError> wrapKey(const std::vector<uint8_t>&, const SecureString& = "") override {
+        return std::unexpected(CryptoError::KeyProtectionError);
+    }
+    std::expected<std::vector<uint8_t>, CryptoError> unwrapKey(const SecureString&, const SecureString& = "") override {
+        return std::unexpected(CryptoError::KeyProtectionError);
+    }
+    bool isAvailable() override { return false; }
+};
+#else
 
 class TpmKeyProvider : public IKeyProvider {
 public:
@@ -207,6 +224,7 @@ public:
         }
     }
 };
+#endif // _WIN32
 
 } // namespace nk
 

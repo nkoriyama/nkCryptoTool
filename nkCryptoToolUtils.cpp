@@ -20,9 +20,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <random>
 #endif
 
+#include <random>
 #include <fstream>
 #include <system_error>
 

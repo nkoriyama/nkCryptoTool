@@ -103,6 +103,13 @@ else()
     set(BACKEND_DEFS USE_BACKEND_OPENSSL)
 endif()
 
+# Windows (mingw cross): keep <windows.h> lean so it does not pull the legacy
+# <winsock.h> ahead of asio's <winsock2.h> (WIN32_LEAN_AND_MEAN), drop the
+# min/max macros that clash with std::min/max (NOMINMAX), and target Win10 APIs.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+endif()
+
 # ソースファイル
 set(NKCRYPTO_SHARED_SOURCES
     PipelineManager.cpp
@@ -126,6 +133,7 @@ set_target_properties(nkcrypto_shared PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(nkcrypto_shared PUBLIC
   ${PROJECT_SOURCE_DIR}
   ${asio_SOURCE_DIR}/asio/include
+  ${OPENSSL_INCLUDE_DIR}
 )
 
 if(USE_BACKEND STREQUAL "WolfSSL")
@@ -161,14 +169,22 @@ if(NKCT_ENABLE_P2P OR NKCT_ENABLE_KEYRING)
     endif()
     find_program(CARGO cargo REQUIRED)
     set(SHIM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shim)
-    set(SHIM_LIB ${SHIM_DIR}/target/release/libnkct_shim.a)
     set(SHIM_FEATURES "")
     if(NKCT_ENABLE_KEYRING)
         set(SHIM_FEATURES --features keyring)
     endif()
+    # Cross vs native: when a Rust target is set (Windows toolchain), build the
+    # shim for that target and read the target-specific artifact path.
+    if(NKCT_RUST_TARGET)
+        set(SHIM_CARGO_TARGET --target ${NKCT_RUST_TARGET})
+        set(SHIM_LIB ${SHIM_DIR}/target/${NKCT_RUST_TARGET}/release/libnkct_shim.a)
+    else()
+        set(SHIM_CARGO_TARGET "")
+        set(SHIM_LIB ${SHIM_DIR}/target/release/libnkct_shim.a)
+    endif()
     add_custom_command(
         OUTPUT ${SHIM_LIB}
-        COMMAND ${CARGO} build --release --manifest-path ${SHIM_DIR}/Cargo.toml ${SHIM_FEATURES}
+        COMMAND ${CARGO} build --release --manifest-path ${SHIM_DIR}/Cargo.toml ${SHIM_CARGO_TARGET} ${SHIM_FEATURES}
         WORKING_DIRECTORY ${SHIM_DIR}
         COMMENT "Building the nkct Rust shim (cargo)"
         VERBATIM)
@@ -179,10 +195,18 @@ if(NKCT_ENABLE_P2P OR NKCT_ENABLE_KEYRING)
     if(NKCT_ENABLE_KEYRING)
         list(APPEND NKCT_SHIM_SOURCES nkKeyring.cpp)
     endif()
-    # The Rust staticlib pulls in these system libs (tokio, quinn, ring, and
-    # portable-pty's openpty). `util` provides openpty on glibc < 2.34 (newer
-    # glibc folds it into libc, where the stub still links cleanly).
-    set(NKCT_SHIM_LIBS ${SHIM_LIB} dl m util)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # System libs the Rust staticlib (tokio/quinn/ring/hickory/portmapper and
+        # portable-pty's ConPTY) resolves against on Windows.
+        set(NKCT_SHIM_LIBS ${SHIM_LIB}
+            ws2_32 bcrypt ncrypt userenv ntdll iphlpapi secur32 crypt32
+            advapi32 kernel32 user32 ole32 shell32 pdh powrprof propsys runtimeobject)
+    else()
+        # The Rust staticlib pulls in these system libs (tokio, quinn, ring, and
+        # portable-pty's openpty). `util` provides openpty on glibc < 2.34 (newer
+        # glibc folds it into libc, where the stub still links cleanly).
+        set(NKCT_SHIM_LIBS ${SHIM_LIB} dl m util)
+    endif()
 endif()
 
 add_executable(nkCryptoTool
@@ -203,6 +227,7 @@ target_include_directories(nkCryptoTool PRIVATE
     ${PROJECT_SOURCE_DIR}
     ${asio_SOURCE_DIR}/asio/include
     ${cxxopts_SOURCE_DIR}/include
+    ${OPENSSL_INCLUDE_DIR}
 )
 target_compile_definitions(nkCryptoTool PRIVATE ${BACKEND_DEFS})
 target_link_libraries(nkCryptoTool PRIVATE

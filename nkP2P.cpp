@@ -26,12 +26,18 @@
 #include <openssl/bio.h>
 
 // The shell SERVER's pseudo-terminal is handled cross-platform by the Rust shim
-// (portable-pty: openpty on unix, ConPTY on Windows) — no forkpty here. These
-// POSIX headers are only for the interactive shell CLIENT's local terminal
-// (raw mode + initial window size); that path is still POSIX-only.
+// (portable-pty: openpty on unix, ConPTY on Windows) — no forkpty here. The
+// headers below are for the interactive shell CLIENT's local terminal (raw mode
+// + initial window size + stdin reads), abstracted per platform by the helpers
+// in the anonymous namespace (RawGuard / term_size / stdin_read).
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#else
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#endif
 
 #ifdef NKCT_ENABLE_KEYRING
 extern "C" int nkct_kr_pairing_register(const char* db, const unsigned char* bundle, size_t bundle_len,
@@ -78,6 +84,50 @@ constexpr const char* ALPN_PAIRING = "nkct/pairing/1";
 constexpr const char* HS_CTX = "nkct-handshake-iroh-v1";
 
 [[noreturn]] void fail(const std::string& m) { std::fprintf(stderr, "[p2p] error: %s\n", m.c_str()); std::exit(1); }
+
+// ---- portable local-terminal helpers (interactive shell CLIENT only) -------
+// Raw mode, window size, and blocking stdin reads differ by platform; the shell
+// SERVER's PTY is the shim's job, this is just the local console the user types
+// at. Windows uses the Console API, unix uses termios/ioctl.
+#ifdef _WIN32
+struct RawGuard {
+    HANDLE h = INVALID_HANDLE_VALUE; DWORD old = 0; bool active = false;
+    void enter() {
+        h = GetStdHandle(STD_INPUT_HANDLE);
+        if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &old)) {
+            SetConsoleMode(h, old & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT));
+            active = true;
+        }
+    }
+    void leave() { if (active) { SetConsoleMode(h, old); active = false; } }
+};
+void term_size(uint16_t& cols, uint16_t& rows) {
+    CONSOLE_SCREEN_BUFFER_INFO ci{};
+    HANDLE o = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (o != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(o, &ci)) {
+        cols = (uint16_t)(ci.srWindow.Right - ci.srWindow.Left + 1);
+        rows = (uint16_t)(ci.srWindow.Bottom - ci.srWindow.Top + 1);
+    }
+}
+long stdin_read(uint8_t* buf, size_t n) { return (long)_read(_fileno(stdin), buf, (unsigned)n); }
+bool running_as_root() { return false; } // Windows: no euid (Administrator check TBD)
+#else
+struct RawGuard {
+    termios oldt{}; bool active = false;
+    void enter() {
+        if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &oldt) == 0) {
+            termios nt = oldt; cfmakeraw(&nt); tcsetattr(STDIN_FILENO, TCSANOW, &nt); active = true;
+        }
+    }
+    void leave() { if (active) { tcsetattr(STDIN_FILENO, TCSANOW, &oldt); active = false; } }
+};
+void term_size(uint16_t& cols, uint16_t& rows) {
+    struct winsize ws;
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col) { cols = ws.ws_col; rows = ws.ws_row; }
+}
+long stdin_read(uint8_t* buf, size_t n) { return (long)::read(STDIN_FILENO, buf, n); }
+bool running_as_root() { return ::geteuid() == 0; }
+#endif
 
 // ---- shim stream framing ----
 void swrite(void* s, const uint8_t* p, size_t n) { if (nkct_stream_write(s, p, n) != 0) fail("stream write"); }
@@ -464,8 +514,7 @@ int connectShell(const std::string& ticket, const std::string& signing_priv, con
     uint64_t tx=0, rx=0; // client: tx=c2s, rx=s2c, independent counters
 
     // Window size + TERM for the OPEN frame.
-    uint16_t cols=80, rows=24;
-    struct winsize ws; if(ioctl(STDIN_FILENO,TIOCGWINSZ,&ws)==0 && ws.ws_col){ cols=ws.ws_col; rows=ws.ws_row; }
+    uint16_t cols=80, rows=24; term_size(cols, rows);
     const char* te=getenv("TERM"); std::string term=te?te:"xterm-256color";
     scp_send(st,c2s,tx, open_frame(cols,rows,term,cmd));
 
@@ -484,10 +533,7 @@ int connectShell(const std::string& ticket, const std::string& signing_priv, con
     // Interactive: raw-mode stdin pumped in this thread, server output in a
     // reader thread. Exit(code) ends the session and restores the terminal.
     std::fprintf(stderr,"[p2p] shell session — exit / Ctrl-D to quit.\n");
-    termios oldt{}; bool raw=false;
-    if(isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO,&oldt)==0){
-        termios nt=oldt; cfmakeraw(&nt); tcsetattr(STDIN_FILENO,TCSANOW,&nt); raw=true;
-    }
+    RawGuard raw; raw.enter();
     std::atomic<bool> done{false}; std::atomic<int> ecode{0};
     std::thread reader([&]{
         for(;;){ Bytes f; if(!scp_recv(st,s2c,rx,f)||f.empty()){ done=true; return; }
@@ -498,7 +544,7 @@ int connectShell(const std::string& ticket, const std::string& signing_priv, con
     });
     uint8_t ib[4096];
     while(!done.load()){
-        long r=::read(STDIN_FILENO, ib, sizeof ib);
+        long r=stdin_read(ib, sizeof ib);
         if(r>0){ scp_send(st,c2s,tx, data_frame(ib,(size_t)r)); }
         else { break; } // EOF (Ctrl-D) or error: stop sending stdin
         if(done.load()) break;
@@ -506,7 +552,7 @@ int connectShell(const std::string& ticket, const std::string& signing_priv, con
     // Let the server finish; wait briefly for a trailing Exit frame.
     for(int i=0;i<50 && !done.load();i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     done=true; nkct_stream_finish(st); reader.join();
-    if(raw) tcsetattr(STDIN_FILENO,TCSANOW,&oldt);
+    raw.leave();
     code=ecode.load();
     nkct_stream_free(st); nkct_conn_free(conn); nkct_endpoint_free(ep); return code&0xff;
 }
@@ -558,7 +604,7 @@ int connectPairing(const std::string& ticket, const std::string& token, const By
 int serveShell(const std::string& signing_priv, const std::string& allowed_client_pub){
     using namespace shellf;
     char* v=nkct_p2p_version(); std::fprintf(stderr,"[p2p] %s\n", v?v:"?"); nkct_string_free(v);
-    if(::geteuid()==0) fail("refusing to serve a shell as root");
+    if(running_as_root()) fail("refusing to serve a shell as root");
     if(signing_priv.empty()) fail("--serve-shell requires --signing-privkey (server identity, mutual auth)");
     if(allowed_client_pub.empty()) fail("--serve-shell requires --signing-pubkey (the client to pin)");
     Bytes allow_pub=mldsa_pub_from_file(allowed_client_pub); Bytes allow_fp=sha3_256(allow_pub);
@@ -627,7 +673,7 @@ int serveShell(const std::string& signing_priv, const std::string& allowed_clien
 // via the shim. Refuses to run as root. Needs NKCT_ENABLE_KEYRING (redb writes).
 int servePairing(const std::string& signing_priv, const std::string& keyring_db, uint8_t grants){
     char* v=nkct_p2p_version(); std::fprintf(stderr,"[p2p] %s\n", v?v:"?"); nkct_string_free(v);
-    if(::geteuid()==0) fail("refusing to run pairing as root");
+    if(running_as_root()) fail("refusing to run pairing as root");
     if(signing_priv.empty()) fail("--serve-pairing requires --signing-privkey (server identity)");
     if(grants==0) fail("--serve-pairing requires --pairing-grant (no default)");
 #ifndef NKCT_ENABLE_KEYRING

@@ -41,3 +41,4 @@ build-p2p/
 build-kr/
 build-both/
 shim/target/
+build-win/
