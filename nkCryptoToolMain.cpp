@@ -208,6 +208,8 @@ int main(int argc, char* argv[]) {
         ("serve-chat", "P2P: listen for one chat peer over iroh (prints a ticket)")
         ("connect", "P2P: connect to a chat peer by its nkct1 ticket", cxxopts::value<std::string>())
         ("allow-unauth", "P2P: accept an anonymous (unauthenticated) peer")
+        ("scp-get", "P2P: download REMOTE from the peer (with --connect)", cxxopts::value<std::string>())
+        ("scp-local", "P2P: local path for --scp-get", cxxopts::value<std::string>())
         ("key-dir", "Directory to store generated keys", cxxopts::value<std::string>()->default_value("keys"))
         ("recipient-pubkey", "The recipient's public key for encryption", cxxopts::value<std::string>())
         ("recipient-ecdh-pubkey", "The recipient's ECDH public key", cxxopts::value<std::string>())
@@ -252,6 +254,12 @@ int main(int argc, char* argv[]) {
             std::string sp = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>() : "";
             std::string su = result.count("signing-pubkey")  ? result["signing-pubkey"].as<std::string>()  : "";
             if (result.count("connect")) {
+                if (result.count("scp-get")) {
+                    std::string local = result.count("scp-local") ? result["scp-local"].as<std::string>()
+                                                                  : result["scp-get"].as<std::string>();
+                    return nk::p2p::connectScpGet(result["connect"].as<std::string>(),
+                                                  result["scp-get"].as<std::string>(), local, sp, su);
+                }
                 return nk::p2p::connectChat(result["connect"].as<std::string>(), sp, su);
             }
             return nk::p2p::serveChat(sp, su, result.count("allow-unauth") > 0);

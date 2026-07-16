@@ -37,6 +37,14 @@ int serveChat(const std::string& signing_priv,
               const std::string& signing_pub,
               bool allow_unauth);
 
+// scp get: connect to `ticket`, download `remote_path` from the peer to
+// `local_path` (single file). Interoperates with the Rust scp server.
+int connectScpGet(const std::string& ticket,
+                  const std::string& remote_path,
+                  const std::string& local_path,
+                  const std::string& signing_priv,
+                  const std::string& signing_pub);
+
 } // namespace nk::p2p
 
 #endif // NK_P2P_HPP

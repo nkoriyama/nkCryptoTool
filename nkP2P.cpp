@@ -48,6 +48,7 @@ namespace {
 
 using Bytes = std::vector<uint8_t>;
 constexpr const char* ALPN_CHAT = "nkct/chat/2";
+constexpr const char* ALPN_SCP = "nkct/scp/2";
 constexpr const char* HS_CTX = "nkct-handshake-iroh-v1";
 
 [[noreturn]] void fail(const std::string& m) { std::fprintf(stderr, "[p2p] error: %s\n", m.c_str()); std::exit(1); }
@@ -182,11 +183,66 @@ int chat_loop(void* st, const Bytes& tx_key, const Bytes& rx_key){
     done=true; nkct_stream_finish(st); rx.join(); return 0;
 }
 
+// ---- scp (nkct/scp/2) frame protocol -------------------------------------
+// Packets are counter-nonce framed: u32 LE len + AES-256-GCM(pt, nonce, no AAD),
+// nonce = 4 zero bytes || u64 BE counter, counter++ per packet (per direction).
+constexpr uint8_t T_PUT=0x01,T_DATA=0x03,T_EOF=0x04,T_ACK=0x05,T_FAIL=0x06,T_GET=0x07,T_DONE=0x08,T_ERR=0x09;
+void ctr_nonce(uint64_t c, uint8_t n[12]){ memset(n,0,12); for(int i=0;i<8;i++) n[4+i]=(uint8_t)(c>>((7-i)*8)); }
+void scp_send(void* st, const Bytes& key, uint64_t& ctr, const Bytes& pt){
+    uint8_t nonce[12]; ctr_nonce(ctr,nonce);
+    Bytes pkt=gcm_seal(key,nonce,pt);
+    uint32_t l=(uint32_t)pkt.size(); uint8_t lp[4]={(uint8_t)l,(uint8_t)(l>>8),(uint8_t)(l>>16),(uint8_t)(l>>24)};
+    swrite(st,lp,4); swrite(st,pkt.data(),pkt.size()); ctr++;
+}
+// Returns false on clean EOF (0-length or stream end).
+bool scp_recv(void* st, const Bytes& key, uint64_t& ctr, Bytes& out){
+    uint8_t lp[4]; size_t have=0; while(have<4){ long r=nkct_stream_read(st,lp+have,4-have); if(r<=0) return false; have+=r; }
+    uint32_t l=(uint32_t)lp[0]|((uint32_t)lp[1]<<8)|((uint32_t)lp[2]<<16)|((uint32_t)lp[3]<<24);
+    if(l==0) return false;
+    Bytes pkt(l); have=0; while(have<l){ long r=nkct_stream_read(st,pkt.data()+have,l-have); if(r<=0) return false; have+=r; }
+    uint8_t nonce[12]; ctr_nonce(ctr,nonce); out=gcm_open(key,nonce,pkt); ctr++; return true;
+}
+void put_u32be(Bytes& v,uint32_t n){ v.push_back((uint8_t)(n>>24)); v.push_back((uint8_t)(n>>16)); v.push_back((uint8_t)(n>>8)); v.push_back((uint8_t)n); }
+uint32_t get_u32be(const Bytes& b,size_t o){ return ((uint32_t)b[o]<<24)|((uint32_t)b[o+1]<<16)|((uint32_t)b[o+2]<<8)|b[o+3]; }
+
+// Run the initiator (client) handshake over `st` for a given ticket; fills the
+// s2c/c2s keys. Shared by chat and scp (only the ALPN and post-handshake differ).
+void initiator_handshake(void* st, const uint8_t my_id[32], const uint8_t srv_id[32],
+                         const std::string& ticket, const std::string& signing_priv,
+                         Bytes& s2c, Bytes& c2s){
+    uint8_t srv_fp[32]; bool mutual = nkct_ticket_fingerprints(ticket.c_str(),srv_fp,nullptr)==0;
+    { bool z=true; for(int i=0;i<32;i++) if(srv_fp[i]){z=false;break;} if(z) mutual=false; }
+    Transcript tb; tb.raw(my_id,32); tb.raw(srv_id,32);
+    Bytes ecc_spki; EVP_PKEY* ecc=p256_keygen(ecc_spki);
+    Bytes kem_ek; EVP_PKEY* kem=mlkem_keygen(kem_ek);
+    wvec(st,ecc_spki); wvec(st,kem_ek); tb.lp(ecc_spki); tb.lp(kem_ek);
+    bool self_auth=!signing_priv.empty(), expects=mutual;
+    Bytes my_dsa_pub; EVP_PKEY* dsa=nullptr; if(self_auth) dsa=mldsa_load(signing_priv,my_dsa_pub);
+    uint8_t flags=(self_auth?0x01:0)|(expects?0x02:0); swrite(st,&flags,1); tb.raw(&flags,1);
+    if(self_auth){ wvec(st,my_dsa_pub); tb.lp(my_dsa_pub); }
+    if(expects){ swrite(st,srv_fp,32); tb.raw(srv_fp,32); }
+    if(self_auth){ Bytes sig=mldsa_sign(dsa,tb.buf); wvec(st,sig); }
+    Bytes s_ecc=rvec(st), kem_ct=rvec(st); Bytes s_flag=sread_exact(st,1);
+    tb.lp(s_ecc); tb.lp(kem_ct); tb.raw(s_flag);
+    if(expects){
+        if((s_flag[0]&0x01)==0) fail("server declined auth (required by ticket pin)");
+        Bytes s_dsa=rvec(st); tb.lp(s_dsa); Bytes sig_r=rvec(st); Bytes s_kem=rvec(st); tb.lp(s_kem);
+        Bytes fp=sha3_256(s_dsa); if(memcmp(fp.data(),srv_fp,32)!=0) fail("server fingerprint mismatch (MITM?)");
+        if(!mldsa_verify(s_dsa,tb.buf,sig_r)) fail("sig_R verify failed");
+        std::fprintf(stderr,"[p2p] server authenticated (ML-DSA-65).\n");
+    } else if(s_flag[0]!=0) fail("server self-authed but no pin");
+    Bytes ss=p256_ecdh(ecc,s_ecc); Bytes k=mlkem_decap(kem,kem_ct); ss.insert(ss.end(),k.begin(),k.end());
+    Bytes salt=sha3_256(tb.buf); Bytes okm=hkdf(ss,salt,"nk-auth-v3",88);
+    s2c.assign(okm.begin(),okm.begin()+32); c2s.assign(okm.begin()+44,okm.begin()+76);
+    EVP_PKEY_free(ecc); EVP_PKEY_free(kem); if(dsa) EVP_PKEY_free(dsa);
+}
+
 } // namespace
 
 namespace nk::p2p {
 
 int connectChat(const std::string& ticket, const std::string& signing_priv, const std::string& signing_pub){
+    (void)signing_pub;
     char* v=nkct_p2p_version(); std::fprintf(stderr,"[p2p] %s\n", v?v:"?"); nkct_string_free(v);
     void* ep=nkct_endpoint_bind((const uint8_t*)ALPN_CHAT, strlen(ALPN_CHAT)); if(!ep) fail("bind");
     uint8_t my_id[32]; nkct_endpoint_node_id(ep,my_id);
@@ -195,42 +251,9 @@ int connectChat(const std::string& ticket, const std::string& signing_priv, cons
     if(!conn) fail("connect (is a listener running with a reachable direct address?)");
     uint8_t srv_id[32]; nkct_conn_remote_node_id(conn,srv_id);
     void* st=nkct_conn_open_bi(conn); if(!st) fail("open_bi");
-
-    uint8_t srv_fp[32]; bool mutual = nkct_ticket_fingerprints(ticket.c_str(),srv_fp,nullptr)==0;
-    { bool z=true; for(int i=0;i<32;i++) if(srv_fp[i]){z=false;break;} if(z) mutual=false; }
-    if(mutual && signing_priv.empty()) std::fprintf(stderr,"[p2p] note: ticket pins a server identity but no --signing-privkey given; verifying server only\n");
-
-    Transcript tb; tb.raw(my_id,32); tb.raw(srv_id,32);
-    Bytes ecc_spki; EVP_PKEY* ecc=p256_keygen(ecc_spki);
-    Bytes kem_ek; EVP_PKEY* kem=mlkem_keygen(kem_ek);
-    wvec(st,ecc_spki); wvec(st,kem_ek); tb.lp(ecc_spki); tb.lp(kem_ek);
-
-    bool self_auth = !signing_priv.empty();
-    bool expects_resp = mutual;
-    Bytes my_dsa_pub; EVP_PKEY* dsa=nullptr;
-    if(self_auth) dsa=mldsa_load(signing_priv,my_dsa_pub);
-    uint8_t flags = (self_auth?0x01:0) | (expects_resp?0x02:0);
-    swrite(st,&flags,1); tb.raw(&flags,1);
-    if(self_auth){ wvec(st,my_dsa_pub); tb.lp(my_dsa_pub); }
-    if(expects_resp){ swrite(st,srv_fp,32); tb.raw(srv_fp,32); }
-    if(self_auth){ Bytes sig=mldsa_sign(dsa,tb.buf); wvec(st,sig); }
-
-    Bytes s_ecc=rvec(st), kem_ct=rvec(st); Bytes s_flag=sread_exact(st,1);
-    tb.lp(s_ecc); tb.lp(kem_ct); tb.raw(s_flag);
-    if(expects_resp){
-        if((s_flag[0]&0x01)==0) fail("server declined auth (required by ticket pin)");
-        Bytes s_dsa=rvec(st); tb.lp(s_dsa); Bytes sig_r=rvec(st); Bytes s_kem=rvec(st); tb.lp(s_kem);
-        Bytes fp=sha3_256(s_dsa); if(memcmp(fp.data(),srv_fp,32)!=0) fail("server fingerprint mismatch (MITM?)");
-        if(!mldsa_verify(s_dsa,tb.buf,sig_r)) fail("sig_R verify failed");
-        std::fprintf(stderr,"[p2p] server authenticated (ML-DSA-65).\n");
-    } else if(s_flag[0]!=0) fail("server self-authed but no pin");
-
-    Bytes ss=p256_ecdh(ecc,s_ecc); Bytes k=mlkem_decap(kem,kem_ct); ss.insert(ss.end(),k.begin(),k.end());
-    Bytes salt=sha3_256(tb.buf); Bytes okm=hkdf(ss,salt,"nk-auth-v3",88);
-    Bytes s2c(okm.begin(),okm.begin()+32), c2s(okm.begin()+44,okm.begin()+76);
+    Bytes s2c,c2s; initiator_handshake(st,my_id,srv_id,ticket,signing_priv,s2c,c2s);
     std::fprintf(stderr,"[p2p] connected. Ctrl-D to quit.\n");
     int rc = chat_loop(st, c2s, s2c); // client: send c2s, recv s2c
-    EVP_PKEY_free(ecc); EVP_PKEY_free(kem); if(dsa) EVP_PKEY_free(dsa);
     nkct_stream_free(st); nkct_conn_free(conn); nkct_endpoint_free(ep); return rc;
 }
 
@@ -296,6 +319,54 @@ int serveChat(const std::string& signing_priv, const std::string& signing_pub, b
     int rc = chat_loop(st, s2c, c2s); // server: send s2c, recv c2s
     EVP_PKEY_free(s_ecc); if(dsa) EVP_PKEY_free(dsa);
     nkct_stream_free(st); nkct_conn_free(conn); nkct_endpoint_free(ep); return rc;
+}
+
+int connectScpGet(const std::string& ticket, const std::string& remote_path, const std::string& local_path,
+                  const std::string& signing_priv, const std::string& signing_pub){
+    (void)signing_pub;
+    char* v=nkct_p2p_version(); std::fprintf(stderr,"[p2p] %s\n", v?v:"?"); nkct_string_free(v);
+    void* ep=nkct_endpoint_bind((const uint8_t*)ALPN_SCP, strlen(ALPN_SCP)); if(!ep) fail("bind");
+    uint8_t my_id[32]; nkct_endpoint_node_id(ep,my_id);
+    std::fprintf(stderr,"[p2p] connecting (scp get)...\n");
+    void* conn=nkct_endpoint_connect(ep,ticket.c_str(),(const uint8_t*)ALPN_SCP,strlen(ALPN_SCP));
+    if(!conn) fail("connect (is an scp server running?)");
+    uint8_t srv_id[32]; nkct_conn_remote_node_id(conn,srv_id);
+    void* st=nkct_conn_open_bi(conn); if(!st) fail("open_bi");
+    Bytes s2c,c2s; initiator_handshake(st,my_id,srv_id,ticket,signing_priv,s2c,c2s);
+    // client: tx = c2s, rx = s2c. Two independent counters (per direction).
+    uint64_t tx=0, rx=0;
+
+    // Send Get{path, recursive=false}.
+    Bytes g; g.push_back(T_GET); g.push_back(0);
+    put_u32be(g,(uint32_t)remote_path.size()); g.insert(g.end(),remote_path.begin(),remote_path.end());
+    scp_send(st,c2s,tx,g);
+
+    // Expect Put{file_id,mode,size,...} then Data* then Eof, then send Ack, expect Done.
+    Bytes f; if(!scp_recv(st,s2c,rx,f)||f.empty()) fail("scp: no reply");
+    if(f[0]==T_ERR){ std::string m((char*)f.data()+1,f.size()-1); fail("scp get refused: "+m); }
+    if(f[0]!=T_PUT||f.size()<20) fail("scp get: expected Put header");
+    uint32_t file_id=get_u32be(f,1);
+    uint64_t size=0; for(int i=0;i<8;i++) size=(size<<8)|f[9+i];
+
+    FILE* out=std::fopen(local_path.c_str(),"wb"); if(!out) fail("open "+local_path);
+    uint64_t got=0;
+    for(;;){
+        Bytes d; if(!scp_recv(st,s2c,rx,d)||d.empty()) { std::fclose(out); fail("scp: stream closed before Eof"); }
+        if(d[0]==T_EOF) break;
+        if(d[0]==T_ERR){ std::fclose(out); std::string m((char*)d.data()+1,d.size()-1); fail("scp peer error: "+m); }
+        if(d[0]!=T_DATA||d.size()<5){ std::fclose(out); fail("scp: unexpected frame in body"); }
+        size_t n=d.size()-5; std::fwrite(d.data()+5,1,n,out); got+=n;
+        if(got>size){ std::fclose(out); fail("scp: stream exceeds declared size"); }
+    }
+    std::fclose(out);
+    if(got!=size) fail("scp: size mismatch");
+    // Ack, then Done.
+    Bytes ack; ack.push_back(T_ACK); put_u32be(ack,file_id); scp_send(st,c2s,tx,ack);
+    Bytes done; bool more=scp_recv(st,s2c,rx,done);
+    if(more && !done.empty() && done[0]==T_ERR){ std::string m((char*)done.data()+1,done.size()-1); fail("scp get failed: "+m); }
+    std::fprintf(stderr,"[p2p] downloaded %s (%llu bytes) -> %s\n", remote_path.c_str(), (unsigned long long)size, local_path.c_str());
+    std::printf("PASS: scp get %llu bytes\n",(unsigned long long)size);
+    nkct_stream_free(st); nkct_conn_free(conn); nkct_endpoint_free(ep); return 0;
 }
 
 } // namespace nk::p2p
