@@ -38,14 +38,16 @@ std::expected<std::vector<uint8_t>, CryptoError> loadPubSpki(const std::string& 
     return nkCryptoToolUtils::unwrapFromPem(content, "PUBLIC KEY");
 }
 
-// --gen-keybundle: bind this identity's encryption public key(s) under its
-// ML-DSA-65 signature (SPEC §6). Mirrors the Rust run_gen_keybundle. Standalone
-// (uses the keybundle library, not the strategy pipeline).
-int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const std::string& key_dir) {
-    if (!result.count("keybundle-handle")) { std::cerr << "Error: --gen-keybundle requires --keybundle-handle <name>" << std::endl; return 1; }
-    if (!result.count("keybundle-output")) { std::cerr << "Error: --gen-keybundle requires --keybundle-output <file>" << std::endl; return 1; }
+// Build a signed KeyBundle in memory (SPEC §6): bind this identity's encryption
+// public key(s) under its ML-DSA-65 signature. Source is the keyring (auto-match,
+// handle "me") or key files. Returns the NKKB bytes; sets fp_hex (owner
+// fingerprint) and nkeys. Shared by --gen-keybundle (writes to a file) and the
+// pairing client (sends the bytes to the server). Mirrors the Rust builder.
+std::optional<std::vector<uint8_t>> buildKeybundleBytes(
+        const cxxopts::ParseResult& result, CryptoMode mode, const std::string& key_dir,
+        std::string& fp_hex, size_t& nkeys, const std::string& owner_pub_override = "") {
+    if (!result.count("keybundle-handle")) { std::cerr << "Error: keybundle requires --keybundle-handle <name>" << std::endl; return std::nullopt; }
     std::string handle = result["keybundle-handle"].as<std::string>();
-    std::string output = result["keybundle-output"].as<std::string>();
 
     // Owner identity is ALWAYS ML-DSA-65, independent of --mode.
     const std::string kem_algo = result.count("kem-algo") ? result["kem-algo"].as<std::string>() : "ML-KEM-768";
@@ -72,12 +74,12 @@ int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const s
             if (!owner_pem || !owner_spki) {
                 std::cerr << "Error: keyring " << db << " has no me:sign:ML-DSA-65 (or wrong passphrase) — "
                              "import it once with --keyring-cmd import-my-key" << std::endl;
-                return 1;
+                return std::nullopt;
             }
             auto der = nkCryptoToolUtils::unwrapFromPem(*owner_pem, "PRIVATE KEY");
-            if (!der) { std::cerr << "Error: parse keyring signer PEM" << std::endl; return 1; }
+            if (!der) { std::cerr << "Error: parse keyring signer PEM" << std::endl; return std::nullopt; }
             auto raw = backend->rawPublicKeyFromSpki(*owner_spki);
-            if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return 1; }
+            if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return std::nullopt; }
             owner_priv_der_v = std::move(*der);
             owner_raw_v = std::move(*raw);
             get_enc_spki = [db](const std::string& algo) { return nk::keyring_db::getPublicSpki(db, "me", "enc", algo); };
@@ -89,18 +91,22 @@ int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const s
     if (!used_keyring) {
         std::string sign_priv = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>()
                                                                 : key_dir + "/private_sign_pqc.key";
-        std::string sign_pub = result.count("signing-pubkey") ? result["signing-pubkey"].as<std::string>()
-                                                              : key_dir + "/public_sign_pqc.key";
+        // Owner public key: an explicit override wins (the pairing client passes
+        // its OWN pubkey, since there --signing-pubkey means "pin the server",
+        // not "my identity"); else --signing-pubkey; else the key-dir default.
+        std::string sign_pub = !owner_pub_override.empty() ? owner_pub_override
+                             : (result.count("signing-pubkey") ? result["signing-pubkey"].as<std::string>()
+                                                               : key_dir + "/public_sign_pqc.key");
         std::ifstream pifs(sign_priv, std::ios::binary);
-        if (!pifs) { std::cerr << "Error: cannot read " << sign_priv << std::endl; return 1; }
+        if (!pifs) { std::cerr << "Error: cannot read " << sign_priv << std::endl; return std::nullopt; }
         std::string priv_content((std::istreambuf_iterator<char>(pifs)), std::istreambuf_iterator<char>());
         pass = nkCryptoToolUtils::getPassphraseIfNeeded(priv_content, SecureString());
         auto der = nkCryptoToolUtils::unwrapFromPem(priv_content, "PRIVATE KEY");
-        if (!der) { std::cerr << "Error: parse " << sign_priv << std::endl; return 1; }
+        if (!der) { std::cerr << "Error: parse " << sign_priv << std::endl; return std::nullopt; }
         auto owner_spki = loadPubSpki(sign_pub);
-        if (!owner_spki) { std::cerr << "Error: read " << sign_pub << std::endl; return 1; }
+        if (!owner_spki) { std::cerr << "Error: read " << sign_pub << std::endl; return std::nullopt; }
         auto raw = backend->rawPublicKeyFromSpki(*owner_spki);
-        if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return 1; }
+        if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return std::nullopt; }
         owner_priv_der_v = std::move(*der);
         owner_raw_v = std::move(*raw);
         // File source: the enc public key lives next to the sign key, per mode.
@@ -130,24 +136,35 @@ int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const s
         keys.push_back({nk::keybundle::KEY_USAGE_HYBRID, *spki, created_at, expires_at}); return 0;
     };
 
-    if (mode == CryptoMode::PQC) { if (add_enc_ml_kem(kem_algo)) return 1; }
-    else if (mode == CryptoMode::ECC) { if (add_hybrid_p256("P-256")) return 1; }
+    if (mode == CryptoMode::PQC) { if (add_enc_ml_kem(kem_algo)) return std::nullopt; }
+    else if (mode == CryptoMode::ECC) { if (add_hybrid_p256("P-256")) return std::nullopt; }
     else { // Hybrid: ML-KEM main + P-256 half. Content (raw ek, P-256 SPKI) is
            // what interoperates, not the source (keyring slot or file name).
-           if (add_enc_ml_kem(kem_algo)) return 1;
-           if (add_hybrid_p256("P-256")) return 1; }
+           if (add_enc_ml_kem(kem_algo)) return std::nullopt;
+           if (add_hybrid_p256("P-256")) return std::nullopt; }
 
     auto bundle = nk::keybundle::buildSigned(owner_priv_der_v, owner_raw_v, handle, created_at, keys, pass);
-    if (!bundle) { std::cerr << "Error: build keybundle: " << toString(bundle.error()) << std::endl; return 1; }
+    if (!bundle) { std::cerr << "Error: build keybundle: " << toString(bundle.error()) << std::endl; return std::nullopt; }
+    auto fp = nk::keybundle::ownerFingerprintHex(owner_raw_v);
+    fp_hex = fp ? *fp : std::string("?");
+    nkeys = keys.size();
+    return *bundle;
+}
+
+// --gen-keybundle: build the signed bundle and write it to --keybundle-output.
+int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const std::string& key_dir) {
+    if (!result.count("keybundle-output")) { std::cerr << "Error: --gen-keybundle requires --keybundle-output <file>" << std::endl; return 1; }
+    std::string output = result["keybundle-output"].as<std::string>();
+    std::string fp_hex; size_t nkeys = 0;
+    auto bundle = buildKeybundleBytes(result, mode, key_dir, fp_hex, nkeys);
+    if (!bundle) return 1;
     std::ofstream ofs(output, std::ios::binary | std::ios::trunc);
     if (!ofs) { std::cerr << "Error: write " << output << std::endl; return 1; }
     ofs.write(reinterpret_cast<const char*>(bundle->data()), (std::streamsize)bundle->size());
-
-    auto fp = nk::keybundle::ownerFingerprintHex(owner_raw_v);
-    std::cout << "Wrote signed KeyBundle (" << keys.size() << " key(s), handle \"" << handle
-              << "\") to " << output << ".\n"
+    std::cout << "Wrote signed KeyBundle (" << nkeys << " key(s), handle \""
+              << result["keybundle-handle"].as<std::string>() << "\") to " << output << ".\n"
               << "Share this fingerprint out-of-band so senders can pin your identity:\n  "
-              << (fp ? *fp : std::string("?")) << std::endl;
+              << fp_hex << std::endl;
     return 0;
 }
 
@@ -261,6 +278,13 @@ int main(int argc, char* argv[]) {
         ("allow-unauth", "P2P: accept an anonymous (unauthenticated) peer")
         ("scp-get", "P2P: download REMOTE from the peer (with --connect)", cxxopts::value<std::string>())
         ("scp-local", "P2P: local path for --scp-get", cxxopts::value<std::string>())
+        ("shell", "P2P: connect as a shell client (with --connect)")
+        ("shell-cmd", "P2P: run one command on the remote shell and exit (implies --shell)", cxxopts::value<std::string>())
+        ("serve-shell", "P2P: run a PTY shell server on nkct/shell/2 (pin the client with --signing-pubkey)")
+        ("serve-pairing", "P2P: run a pairing (ssh-copy-id) server on nkct/pairing/1")
+        ("copy-bundle", "P2P: pairing client — send our KeyBundle to a pairing server (with --connect --token)")
+        ("token", "P2P: one-time pairing token from the server (for --copy-bundle)", cxxopts::value<std::string>())
+        ("pairing-grant", "P2P: grants to give a paired peer: comma of shell,scp,forward, or all", cxxopts::value<std::string>())
         ("keyring-cmd", "Keyring subcommand (gen-my-key|import-my-key|list-my-keys) — shared keyring.db", cxxopts::value<std::string>())
         ("keyring-db", "Path to the shared keyring.db (default <key-dir>/keyring.db)", cxxopts::value<std::string>())
         ("key-algo", "Key algorithm for gen-my-key", cxxopts::value<std::string>())
@@ -330,7 +354,8 @@ int main(int argc, char* argv[]) {
             return runGenKeybundle(result, config.mode, kd);
         }
 
-        if (result.count("serve-chat") || result.count("connect")) {
+        if (result.count("serve-chat") || result.count("connect")
+            || result.count("serve-shell") || result.count("serve-pairing")) {
 #ifdef NKCT_ENABLE_P2P
             std::string sp = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>() : "";
             std::string su = result.count("signing-pubkey")  ? result["signing-pubkey"].as<std::string>()  : "";
@@ -357,14 +382,45 @@ int main(int argc, char* argv[]) {
                 }
             }
 #endif
+            std::string p2p_kd = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
+            // ---- servers ----
+            if (result.count("serve-shell")) {
+                return nk::p2p::serveShell(sp, su);
+            }
+            if (result.count("serve-pairing")) {
+                if (!result.count("pairing-grant")) { std::cerr << "Error: --serve-pairing requires --pairing-grant <shell,scp,forward|all>" << std::endl; return 1; }
+                uint8_t grants = 0;
+                { std::string spec = result["pairing-grant"].as<std::string>(); size_t s=0;
+                  while (s <= spec.size()) { size_t e = spec.find(',', s); std::string tok = spec.substr(s, e==std::string::npos?std::string::npos:e-s);
+                    if (tok=="shell") grants|=1; else if (tok=="scp") grants|=2; else if (tok=="forward") grants|=4; else if (tok=="all") grants|=7;
+                    else if (!tok.empty()) { std::cerr << "Error: unknown grant '" << tok << "' (shell|scp|forward|all)" << std::endl; return 1; }
+                    if (e==std::string::npos) break; s=e+1; } }
+                std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (p2p_kd + "/keyring.db");
+                return nk::p2p::servePairing(sp, db, grants);
+            }
+            // ---- clients (need --connect) ----
             if (result.count("connect")) {
+                std::string ticket = result["connect"].as<std::string>();
+                if (result.count("copy-bundle")) {
+                    if (!result.count("token")) { std::cerr << "Error: --copy-bundle requires --token <OTP>" << std::endl; return 1; }
+                    // The bundle owner is OUR identity; --signing-pubkey here pins
+                    // the server, so pass our own sign pubkey explicitly.
+                    std::string fp_hex; size_t nkeys = 0;
+                    std::string own_pub = p2p_kd + "/public_sign_pqc.key";
+                    auto bundle = buildKeybundleBytes(result, config.mode, p2p_kd, fp_hex, nkeys, own_pub);
+                    if (!bundle) return 1;
+                    return nk::p2p::connectPairing(ticket, result["token"].as<std::string>(), *bundle, sp, su);
+                }
+                if (result.count("shell") || result.count("shell-cmd")) {
+                    std::string cmd = result.count("shell-cmd") ? result["shell-cmd"].as<std::string>() : "";
+                    return nk::p2p::connectShell(ticket, sp, su, cmd);
+                }
                 if (result.count("scp-get")) {
                     std::string local = result.count("scp-local") ? result["scp-local"].as<std::string>()
                                                                   : result["scp-get"].as<std::string>();
-                    return nk::p2p::connectScpGet(result["connect"].as<std::string>(),
-                                                  result["scp-get"].as<std::string>(), local, sp, su);
+                    return nk::p2p::connectScpGet(ticket, result["scp-get"].as<std::string>(), local, sp, su);
                 }
-                return nk::p2p::connectChat(result["connect"].as<std::string>(), sp, su);
+                return nk::p2p::connectChat(ticket, sp, su);
             }
             return nk::p2p::serveChat(sp, su, result.count("allow-unauth") > 0);
 #else

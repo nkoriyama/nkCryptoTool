@@ -237,6 +237,79 @@ pub unsafe extern "C" fn nkct_kr_get_public(
     KR_OK
 }
 
+/// Validate a KeyBundle handle for filename safety (mirrors pairing::validate_handle).
+fn valid_handle(h: &str) -> bool {
+    !h.is_empty()
+        && h.len() <= 128
+        && h != "."
+        && h != ".."
+        && !h.starts_with('.')
+        && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+/// Server-side pairing registration: verify the client's KeyBundle (pinned to the
+/// handshake-verified `client_fp`, so it must be self-signed by the connecting
+/// identity), validate its handle, store the bundle, and authorize the fingerprint
+/// with `grants`. The C++ `--serve-pairing` calls this after checking the OTP.
+/// Mirrors the Rust pairing::register store+authorize half. On success writes a
+/// user-facing message to `out_msg` and returns KR_OK; on rejection writes the
+/// reason to `out_msg` and returns KR_ERR (both NUL-terminated, caller frees).
+///
+/// # Safety: `db_path` NUL-terminated; `bundle` points to `bundle_len` bytes;
+/// `client_fp` points to 32 bytes; `out_msg` writable `*mut *mut c_char` or null.
+#[no_mangle]
+pub unsafe extern "C" fn nkct_kr_pairing_register(
+    db_path: *const c_char,
+    bundle: *const u8,
+    bundle_len: usize,
+    client_fp: *const u8,
+    grants: u8,
+    out_msg: *mut *mut c_char,
+) -> c_int {
+    let r = (|| -> Result<String, String> {
+        let db = cstr(db_path).ok_or("db_path")?;
+        if bundle.is_null() || client_fp.is_null() {
+            return Err("null argument".into());
+        }
+        if grants == 0 {
+            return Err("server has no pairing grants configured".into());
+        }
+        let bundle_bytes = std::slice::from_raw_parts(bundle, bundle_len);
+        let mut fp = [0u8; 32];
+        fp.copy_from_slice(std::slice::from_raw_parts(client_fp, 32));
+
+        let vb = nk_crypto_tool::keybundle::parse_and_verify(bundle_bytes, "ML-DSA-65", &fp)
+            .map_err(|e| format!("KeyBundle rejected (must be self-signed by the connecting identity): {e}"))?;
+        if !valid_handle(&vb.handle) {
+            return Err(format!("invalid handle {:?}", vb.handle));
+        }
+        let store = open(db)?;
+        let already = store.grants(&fp).map_err(|e| e.to_string())? != 0;
+        // Store the bundle FIRST (handle-clobber check) before granting.
+        store
+            .add(&vb.handle, &fp, bundle_bytes, now_secs())
+            .map_err(|e| e.to_string())?;
+        store.authorize(&fp, grants).map_err(|e| e.to_string())?;
+        let fp_hex = hex::encode(fp);
+        Ok(format!(
+            "registered {} (fingerprint {}, grants=0b{:03b}{}); keyring {}",
+            vb.handle,
+            &fp_hex[..16],
+            grants,
+            if already { ", re-authorized" } else { "" },
+            db
+        ))
+    })();
+    let (rc, msg) = match r {
+        Ok(m) => (KR_OK, m),
+        Err(e) => (KR_ERR, e),
+    };
+    if !out_msg.is_null() {
+        *out_msg = CString::new(msg).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+    }
+    rc
+}
+
 /// List slots as newline-separated `handle:role:algo:fp8hex` lines (NUL-term,
 /// caller frees). Metadata only — no passphrase, no private key.
 ///
