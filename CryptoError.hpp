@@ -28,10 +28,14 @@ enum class CryptoError {
     TPMProviderLoadError,
     ProviderNotAvailable,
     KeyProtectionError,
+    NotImplementedError,
+    WireFormatError,
 };
 
 inline std::string toString(CryptoError err) {
     switch (err) {
+        case CryptoError::NotImplementedError: return "Feature not implemented on this backend";
+        case CryptoError::WireFormatError: return "Malformed KeyBundle wire format";
         case CryptoError::Success: return "Success";
         case CryptoError::FileCreationError: return "Error creating file";
         case CryptoError::FileReadError: return "Error reading file";

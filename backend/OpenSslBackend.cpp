@@ -226,6 +226,95 @@ std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::sha256(const ui
     return digest;
 }
 
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::sha3_256(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> digest(32);
+    unsigned int out_len = 0;
+    const EVP_MD* md = EVP_get_digestbyname("SHA3-256");
+    if (!md || EVP_Digest(data, len, digest.data(), &out_len, md, nullptr) <= 0 || out_len != 32) {
+        reportOpenSSLErrors("SHA3-256");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    return digest;
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::mldsaSignCtx(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& ctx, const SecureString& passphrase) {
+    EVP_PKEY* pkey = loadPrivateKeyRobust(priv_der.data(), priv_der.size(), passphrase);
+    if (!pkey) { reportOpenSSLErrors("mldsaSignCtx: load key"); return std::unexpected(CryptoError::PrivateKeyLoadError); }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
+    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mctx(EVP_MD_CTX_new());
+
+    // FIPS 204: pass the context string via the "context-string" signature
+    // param so OpenSSL performs the pure-ML-DSA domain separation. Empty ctx
+    // uses the no-param path (matches the Rust implementation).
+    OSSL_PARAM params[2];
+    OSSL_PARAM* p_params = nullptr;
+    if (!ctx.empty()) {
+        params[0] = OSSL_PARAM_construct_octet_string("context-string", (void*)ctx.data(), ctx.size());
+        params[1] = OSSL_PARAM_construct_end();
+        p_params = params;
+    }
+    if (EVP_DigestSignInit_ex(mctx.get(), nullptr, nullptr, nullptr, nullptr, spkey.get(), p_params) <= 0) {
+        reportOpenSSLErrors("mldsaSignCtx: DigestSignInit_ex");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    size_t slen = 0;
+    if (EVP_DigestSign(mctx.get(), nullptr, &slen, msg.data(), msg.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    std::vector<uint8_t> sig(slen);
+    if (EVP_DigestSign(mctx.get(), sig.data(), &slen, msg.data(), msg.size()) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    sig.resize(slen);
+    return sig;
+}
+
+std::expected<bool, CryptoError> OpenSslBackend::mldsaVerifyCtx(const std::vector<uint8_t>& pub_spki_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& sig, const std::vector<uint8_t>& ctx) {
+    const uint8_t* p = pub_spki_der.data();
+    EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)pub_spki_der.size());
+    if (!pkey) { reportOpenSSLErrors("mldsaVerifyCtx: load pub"); return std::unexpected(CryptoError::PublicKeyLoadError); }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
+    std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> mctx(EVP_MD_CTX_new());
+
+    OSSL_PARAM params[2];
+    OSSL_PARAM* p_params = nullptr;
+    if (!ctx.empty()) {
+        params[0] = OSSL_PARAM_construct_octet_string("context-string", (void*)ctx.data(), ctx.size());
+        params[1] = OSSL_PARAM_construct_end();
+        p_params = params;
+    }
+    if (EVP_DigestVerifyInit_ex(mctx.get(), nullptr, nullptr, nullptr, nullptr, spkey.get(), p_params) <= 0) {
+        reportOpenSSLErrors("mldsaVerifyCtx: DigestVerifyInit_ex");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    int rc = EVP_DigestVerify(mctx.get(), sig.data(), sig.size(), msg.data(), msg.size());
+    return rc == 1;
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::rawPublicKeyFromSpki(const std::vector<uint8_t>& spki_der) {
+    const uint8_t* p = spki_der.data();
+    EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, (long)spki_der.size());
+    if (!pkey) { reportOpenSSLErrors("rawPublicKeyFromSpki: d2i_PUBKEY"); return std::unexpected(CryptoError::PublicKeyLoadError); }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
+    size_t raw_len = 0;
+    if (EVP_PKEY_get_raw_public_key(spkey.get(), nullptr, &raw_len) <= 0) {
+        reportOpenSSLErrors("rawPublicKeyFromSpki: get_raw (len)");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    std::vector<uint8_t> raw(raw_len);
+    if (EVP_PKEY_get_raw_public_key(spkey.get(), raw.data(), &raw_len) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    raw.resize(raw_len);
+    return raw;
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::spkiFromRawPublicKey(const std::vector<uint8_t>& raw, const std::string& algo_name) {
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_public_key_ex(nullptr, algo_name.c_str(), nullptr, raw.data(), raw.size());
+    if (!pkey) { reportOpenSSLErrors("spkiFromRawPublicKey: new_raw"); return std::unexpected(CryptoError::PublicKeyLoadError); }
+    std::unique_ptr<EVP_PKEY, EVP_PKEY_Deleter> spkey(pkey);
+    uint8_t* der = nullptr;
+    int der_len = i2d_PUBKEY(spkey.get(), &der);
+    if (der_len <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    std::vector<uint8_t> out(der, der + der_len);
+    OPENSSL_free(der);
+    return out;
+}
+
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generateEccKeyPair(const std::string& curve_name) {
     std::unique_ptr<EVP_PKEY_CTX, EVP_PKEY_CTX_Deleter> pctx(EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) <= 0) return std::unexpected(CryptoError::KeyGenerationInitError);

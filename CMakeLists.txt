@@ -113,6 +113,7 @@ set(NKCRYPTO_SHARED_SOURCES
     HybridStrategy.cpp
     nkCryptoToolUtils.cpp
     nkV3Format.cpp
+    nkKeyBundle.cpp
     nkcrypto_ffi.cpp
     ${BACKEND_SOURCES}
 )

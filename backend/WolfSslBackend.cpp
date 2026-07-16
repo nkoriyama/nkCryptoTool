@@ -489,6 +489,30 @@ std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::sha256(const ui
     return digest;
 }
 
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::sha3_256(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> digest(32);
+    if (wc_Sha3_256Hash(data, (word32)len, digest.data()) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    return digest;
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::mldsaSignCtx(const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&, const SecureString&) {
+    // KeyBundle (context-string ML-DSA) is currently supported on the OpenSSL
+    // backend only; build with -DUSE_BACKEND=OpenSSL to use --gen-keybundle.
+    return std::unexpected(CryptoError::NotImplementedError);
+}
+
+std::expected<bool, CryptoError> WolfSslBackend::mldsaVerifyCtx(const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&, const std::vector<uint8_t>&) {
+    return std::unexpected(CryptoError::NotImplementedError);
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::rawPublicKeyFromSpki(const std::vector<uint8_t>&) {
+    return std::unexpected(CryptoError::NotImplementedError);
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::spkiFromRawPublicKey(const std::vector<uint8_t>&, const std::string&) {
+    return std::unexpected(CryptoError::NotImplementedError);
+}
+
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generateEccKeyPair(const std::string&) {
     ecc_key key;
     wc_ecc_init(&key);

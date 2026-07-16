@@ -68,6 +68,11 @@ public:
     std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) override;
     std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) override;
     std::expected<std::vector<uint8_t>, CryptoError> sha256(const uint8_t* data, size_t len) override;
+    std::expected<std::vector<uint8_t>, CryptoError> sha3_256(const uint8_t* data, size_t len) override;
+    std::expected<std::vector<uint8_t>, CryptoError> mldsaSignCtx(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& ctx, const SecureString& passphrase) override;
+    std::expected<bool, CryptoError> mldsaVerifyCtx(const std::vector<uint8_t>& pub_spki_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& sig, const std::vector<uint8_t>& ctx) override;
+    std::expected<std::vector<uint8_t>, CryptoError> rawPublicKeyFromSpki(const std::vector<uint8_t>& spki_der) override;
+    std::expected<std::vector<uint8_t>, CryptoError> spkiFromRawPublicKey(const std::vector<uint8_t>& raw, const std::string& algo_name) override;
     std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) override;
     void cleanse(void* ptr, size_t len) override;
     std::string base64Encode(const std::vector<uint8_t>& data) override;

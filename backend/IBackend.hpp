@@ -74,6 +74,18 @@ public:
 
     // 一発ハッシュ (NKCT v3 の File Session ID = SHA-256(header)[..16] 用)
     virtual std::expected<std::vector<uint8_t>, CryptoError> sha256(const uint8_t* data, size_t len) = 0;
+    // 一発 SHA3-256 (KeyBundle の owner 指紋 = SHA3-256(raw pub) 用)
+    virtual std::expected<std::vector<uint8_t>, CryptoError> sha3_256(const uint8_t* data, size_t len) = 0;
+
+    // --- KeyBundle (NKKB) 用 ---
+    // FIPS 204 context string 付き ML-DSA 署名/検証 (KeyBundle の自己署名と
+    // keybind に必須; ctx 空だと従来経路)。priv は PKCS#8 DER、pub は SPKI DER。
+    virtual std::expected<std::vector<uint8_t>, CryptoError> mldsaSignCtx(const std::vector<uint8_t>& priv_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& ctx, const SecureString& passphrase) = 0;
+    virtual std::expected<bool, CryptoError> mldsaVerifyCtx(const std::vector<uint8_t>& pub_spki_der, const std::vector<uint8_t>& msg, const std::vector<uint8_t>& sig, const std::vector<uint8_t>& ctx) = 0;
+    // SPKI DER <-> raw public key (ML-DSA / ML-KEM の FIPS エンコード生バイト列)。
+    // KeyBundle は owner を raw ML-DSA pub、ENC 対象を raw ML-KEM ek で保持する。
+    virtual std::expected<std::vector<uint8_t>, CryptoError> rawPublicKeyFromSpki(const std::vector<uint8_t>& spki_der) = 0;
+    virtual std::expected<std::vector<uint8_t>, CryptoError> spkiFromRawPublicKey(const std::vector<uint8_t>& raw, const std::string& algo_name) = 0;
 
     // ユーティリティ
     virtual std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) = 0;
