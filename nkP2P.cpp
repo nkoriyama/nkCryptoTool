@@ -22,6 +22,8 @@
 #include <openssl/kdf.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
 
 // --- iroh shim C ABI (built from p2p-shim/) --------------------------------
 extern "C" {
@@ -102,12 +104,17 @@ EVP_PKEY* mldsa_keygen(Bytes& pub){ EVP_PKEY* k=EVP_PKEY_Q_keygen(nullptr,nullpt
 EVP_PKEY* mldsa_load(const std::string& path, Bytes& pub){
     std::string content; { FILE* f=std::fopen(path.c_str(),"rb"); if(!f) fail("open "+path); char b[4096]; size_t n; while((n=std::fread(b,1,sizeof b,f))>0) content.append(b,n); std::fclose(f); }
     SecureString pass = nkCryptoToolUtils::getPassphraseIfNeeded(content, SecureString());
-    auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY"); if(!der) fail("parse "+path);
-    const uint8_t* p=der->data();
-    // Auto-detect the key type from the PKCS#8 AlgorithmIdentifier
-    // (unencrypted only; the P2P path does not decrypt private keys).
-    EVP_PKEY* k=d2i_AutoPrivateKey(nullptr,&p,(long)der->size());
-    if(!k) fail("load ML-DSA priv (encrypted keys unsupported on the P2P path)");
+    // PEM_read_bio_PrivateKey handles both plaintext and encrypted PKCS#8:
+    // when the key is encrypted (e.g. a keyring-resolved identity), `pass` is
+    // used as the decryption passphrase; when it is plaintext, `pass` is
+    // ignored. This lets --serve-*/--connect use a keyring "me:sign" identity
+    // (stored as encrypted PKCS#8) as well as an on-disk plaintext key file.
+    BIO* bio = BIO_new_mem_buf(content.data(), (int)content.size());
+    if(!bio) fail("bio");
+    EVP_PKEY* k = PEM_read_bio_PrivateKey(bio, nullptr, nullptr,
+                                          pass.empty() ? nullptr : (void*)pass.c_str());
+    BIO_free(bio);
+    if(!k) fail("load ML-DSA priv (wrong passphrase, or unsupported key)");
     size_t l=0; if(EVP_PKEY_get_raw_public_key(k,nullptr,&l)<=0) fail("dsa pub len"); pub.resize(l);
     if(EVP_PKEY_get_raw_public_key(k,pub.data(),&l)<=0) fail("dsa pub"); pub.resize(l);
     (void)pass; return k;

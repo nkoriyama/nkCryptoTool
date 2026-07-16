@@ -201,6 +201,42 @@ pub unsafe extern "C" fn nkct_kr_get_unlocked(
     }
 }
 
+/// Fetch a stored identity's PUBLIC key (SPKI DER) as a lowercase-hex string
+/// (NUL-terminated, caller frees). Metadata only — no passphrase, no private
+/// key material. This is the `public_key_der` the my-identities record stores;
+/// gen-keybundle from the keyring needs it to bind/anchor the public halves.
+/// Returns KR_OK / KR_NOT_FOUND / KR_ERR; on KR_OK writes the hex to `out_hex`.
+///
+/// # Safety: pointers NUL-terminated/null; `out_hex` writable or null.
+#[no_mangle]
+pub unsafe extern "C" fn nkct_kr_get_public(
+    db_path: *const c_char,
+    handle: *const c_char,
+    role: *const c_char,
+    algo: *const c_char,
+    out_hex: *mut *mut c_char,
+) -> c_int {
+    let db = match cstr(db_path) { Some(s) => s, None => return KR_ERR };
+    let handle = cstr(handle).unwrap_or("me");
+    let role = match cstr(role) { Some(s) => s, None => return KR_ERR };
+    let algo = match cstr(algo) { Some(s) => s, None => return KR_ERR };
+    if !Path::new(db).exists() {
+        return KR_NOT_FOUND;
+    }
+    let store = match open(db) { Ok(s) => s, Err(_) => return KR_ERR };
+    let rec = match store.get_my_identity(handle, role, algo) {
+        Ok(Some(r)) => r,
+        Ok(None) => return KR_NOT_FOUND,
+        Err(_) => return KR_ERR,
+    };
+    if !out_hex.is_null() {
+        *out_hex = CString::new(hex::encode(&rec.public_key_der))
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut());
+    }
+    KR_OK
+}
+
 /// List slots as newline-separated `handle:role:algo:fp8hex` lines (NUL-term,
 /// caller frees). Metadata only — no passphrase, no private key.
 ///

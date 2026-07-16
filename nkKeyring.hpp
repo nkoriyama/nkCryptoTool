@@ -14,6 +14,8 @@
 
 #include <string>
 #include <optional>
+#include <vector>
+#include <cstdint>
 
 namespace nk::keyring_db {
 
@@ -37,6 +39,14 @@ std::optional<std::string> getUnlockedPem(const std::string& db_path,
                                           const std::string& role,
                                           const std::string& algo,
                                           const std::string& passphrase);
+
+// Fetch a slot's PUBLIC key (SPKI DER) — no passphrase, no private material.
+// Used by gen-keybundle to bind/anchor the public halves from the keyring.
+// Empty optional on not-found or open error.
+std::optional<std::vector<uint8_t>> getPublicSpki(const std::string& db_path,
+                                                  const std::string& handle,
+                                                  const std::string& role,
+                                                  const std::string& algo);
 
 } // namespace nk::keyring_db
 

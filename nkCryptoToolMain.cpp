@@ -21,6 +21,8 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <functional>
+#include <tuple>
 #include <cxxopts.hpp>
 #include <unistd.h>
 
@@ -46,24 +48,70 @@ int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const s
     std::string output = result["keybundle-output"].as<std::string>();
 
     // Owner identity is ALWAYS ML-DSA-65, independent of --mode.
-    std::string sign_priv = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>()
-                                                            : key_dir + "/private_sign_pqc.key";
-    std::string sign_pub = result.count("signing-pubkey") ? result["signing-pubkey"].as<std::string>()
-                                                          : key_dir + "/public_sign_pqc.key";
-    std::string kem_algo = result.count("kem-algo") ? result["kem-algo"].as<std::string>() : "ML-KEM-768";
-
-    std::ifstream pifs(sign_priv, std::ios::binary);
-    if (!pifs) { std::cerr << "Error: cannot read " << sign_priv << std::endl; return 1; }
-    std::string priv_content((std::istreambuf_iterator<char>(pifs)), std::istreambuf_iterator<char>());
-    SecureString pass = nkCryptoToolUtils::getPassphraseIfNeeded(priv_content, SecureString());
-    auto owner_priv_der = nkCryptoToolUtils::unwrapFromPem(priv_content, "PRIVATE KEY");
-    if (!owner_priv_der) { std::cerr << "Error: parse " << sign_priv << std::endl; return 1; }
-
+    const std::string kem_algo = result.count("kem-algo") ? result["kem-algo"].as<std::string>() : "ML-KEM-768";
     auto backend = ::get_nk_backend();
-    auto owner_spki = loadPubSpki(sign_pub);
-    if (!owner_spki) { std::cerr << "Error: read " << sign_pub << std::endl; return 1; }
-    auto owner_raw = backend->rawPublicKeyFromSpki(*owner_spki);
-    if (!owner_raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return 1; }
+
+    std::vector<uint8_t> owner_priv_der_v; // encrypted PKCS#8 DER of the ML-DSA-65 signer
+    std::vector<uint8_t> owner_raw_v;      // raw ML-DSA-65 public key (fingerprint anchor)
+    SecureString pass;
+
+    // Keyring auto-match: no --signing-privkey and a keyring.db present ⇒ resolve
+    // the signer AND the public enc halves from the shared keyring (handle "me")
+    // instead of key files. Mirrors the Rust keyring_bundle_keys. Every slot's
+    // stored public half is what enters the bundle, exactly like the file path.
+    std::function<std::optional<std::vector<uint8_t>>(const std::string&)> get_enc_spki;
+    bool used_keyring = false;
+#ifdef NKCT_ENABLE_KEYRING
+    {
+        std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (key_dir + "/keyring.db");
+        if (!result.count("signing-privkey") && std::filesystem::exists(db)) {
+            pass = get_masked_passphrase();
+            std::string p(pass.c_str(), pass.length());
+            auto owner_pem = nk::keyring_db::getUnlockedPem(db, "me", "sign", "ML-DSA-65", p);
+            auto owner_spki = nk::keyring_db::getPublicSpki(db, "me", "sign", "ML-DSA-65");
+            if (!owner_pem || !owner_spki) {
+                std::cerr << "Error: keyring " << db << " has no me:sign:ML-DSA-65 (or wrong passphrase) — "
+                             "import it once with --keyring-cmd import-my-key" << std::endl;
+                return 1;
+            }
+            auto der = nkCryptoToolUtils::unwrapFromPem(*owner_pem, "PRIVATE KEY");
+            if (!der) { std::cerr << "Error: parse keyring signer PEM" << std::endl; return 1; }
+            auto raw = backend->rawPublicKeyFromSpki(*owner_spki);
+            if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return 1; }
+            owner_priv_der_v = std::move(*der);
+            owner_raw_v = std::move(*raw);
+            get_enc_spki = [db](const std::string& algo) { return nk::keyring_db::getPublicSpki(db, "me", "enc", algo); };
+            used_keyring = true;
+            std::fprintf(stderr, "[keyring] keybundle owner me:sign:ML-DSA-65 from %s\n", db.c_str());
+        }
+    }
+#endif
+    if (!used_keyring) {
+        std::string sign_priv = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>()
+                                                                : key_dir + "/private_sign_pqc.key";
+        std::string sign_pub = result.count("signing-pubkey") ? result["signing-pubkey"].as<std::string>()
+                                                              : key_dir + "/public_sign_pqc.key";
+        std::ifstream pifs(sign_priv, std::ios::binary);
+        if (!pifs) { std::cerr << "Error: cannot read " << sign_priv << std::endl; return 1; }
+        std::string priv_content((std::istreambuf_iterator<char>(pifs)), std::istreambuf_iterator<char>());
+        pass = nkCryptoToolUtils::getPassphraseIfNeeded(priv_content, SecureString());
+        auto der = nkCryptoToolUtils::unwrapFromPem(priv_content, "PRIVATE KEY");
+        if (!der) { std::cerr << "Error: parse " << sign_priv << std::endl; return 1; }
+        auto owner_spki = loadPubSpki(sign_pub);
+        if (!owner_spki) { std::cerr << "Error: read " << sign_pub << std::endl; return 1; }
+        auto raw = backend->rawPublicKeyFromSpki(*owner_spki);
+        if (!raw) { std::cerr << "Error: extract owner raw pubkey (need OpenSSL backend + ML-DSA)" << std::endl; return 1; }
+        owner_priv_der_v = std::move(*der);
+        owner_raw_v = std::move(*raw);
+        // File source: the enc public key lives next to the sign key, per mode.
+        get_enc_spki = [&](const std::string& algo) -> std::optional<std::vector<uint8_t>> {
+            std::string path = (algo == "P-256") ? key_dir + "/public_enc_ecc.key"
+                                                  : key_dir + "/public_enc_pqc.key";
+            auto s = loadPubSpki(path);
+            if (!s) { std::cerr << "Error: read " << path << std::endl; return std::nullopt; }
+            return *s;
+        };
+    }
 
     uint64_t created_at = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -72,31 +120,30 @@ int runGenKeybundle(const cxxopts::ParseResult& result, CryptoMode mode, const s
         expires_at = created_at + result["keybundle-expiry-secs"].as<uint64_t>();
 
     std::vector<nk::keybundle::KeyToBind> keys;
-    auto add_enc_ml_kem = [&](const std::string& path) -> int {
-        auto spki = loadPubSpki(path); if (!spki) { std::cerr << "Error: read " << path << std::endl; return 1; }
+    auto add_enc_ml_kem = [&](const std::string& algo) -> int {
+        auto spki = get_enc_spki(algo); if (!spki) return 1;
         auto raw = backend->rawPublicKeyFromSpki(*spki); if (!raw) { std::cerr << "Error: extract ML-KEM ek" << std::endl; return 1; }
         keys.push_back({nk::keybundle::KEY_USAGE_ENC, *raw, created_at, expires_at}); return 0;
     };
-    auto add_hybrid_p256 = [&](const std::string& path) -> int {
-        auto spki = loadPubSpki(path); if (!spki) { std::cerr << "Error: read " << path << std::endl; return 1; }
+    auto add_hybrid_p256 = [&](const std::string& algo) -> int {
+        auto spki = get_enc_spki(algo); if (!spki) return 1;
         keys.push_back({nk::keybundle::KEY_USAGE_HYBRID, *spki, created_at, expires_at}); return 0;
     };
 
-    if (mode == CryptoMode::PQC) { if (add_enc_ml_kem(key_dir + "/public_enc_pqc.key")) return 1; }
-    else if (mode == CryptoMode::ECC) { if (add_hybrid_p256(key_dir + "/public_enc_ecc.key")) return 1; }
-    else { // Hybrid: C++ names the two halves public_enc_pqc.key (ML-KEM) and
-           // public_enc_ecc.key (P-256). The bundle content (raw ek, P-256 SPKI)
-           // is what interoperates, not the filenames.
-           if (add_enc_ml_kem(key_dir + "/public_enc_pqc.key")) return 1;
-           if (add_hybrid_p256(key_dir + "/public_enc_ecc.key")) return 1; }
+    if (mode == CryptoMode::PQC) { if (add_enc_ml_kem(kem_algo)) return 1; }
+    else if (mode == CryptoMode::ECC) { if (add_hybrid_p256("P-256")) return 1; }
+    else { // Hybrid: ML-KEM main + P-256 half. Content (raw ek, P-256 SPKI) is
+           // what interoperates, not the source (keyring slot or file name).
+           if (add_enc_ml_kem(kem_algo)) return 1;
+           if (add_hybrid_p256("P-256")) return 1; }
 
-    auto bundle = nk::keybundle::buildSigned(*owner_priv_der, *owner_raw, handle, created_at, keys, pass);
+    auto bundle = nk::keybundle::buildSigned(owner_priv_der_v, owner_raw_v, handle, created_at, keys, pass);
     if (!bundle) { std::cerr << "Error: build keybundle: " << toString(bundle.error()) << std::endl; return 1; }
     std::ofstream ofs(output, std::ios::binary | std::ios::trunc);
     if (!ofs) { std::cerr << "Error: write " << output << std::endl; return 1; }
     ofs.write(reinterpret_cast<const char*>(bundle->data()), (std::streamsize)bundle->size());
 
-    auto fp = nk::keybundle::ownerFingerprintHex(*owner_raw);
+    auto fp = nk::keybundle::ownerFingerprintHex(owner_raw_v);
     std::cout << "Wrote signed KeyBundle (" << keys.size() << " key(s), handle \"" << handle
               << "\") to " << output << ".\n"
               << "Share this fingerprint out-of-band so senders can pin your identity:\n  "
@@ -287,6 +334,29 @@ int main(int argc, char* argv[]) {
 #ifdef NKCT_ENABLE_P2P
             std::string sp = result.count("signing-privkey") ? result["signing-privkey"].as<std::string>() : "";
             std::string su = result.count("signing-pubkey")  ? result["signing-pubkey"].as<std::string>()  : "";
+            std::vector<std::string> p2p_tmp;
+            struct P2pTmpCleanup { std::vector<std::string>& p; ~P2pTmpCleanup(){ for(auto&f:p){ std::error_code e; std::filesystem::remove(f,e);} } } p2p_cleanup{p2p_tmp};
+#ifdef NKCT_ENABLE_KEYRING
+            // Opportunistic keyring auto-match for the P2P handshake identity:
+            // no --signing-privkey ⇒ try me:sign:<dsa-algo> from keyring.db. A
+            // miss is NOT an error — anonymous operation (--allow-unauth, or a
+            // server behind its own gate) stays valid. Mirrors keyring_automatch_p2p.
+            if (sp.empty()) {
+                std::string kd = result.count("key-dir") ? result["key-dir"].as<std::string>() : "keys";
+                std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (kd + "/keyring.db");
+                std::string algo = result.count("dsa-algo") ? result["dsa-algo"].as<std::string>() : "ML-DSA-65";
+                if (std::filesystem::exists(db)) {
+                    auto pem = nk::keyring_db::getUnlockedPem(db, "me", "sign", algo, "");
+                    if (pem) {
+                        std::string tp = std::filesystem::temp_directory_path().string() +
+                                         "/nkct-kr-p2p-" + std::to_string(::getpid()) + ".pem";
+                        std::ofstream ofs(tp); ofs << *pem; ofs.close();
+                        sp = tp; p2p_tmp.push_back(tp);
+                        std::fprintf(stderr, "[keyring] P2P identity me:sign:%s from %s\n", algo.c_str(), db.c_str());
+                    }
+                }
+            }
+#endif
             if (result.count("connect")) {
                 if (result.count("scp-get")) {
                     std::string local = result.count("scp-local") ? result["scp-local"].as<std::string>()
@@ -331,31 +401,10 @@ int main(int argc, char* argv[]) {
         if (result.count("signing-privkey")) config.key_paths["signing-privkey"] = result["signing-privkey"].as<std::string>();
         if (result.count("signing-pubkey")) config.key_paths["signing-pubkey"] = result["signing-pubkey"].as<std::string>();
 
-        std::vector<std::string> keyring_tmp; // temp PEMs materialised from keyring.db (cleaned below)
-#ifdef NKCT_ENABLE_KEYRING
-        // Sign auto-match: --sign with no --signing-privkey resolves the signing
-        // key from the shared keyring.db (slot me:sign:<algo>, algo by mode) —
-        // the C++ twin of the Rust keyring_automatch_sign.
-        if (config.operation == Operation::Sign && !result.count("signing-privkey")) {
-            std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (key_dir + "/keyring.db");
-            if (std::filesystem::exists(db)) {
-                std::string algo = (config.mode == CryptoMode::ECC) ? "P-256"
-                                   : (result.count("dsa-algo") ? result["dsa-algo"].as<std::string>() : "ML-DSA-65");
-                auto pem = nk::keyring_db::getUnlockedPem(db, "me", "sign", algo, "");
-                if (pem) {
-                    std::string tp = std::filesystem::temp_directory_path().string() +
-                                     "/nkct-kr-sign-" + std::to_string(::getpid()) + ".pem";
-                    std::ofstream ofs(tp); ofs << *pem; ofs.close();
-                    config.key_paths["signing-privkey"] = tp;
-                    keyring_tmp.push_back(tp);
-                    std::fprintf(stderr, "[keyring] signing with me:sign:%s from %s\n", algo.c_str(), db.c_str());
-                } else {
-                    std::cerr << "Error: --sign with no --signing-privkey and no me:sign key in " << db << std::endl;
-                    return 1;
-                }
-            }
-        }
-#endif
+        // Temp PEMs materialised from keyring.db for the strategy pipeline to
+        // load like key files. The cleanup below zaps them at scope exit; it
+        // must outlive processor.run(), so it is declared here.
+        std::vector<std::string> keyring_tmp;
         struct KrTmpCleanup { std::vector<std::string>& p; ~KrTmpCleanup(){ for(auto&f:p){ std::error_code e; std::filesystem::remove(f,e);} } } kr_cleanup{keyring_tmp};
         
         if (config.mode == CryptoMode::Hybrid) {
@@ -416,6 +465,58 @@ int main(int argc, char* argv[]) {
             }
         }
 
+#ifdef NKCT_ENABLE_KEYRING
+        // GPG-style keyring auto-match for --sign / --decrypt: when the caller
+        // gives no explicit private key, resolve the needed slot(s) from the
+        // shared keyring.db (handle "me"), unlock under one passphrase, and
+        // materialise the still-encrypted PEM(s) to temp files that override the
+        // file-path defaults set above. The C++ twins of the Rust
+        // keyring_automatch_{sign,decrypt}. No plaintext key touches disk.
+        {
+            std::string db = result.count("keyring-db") ? result["keyring-db"].as<std::string>() : (key_dir + "/keyring.db");
+            // Slots this op needs from the keyring: (role, algo, key_paths dest).
+            std::vector<std::tuple<std::string,std::string,std::string>> want;
+            if (config.operation == Operation::Sign && !result.count("signing-privkey")) {
+                std::string algo = (config.mode == CryptoMode::ECC) ? "P-256"
+                                   : (result.count("dsa-algo") ? result["dsa-algo"].as<std::string>() : "ML-DSA-65");
+                want.emplace_back("sign", algo, "signing-privkey");
+            } else if (config.operation == Operation::Decrypt
+                       && !result.count("user-privkey") && !result.count("user-ecdh-privkey")
+                       && !result.count("user-mlkem-privkey")) {
+                std::string kem = result.count("kem-algo") ? result["kem-algo"].as<std::string>() : "ML-KEM-768";
+                if (config.mode == CryptoMode::PQC)      want.emplace_back("enc", kem, "user-privkey");
+                else if (config.mode == CryptoMode::ECC) want.emplace_back("enc", "P-256", "user-privkey");
+                else { // Hybrid: ML-KEM half + P-256 half, the two decrypt inputs.
+                    want.emplace_back("enc", kem, "user-mlkem-privkey");
+                    want.emplace_back("enc", "P-256", "user-ecdh-privkey");
+                }
+            }
+            if (!want.empty() && std::filesystem::exists(db)) {
+                // One passphrase for every slot of this identity (matches Rust).
+                SecureString sp = get_masked_passphrase();
+                std::string pass(sp.c_str(), sp.length());
+                for (auto& [role, algo, dest] : want) {
+                    auto pem = nk::keyring_db::getUnlockedPem(db, "me", role, algo, pass);
+                    if (!pem) {
+                        std::cerr << "Error: keyring " << db << " has no me:" << role << ":" << algo
+                                  << " (or wrong passphrase) — import it once with --keyring-cmd import-my-key"
+                                  << std::endl;
+                        return 1;
+                    }
+                    std::string tp = std::filesystem::temp_directory_path().string() +
+                                     "/nkct-kr-" + role + "-" + algo + "-" + std::to_string(::getpid()) + ".pem";
+                    std::ofstream ofs(tp); ofs << *pem; ofs.close();
+                    config.key_paths[dest] = tp;
+                    keyring_tmp.push_back(tp);
+                    std::fprintf(stderr, "[keyring] %s using me:%s:%s from %s\n",
+                                 config.operation == Operation::Sign ? "signing" : "decrypting",
+                                 role.c_str(), algo.c_str(), db.c_str());
+                }
+            }
+            // No keyring.db ⇒ fall through to the file-path defaults / explicit
+            // key args, exactly as before the keyring feature existed.
+        }
+#endif
         if (result.count("digest-algo")) config.digest_algo = result["digest-algo"].as<std::string>();
         if (result.count("aead-algo")) {
             config.aead_algo = result["aead-algo"].as<std::string>();

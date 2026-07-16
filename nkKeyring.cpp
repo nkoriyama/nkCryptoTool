@@ -21,6 +21,8 @@ int  nkct_kr_import_my_key(const char* db, const unsigned char* pem, size_t pem_
                            const char* role_hint, const char* handle, const char* passphrase);
 int  nkct_kr_get_unlocked(const char* db, const char* handle, const char* role,
                           const char* algo, const char* passphrase, char** out_pem);
+int  nkct_kr_get_public(const char* db, const char* handle, const char* role,
+                        const char* algo, char** out_hex);
 char* nkct_kr_list(const char* db);
 }
 
@@ -87,6 +89,28 @@ std::optional<std::string> getUnlockedPem(const std::string& db, const std::stri
     if (rc != 0) { if (pem) nkct_kr_string_free(pem); return std::nullopt; }
     std::string out(pem ? pem : ""); if (pem) nkct_kr_string_free(pem);
     return out;
+}
+
+std::optional<std::vector<uint8_t>> getPublicSpki(const std::string& db, const std::string& handle,
+                                                  const std::string& role, const std::string& algo) {
+    char* hex = nullptr;
+    int rc = nkct_kr_get_public(db.c_str(), handle.c_str(), role.c_str(), algo.c_str(), &hex);
+    if (rc != 0 || !hex) { if (hex) nkct_kr_string_free(hex); return std::nullopt; }
+    std::string h(hex); nkct_kr_string_free(hex);
+    if (h.size() % 2 != 0) return std::nullopt;
+    std::vector<uint8_t> der; der.reserve(h.size() / 2);
+    auto nib = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i + 1 < h.size(); i += 2) {
+        int hi = nib(h[i]), lo = nib(h[i + 1]);
+        if (hi < 0 || lo < 0) return std::nullopt;
+        der.push_back(static_cast<uint8_t>((hi << 4) | lo));
+    }
+    return der;
 }
 
 } // namespace nk::keyring_db
