@@ -65,6 +65,17 @@ public:
     virtual std::vector<char> serializeHeader() const = 0;
     virtual std::expected<size_t, CryptoError> deserializeHeader(const std::vector<char>& data) = 0;
     virtual size_t getTagSize() const = 0;
+
+    // --- NKCT v3 (ChunkedAead) 用の鍵材料アクセス ---
+    // 書き込みは常に v3。読み込みは v1/v2 (レガシー・ストリーム AEAD) と v3 の
+    // 両対応で、deserializeHeader が解析したバージョンを formatVersion() が返す。
+    // v3 のとき prepare{Encryption,Decryption} は v3Key()/v3NoncePrefix() を導出し、
+    // レガシーの単一 AEAD コンテキストは作らない。
+    virtual uint16_t formatVersion() const { return 3; }
+    virtual uint32_t v3ChunkSize() const { return 0; }
+    virtual std::vector<unsigned char> v3Key() const { return {}; }
+    virtual std::vector<unsigned char> v3NoncePrefix() const { return {}; }
+    virtual std::string aeadAlgoName() const { return "AES-256-GCM"; }
 };
 
 #endif

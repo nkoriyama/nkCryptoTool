@@ -23,6 +23,7 @@ class WolfSslAeadBackend : public IAeadBackend {
 public:
     WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx);
     ~WolfSslAeadBackend() override;
+    std::expected<void, CryptoError> setAad(const uint8_t* aad, size_t aad_len) override;
     std::expected<size_t, CryptoError> update(const uint8_t* in, size_t in_len, uint8_t* out) override;
     std::expected<size_t, CryptoError> finalize(uint8_t* out) override;
     std::expected<void, CryptoError> getTag(uint8_t* tag, size_t tag_len) override;
@@ -66,6 +67,7 @@ public:
     std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> pqcEncap(const std::vector<uint8_t>& pub_key_der) override;
     std::expected<std::vector<uint8_t>, CryptoError> pqcDecap(const std::vector<uint8_t>& priv_key_der, const std::vector<uint8_t>& kem_ct, const SecureString& passphrase) override;
     std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) override;
+    std::expected<std::vector<uint8_t>, CryptoError> sha256(const uint8_t* data, size_t len) override;
     std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) override;
     void cleanse(void* ptr, size_t len) override;
     std::string base64Encode(const std::vector<uint8_t>& data) override;

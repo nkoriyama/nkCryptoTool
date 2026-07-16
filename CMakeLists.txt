@@ -112,6 +112,7 @@ set(NKCRYPTO_SHARED_SOURCES
     PQCStrategy.cpp
     HybridStrategy.cpp
     nkCryptoToolUtils.cpp
+    nkV3Format.cpp
     nkcrypto_ffi.cpp
     ${BACKEND_SOURCES}
 )

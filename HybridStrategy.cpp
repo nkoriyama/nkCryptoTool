@@ -5,6 +5,7 @@
  */
 
 #include "HybridStrategy.hpp"
+#include "nkV3Format.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
@@ -36,7 +37,7 @@ std::map<std::string, std::string> HybridStrategy::getMetadata(const std::string
 }
 
 size_t HybridStrategy::getHeaderSize() const {
-    return 4 + 2 + 1 + 4 + ecc_strategy_->serializeHeader().size() + 4 + pqc_strategy_->serializeHeader().size();
+    return 4 + 2 + 1 + 4 + ecc_strategy_->serializeHeader().size() + 4 + pqc_strategy_->serializeHeader().size() + 4 /* v3 chunk_size */;
 }
 
 size_t HybridStrategy::getTagSize() const { return 16; }
@@ -44,7 +45,7 @@ size_t HybridStrategy::getTagSize() const { return 16; }
 std::vector<char> HybridStrategy::serializeHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'T'});
-    write_u16_le(header, 1);
+    write_u16_le(header, 3); // Version 3 (ChunkedAead)
     header.push_back((char)getStrategyType());
 
     auto ecc_h = ecc_strategy_->serializeHeader();
@@ -55,13 +56,18 @@ std::vector<char> HybridStrategy::serializeHeader() const {
     write_u32_le(header, (uint32_t)pqc_h.size());
     header.insert(header.end(), pqc_h.begin(), pqc_h.end());
 
+    write_u32_le(header, chunk_size_ ? chunk_size_ : nk::v3::DEFAULT_CHUNK_SIZE);
     return header;
 }
 
 std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::vector<char>& data) {
     if (data.size() < 7) return std::unexpected(CryptoError::FileReadError);
     if (std::string(data.data(), 4) != "NKCT") return std::unexpected(CryptoError::FileReadError);
-    
+
+    size_t vpos = 4;
+    uint16_t outer_version;
+    if (!read_u16_le(data, vpos, outer_version)) return std::unexpected(CryptoError::FileReadError);
+
     size_t pos = 7;
     uint32_t ecc_len;
     if (!read_u32_le(data, pos, ecc_len)) return std::unexpected(CryptoError::FileReadError);
@@ -76,6 +82,13 @@ std::expected<size_t, CryptoError> HybridStrategy::deserializeHeader(const std::
     std::vector<char> pqc_h(data.begin() + pos, data.begin() + pos + pqc_len);
     pqc_strategy_->deserializeHeader(pqc_h);
     pos += pqc_len;
+
+    format_version_ = outer_version;
+    if (outer_version >= 3) {
+        if (!read_u32_le(data, pos, chunk_size_) || chunk_size_ == 0) {
+            return std::unexpected(CryptoError::ParameterError);
+        }
+    }
 
     return pos;
 }
@@ -123,13 +136,17 @@ std::expected<void, CryptoError> HybridStrategy::prepareEncryption(const std::ma
     auto salt = ecc_strategy_->getSalt();
     iv_ = ecc_strategy_->getIV();
 
+    // v3 (ChunkedAead): combined ss = ss_ecc || ss_pqc, HKDF salt = the ECC
+    // sub-header's salt (matches the Rust implementation).
     auto backend = ::get_nk_backend();
     std::vector<uint8_t> salt_v(salt.begin(), salt.end());
-    encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
-
-    auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, true);
-    if (!aead) return std::unexpected(aead.error());
-    aead_ctx_ = std::move(*aead);
+    format_version_ = 3;
+    chunk_size_ = nk::v3::chunkSizeFromEnv();
+    auto key_raw = backend->hkdf(shared_secret, 32, salt_v, nk::v3::INFO_ENC_KEY, "SHA3-256");
+    v3_key_.assign(key_raw.begin(), key_raw.end());
+    auto prefix_raw = backend->hkdf(shared_secret, nk::v3::NONCE_PREFIX_LEN, salt_v,
+                                    nk::v3::INFO_NONCE_PREFIX, "SHA3-256");
+    v3_nonce_prefix_.assign(prefix_raw.begin(), prefix_raw.end());
 
     return {};
 }
@@ -161,6 +178,17 @@ std::expected<void, CryptoError> HybridStrategy::prepareDecryption(const std::ma
 
     auto backend = ::get_nk_backend();
     std::vector<uint8_t> salt_v(salt.begin(), salt.end());
+
+    if (format_version_ >= 3) {
+        auto key_raw = backend->hkdf(shared_secret, 32, salt_v, nk::v3::INFO_ENC_KEY, "SHA3-256");
+        v3_key_.assign(key_raw.begin(), key_raw.end());
+        auto prefix_raw = backend->hkdf(shared_secret, nk::v3::NONCE_PREFIX_LEN, salt_v,
+                                        nk::v3::INFO_NONCE_PREFIX, "SHA3-256");
+        v3_nonce_prefix_.assign(prefix_raw.begin(), prefix_raw.end());
+        return {};
+    }
+
+    // Legacy v1: single streaming AEAD over the whole body.
     encryption_key_ = backend->hkdf(shared_secret, 32, salt_v, "hybrid-encryption", "SHA3-256");
 
     auto aead = backend->createAead("AES-256-GCM", encryption_key_, iv_, false);

@@ -5,6 +5,7 @@
  */
 
 #include "nkCryptoToolBase.hpp"
+#include "nkV3Format.hpp"
 #include "PipelineManager.hpp"
 #include "CryptoConfig.hpp"
 #include <iostream>
@@ -48,29 +49,59 @@ void nkCryptoToolBase::encryptFileWithPipeline(
         return; 
     }
 
-    async_file_t output_file(io_context);
-    output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
-    if (ec) { completion_handler(ec, "Failed to open output file"); return; }
+    // NKCT v3 (ChunkedAead): every chunk is independently authenticated
+    // (ciphertext || 16-byte tag), so the write path is a simple synchronous
+    // lookahead loop — the last chunk (possibly zero-length) is sealed with
+    // FLAG_FINAL so truncation at a chunk boundary is detectable.
+    auto header = strategy->serializeHeader();
+    auto sid = nk::v3::sessionId(header);
+    if (!sid) { completion_handler(std::make_error_code(std::errc::operation_not_permitted), "v3 session id failed"); return; }
+    const uint32_t chunk_size = strategy->v3ChunkSize() ? strategy->v3ChunkSize() : nk::v3::DEFAULT_CHUNK_SIZE;
+    const auto key = strategy->v3Key();
+    const auto prefix = strategy->v3NoncePrefix();
+    const auto aead_algo = strategy->aeadAlgoName();
+    if (key.empty() || prefix.size() != nk::v3::NONCE_PREFIX_LEN) {
+        completion_handler(std::make_error_code(std::errc::operation_not_permitted), "v3 key material missing");
+        return;
+    }
 
-    auto manager = std::make_shared<PipelineManager>(io_context);
-    manager->add_stage([strategy](const std::vector<char>& data) { return strategy->encryptTransform(data); });
+    std::ifstream in(input_filepath, std::ios::binary);
+    if (!in) { completion_handler(std::make_error_code(std::errc::no_such_file_or_directory), "Failed to open input file"); return; }
+    std::ofstream out(output_filepath, std::ios::binary | std::ios::trunc);
+    if (!out) { completion_handler(std::make_error_code(std::errc::permission_denied), "Failed to open output file"); return; }
+    out.write(header.data(), (std::streamsize)header.size());
 
-    PipelineManager::FinalizationFunc finalizer = [strategy](async_file_t& out) -> asio::awaitable<void> {
-        std::vector<char> tag;
-        auto res = strategy->finalizeEncryption(tag);
-        if (!res) throw std::runtime_error("Encryption failed: Finalization error");
-        co_await asio::async_write(out.get(), asio::buffer(tag), asio::use_awaitable);
-        co_return;
+    std::vector<char> cur(chunk_size), nxt(chunk_size);
+    auto fill = [&](std::vector<char>& buf) -> size_t {
+        in.read(buf.data(), (std::streamsize)buf.size());
+        return (size_t)in.gcount();
     };
 
-    auto header = strategy->serializeHeader();
-    auto& descriptor = output_file.get();
-    asio::async_write(descriptor, asio::buffer(header), [manager, input_filepath, out = std::move(output_file), total_size, completion_handler, progress_callback, finalizer](std::error_code ec, std::size_t) mutable {
-        if (ec) { completion_handler(ec, "Header write failed"); return; }
-        manager->run(input_filepath, std::move(out), 0, total_size, [completion_handler](std::error_code ec, const std::string& detail) {
-            completion_handler(ec, detail);
-        }, finalizer, progress_callback, total_size);
-    });
+    uint32_t counter = 0;
+    uintmax_t processed = 0;
+    size_t cur_len = fill(cur);
+    for (;;) {
+        size_t nxt_len = fill(nxt);
+        const bool is_final = (nxt_len == 0);
+        if (counter == UINT32_MAX && !is_final) {
+            completion_handler(std::make_error_code(std::errc::value_too_large), "v3 chunk counter overflow");
+            return;
+        }
+        auto sealed = nk::v3::sealChunk(aead_algo, key, prefix, *sid, counter,
+                                        cur.data(), cur_len, is_final);
+        if (!sealed) { completion_handler(std::make_error_code(std::errc::operation_not_permitted), "v3 chunk encryption failed"); return; }
+        out.write(sealed->data(), (std::streamsize)sealed->size());
+        if (!out) { completion_handler(std::make_error_code(std::errc::io_error), "Ciphertext write failed"); return; }
+        counter++;
+        processed += cur_len;
+        if (progress_callback && total_size > 0) progress_callback((double)processed / (double)total_size);
+        if (is_final) break;
+        std::swap(cur, nxt);
+        cur_len = nxt_len;
+    }
+    out.flush();
+    if (!out) { completion_handler(std::make_error_code(std::errc::io_error), "Ciphertext write failed"); return; }
+    completion_handler({}, "");
 }
 
 void nkCryptoToolBase::decryptFileWithPipeline(
@@ -110,6 +141,97 @@ void nkCryptoToolBase::decryptFileWithPipeline(
         return; 
     }
 
+    if (strategy->formatVersion() >= 3) {
+        // NKCT v3 (ChunkedAead), two-pass decrypt (THREAT 37-1): pass 1
+        // authenticates every chunk without writing anything; only after the
+        // whole file verified does pass 2 re-decrypt and write plaintext, to a
+        // temp file that is atomically renamed into place. The last wire chunk
+        // must carry FLAG_FINAL (enforced by its AAD) — a file truncated at a
+        // chunk boundary fails authentication in pass 1.
+        std::vector<char> exact_header(header_buf.begin(), header_buf.begin() + (std::streamsize)header_size);
+        auto sid = nk::v3::sessionId(exact_header);
+        if (!sid) { completion_handler(std::make_error_code(std::errc::operation_not_permitted), "v3 session id failed"); return; }
+        const uint32_t chunk_size = strategy->v3ChunkSize();
+        const auto key = strategy->v3Key();
+        const auto prefix = strategy->v3NoncePrefix();
+        const auto aead_algo = strategy->aeadAlgoName();
+        if (chunk_size == 0 || key.empty() || prefix.size() != nk::v3::NONCE_PREFIX_LEN) {
+            completion_handler(std::make_error_code(std::errc::operation_not_permitted), "v3 key material missing");
+            return;
+        }
+        const uintmax_t body_size = total_size - header_size;
+        const uintmax_t max_wire = (uintmax_t)chunk_size + nk::v3::TAG_LEN;
+
+        auto run_pass = [&](bool verify_only, std::ofstream* out) -> std::error_code {
+            std::ifstream in(input_filepath, std::ios::binary);
+            if (!in) return std::make_error_code(std::errc::no_such_file_or_directory);
+            in.seekg((std::streamoff)header_size);
+            std::vector<char> buf((size_t)max_wire);
+            uintmax_t remaining = body_size;
+            uint32_t counter = 0;
+            bool final_seen = false;
+            while (remaining > 0) {
+                const size_t to_read = (size_t)std::min<uintmax_t>(remaining, max_wire);
+                in.read(buf.data(), (std::streamsize)to_read);
+                if ((size_t)in.gcount() != to_read) return std::make_error_code(std::errc::io_error);
+                remaining -= to_read;
+                const bool is_final = (remaining == 0);
+                if (!is_final && to_read != (size_t)max_wire) return std::make_error_code(std::errc::illegal_byte_sequence);
+                if (to_read < nk::v3::TAG_LEN) return std::make_error_code(std::errc::illegal_byte_sequence);
+                auto pt = nk::v3::openChunk(aead_algo, key, prefix, *sid, counter,
+                                            buf.data(), to_read, is_final);
+                if (!pt) return std::make_error_code(std::errc::illegal_byte_sequence);
+                if (is_final) final_seen = true;
+                if (out) {
+                    out->write(pt->data(), (std::streamsize)pt->size());
+                    if (!*out) return std::make_error_code(std::errc::io_error);
+                }
+                counter++;
+            }
+            if (!final_seen) return std::make_error_code(std::errc::illegal_byte_sequence);
+            (void)verify_only;
+            return {};
+        };
+
+        // Pass 1: verify only. Nothing is created at the destination yet.
+        if (auto e = run_pass(true, nullptr)) {
+            completion_handler(e, "Decryption failed: Integrity check error");
+            return;
+        }
+        // Pass 2: write via temp file + atomic rename.
+        std::string tmp_path = output_filepath + ".nkct-tmp";
+        {
+            std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+            if (!out) { completion_handler(std::make_error_code(std::errc::permission_denied), "Failed to open output file"); return; }
+            if (auto e = run_pass(false, &out)) {
+                out.close();
+                std::error_code rmec;
+                std::filesystem::remove(tmp_path, rmec);
+                completion_handler(e, "Decryption failed: Integrity check error");
+                return;
+            }
+            out.flush();
+            if (!out) {
+                std::error_code rmec;
+                std::filesystem::remove(tmp_path, rmec);
+                completion_handler(std::make_error_code(std::errc::io_error), "Plaintext write failed");
+                return;
+            }
+        }
+        std::error_code ren_ec;
+        std::filesystem::rename(tmp_path, output_filepath, ren_ec);
+        if (ren_ec) {
+            std::error_code rmec;
+            std::filesystem::remove(tmp_path, rmec);
+            completion_handler(ren_ec, "Output rename failed");
+            return;
+        }
+        if (progress_callback) progress_callback(1.0);
+        completion_handler({}, "");
+        return;
+    }
+
+    // Legacy v1/v2: single streaming AEAD with one trailing tag.
     async_file_t output_file(io_context);
     output_file.open(output_filepath, O_WRONLY | O_CREAT | O_TRUNC, ec);
     if (ec) { completion_handler(ec, "Failed to open output file"); return; }
@@ -238,7 +360,7 @@ std::expected<StrategyType, CryptoError> nkCryptoToolBase::detectStrategyType(co
         return StrategyType::ECC;
     }
     
-    if (version == 1) {
+    if (version >= 1 && version <= 3) {
         uint8_t type;
         if (!ifs.read(reinterpret_cast<char*>(&type), 1)) return std::unexpected(CryptoError::FileReadError);
         return static_cast<StrategyType>(type);

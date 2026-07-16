@@ -59,12 +59,23 @@ std::expected<void, CryptoError> regeneratePublicKey(const std::filesystem::path
     void setKemAlgo(const std::string& algo) { if (pqc_strategy_) pqc_strategy_->setKemAlgo(algo); }
     void setDsaAlgo(const std::string& algo) { if (pqc_strategy_) pqc_strategy_->setDsaAlgo(algo); }
 
+    // NKCT v3
+    uint16_t formatVersion() const override { return format_version_; }
+    uint32_t v3ChunkSize() const override { return chunk_size_; }
+    std::vector<unsigned char> v3Key() const override { return v3_key_; }
+    std::vector<unsigned char> v3NoncePrefix() const override { return v3_nonce_prefix_; }
+    std::string aeadAlgoName() const override { return "AES-256-GCM"; }
+
 private:
     std::unique_ptr<nk::ECCStrategy> ecc_strategy_;
     std::unique_ptr<nk::PQCStrategy> pqc_strategy_;
     std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
     std::vector<unsigned char> encryption_key_;
     std::vector<unsigned char> iv_;
+    uint16_t format_version_ = 3;
+    uint32_t chunk_size_ = 0;
+    std::vector<unsigned char> v3_key_;
+    std::vector<unsigned char> v3_nonce_prefix_;
 };
 
 } // namespace nk

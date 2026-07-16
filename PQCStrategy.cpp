@@ -5,6 +5,7 @@
  */
 
 #include "PQCStrategy.hpp"
+#include "nkV3Format.hpp"
 #include <stdexcept>
 #include <cstring>
 #include <iostream>
@@ -105,13 +106,15 @@ std::expected<void, CryptoError> PQCStrategy::prepareEncryption(const std::map<s
     iv_.resize(12);
     backend->randomBytes(iv_.data(), 12);
 
+    // v3 (ChunkedAead) material — encryption always writes v3 now.
     std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
-    auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "pqc-encryption", "SHA3-256");
-    encryption_key_.assign(key_raw.begin(), key_raw.end());
-    
-    auto aead = backend->createAead(aead_algo_, encryption_key_, iv_, true);
-    if (!aead) return std::unexpected(aead.error());
-    aead_ctx_ = std::move(*aead);
+    format_version_ = 3;
+    chunk_size_ = nk::v3::chunkSizeFromEnv();
+    auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, nk::v3::INFO_ENC_KEY, "SHA3-256");
+    v3_key_.assign(key_raw.begin(), key_raw.end());
+    auto prefix_raw = backend->hkdf(shared_secret_, nk::v3::NONCE_PREFIX_LEN, salt_v,
+                                    nk::v3::INFO_NONCE_PREFIX, "SHA3-256");
+    v3_nonce_prefix_.assign(prefix_raw.begin(), prefix_raw.end());
     return {};
 }
 
@@ -143,6 +146,17 @@ std::expected<void, CryptoError> PQCStrategy::prepareDecryption(const std::map<s
 
     shared_secret_ = *secret;
     std::vector<uint8_t> salt_v(salt_.begin(), salt_.end());
+
+    if (format_version_ >= 3) {
+        auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, nk::v3::INFO_ENC_KEY, "SHA3-256");
+        v3_key_.assign(key_raw.begin(), key_raw.end());
+        auto prefix_raw = backend->hkdf(shared_secret_, nk::v3::NONCE_PREFIX_LEN, salt_v,
+                                        nk::v3::INFO_NONCE_PREFIX, "SHA3-256");
+        v3_nonce_prefix_.assign(prefix_raw.begin(), prefix_raw.end());
+        return {};
+    }
+
+    // Legacy v1/v2: single streaming AEAD over the whole body.
     auto key_raw = backend->hkdf(shared_secret_, 32, salt_v, "pqc-encryption", "SHA3-256");
     encryption_key_.assign(key_raw.begin(), key_raw.end());
     
@@ -189,13 +203,13 @@ std::expected<void, CryptoError> PQCStrategy::finalizeDecryption(const std::vect
 }
 
 size_t PQCStrategy::getHeaderSize() const {
-    return 4 + 2 + 1 + 4 + kem_algo_.size() + 4 + dsa_algo_.size() + 4 + kem_ct_.size() + 4 + salt_.size() + 4 + iv_.size() + 4 + aead_algo_.size();
+    return 4 + 2 + 1 + 4 + kem_algo_.size() + 4 + dsa_algo_.size() + 4 + kem_ct_.size() + 4 + salt_.size() + 4 + iv_.size() + 4 + aead_algo_.size() + 4 /* v3 chunk_size */;
 }
 
 std::vector<char> PQCStrategy::serializeHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'T'});
-    write_u16_le(header, 2);
+    write_u16_le(header, 3); // Version 3 (ChunkedAead)
     header.push_back((char)getStrategyType());
 
     auto add_string = [&](const std::string& s) {
@@ -212,6 +226,7 @@ std::vector<char> PQCStrategy::serializeHeader() const {
     add_vec(salt_);
     add_vec(iv_);
     add_string(aead_algo_);
+    write_u32_le(header, chunk_size_ ? chunk_size_ : nk::v3::DEFAULT_CHUNK_SIZE);
     return header;
 }
 
@@ -243,6 +258,13 @@ std::expected<size_t, CryptoError> PQCStrategy::deserializeHeader(const std::vec
         if (!read_string(aead_algo_)) return std::unexpected(CryptoError::ParameterError);
     } else {
         aead_algo_ = "AES-256-GCM";
+    }
+
+    format_version_ = version;
+    if (version >= 3) {
+        if (!read_u32_le(data, pos, chunk_size_) || chunk_size_ == 0) {
+            return std::unexpected(CryptoError::ParameterError);
+        }
     }
 
     return pos;

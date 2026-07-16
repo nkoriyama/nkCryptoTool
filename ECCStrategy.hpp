@@ -74,6 +74,13 @@ public:
     void setIV(const std::vector<unsigned char>& i) { iv_ = i; }
     std::vector<unsigned char> getSharedSecret() const { return shared_secret_; }
 
+    // NKCT v3
+    uint16_t formatVersion() const override { return format_version_; }
+    uint32_t v3ChunkSize() const override { return chunk_size_; }
+    std::vector<unsigned char> v3Key() const override { return v3_key_; }
+    std::vector<unsigned char> v3NoncePrefix() const override { return v3_nonce_prefix_; }
+    std::string aeadAlgoName() const override { return aead_algo_; }
+
 private:
     std::unique_ptr<nk::backend::IAeadBackend> aead_ctx_;
     std::unique_ptr<nk::backend::IHashBackend> hash_backend_;
@@ -86,6 +93,10 @@ private:
     std::vector<unsigned char> salt_;
     std::vector<unsigned char> shared_secret_;
     std::vector<unsigned char> ephemeral_pubkey_;
+    uint16_t format_version_ = 3;
+    uint32_t chunk_size_ = 0;
+    std::vector<unsigned char> v3_key_;
+    std::vector<unsigned char> v3_nonce_prefix_;
     nk::KeyProvider key_provider_;
 };
 

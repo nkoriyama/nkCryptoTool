@@ -23,6 +23,7 @@
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/sha256.h>
 #include <iostream>
 #include <cstring>
 #include <algorithm>
@@ -251,6 +252,12 @@ static std::vector<uint8_t> wrapPqcDer(const std::vector<uint8_t>& raw, const st
 WolfSslAeadBackend::WolfSslAeadBackend(WOLFSSL_EVP_CIPHER_CTX* ctx) : ctx_(ctx) {}
 WolfSslAeadBackend::~WolfSslAeadBackend() { wolfSSL_EVP_CIPHER_CTX_free(ctx_); }
 
+std::expected<void, CryptoError> WolfSslAeadBackend::setAad(const uint8_t* aad, size_t aad_len) {
+    int out_l = 0;
+    if (wolfSSL_EVP_CipherUpdate(ctx_, nullptr, &out_l, aad, (int)aad_len) <= 0) return std::unexpected(CryptoError::OpenSSLError);
+    return {};
+}
+
 std::expected<size_t, CryptoError> WolfSslAeadBackend::update(const uint8_t* in, size_t in_len, uint8_t* out) {
     int out_l = 0;
     if (wolfSSL_EVP_CipherUpdate(ctx_, out, &out_l, in, (int)in_len) <= 0) return std::unexpected(CryptoError::OpenSSLError);
@@ -474,6 +481,12 @@ std::expected<std::unique_ptr<IHashBackend>, CryptoError> WolfSslBackend::create
     }
     if (!md) return std::unexpected(CryptoError::ParameterError);
     return std::make_unique<WolfSslHashBackend>(wolfSSL_EVP_MD_CTX_new(), md);
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> WolfSslBackend::sha256(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> digest(32);
+    if (wc_Sha256Hash(data, (word32)len, digest.data()) != 0) return std::unexpected(CryptoError::OpenSSLError);
+    return digest;
 }
 
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> WolfSslBackend::generateEccKeyPair(const std::string&) {

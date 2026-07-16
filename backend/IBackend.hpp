@@ -23,6 +23,9 @@ namespace nk::backend {
 class IAeadBackend {
 public:
     virtual ~IAeadBackend() = default;
+    // AAD (additional authenticated data). Must be called before any update()
+    // with payload data. Required by the NKCT v3 per-chunk framing.
+    virtual std::expected<void, CryptoError> setAad(const uint8_t* aad, size_t aad_len) = 0;
     virtual std::expected<size_t, CryptoError> update(const uint8_t* in, size_t in_len, uint8_t* out) = 0;
     virtual std::expected<size_t, CryptoError> finalize(uint8_t* out) = 0;
     virtual std::expected<void, CryptoError> getTag(uint8_t* tag, size_t tag_len) = 0;
@@ -68,6 +71,9 @@ public:
 
     // 鍵導出
     virtual std::vector<uint8_t> hkdf(const std::vector<uint8_t>& secret, size_t out_len, const std::vector<uint8_t>& salt, const std::string& info, const std::string& md_name) = 0;
+
+    // 一発ハッシュ (NKCT v3 の File Session ID = SHA-256(header)[..16] 用)
+    virtual std::expected<std::vector<uint8_t>, CryptoError> sha256(const uint8_t* data, size_t len) = 0;
 
     // ユーティリティ
     virtual std::expected<void, CryptoError> randomBytes(uint8_t* out, size_t len) = 0;

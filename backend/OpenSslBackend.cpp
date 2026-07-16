@@ -51,6 +51,15 @@ static EVP_PKEY* loadPrivateKeyRobust(const uint8_t* der, size_t len, const Secu
 OpenSslAeadBackend::OpenSslAeadBackend(std::unique_ptr<EVP_CIPHER_CTX, EVP_CIPHER_CTX_Deleter> ctx)
     : ctx_(std::move(ctx)) {}
 
+std::expected<void, CryptoError> OpenSslAeadBackend::setAad(const uint8_t* aad, size_t aad_len) {
+    int out_l = 0;
+    if (EVP_CipherUpdate(ctx_.get(), nullptr, &out_l, aad, (int)aad_len) <= 0) {
+        reportOpenSSLErrors("AEAD SetAad");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    return {};
+}
+
 std::expected<size_t, CryptoError> OpenSslAeadBackend::update(const uint8_t* in, size_t in_len, uint8_t* out) {
     int out_l = 0;
     if (EVP_CipherUpdate(ctx_.get(), out, &out_l, in, (int)in_len) <= 0) {
@@ -205,6 +214,16 @@ std::expected<std::unique_ptr<IHashBackend>, CryptoError> OpenSslBackend::create
     
     std::unique_ptr<EVP_MD_CTX, EVP_MD_CTX_Deleter> ctx(EVP_MD_CTX_new());
     return std::make_unique<OpenSslHashBackend>(std::move(ctx), md);
+}
+
+std::expected<std::vector<uint8_t>, CryptoError> OpenSslBackend::sha256(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> digest(32);
+    unsigned int out_len = 0;
+    if (EVP_Digest(data, len, digest.data(), &out_len, EVP_sha256(), nullptr) <= 0 || out_len != 32) {
+        reportOpenSSLErrors("SHA-256");
+        return std::unexpected(CryptoError::OpenSSLError);
+    }
+    return digest;
 }
 
 std::expected<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>, CryptoError> OpenSslBackend::generateEccKeyPair(const std::string& curve_name) {

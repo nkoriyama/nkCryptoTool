@@ -34,3 +34,5 @@ DartConfiguration.tcl
 *.tpmkey
 *.rawkey
 tests/temp_*
+
+build-interop/
