@@ -17,6 +17,26 @@
 
 namespace nk {
 
+// FIPS 204 context string for detached **file** signatures (`--sign`).
+//
+// Without it, file signing runs ML-DSA over attacker-supplied bytes under the
+// empty context — the same context the MLS transport-binding signature uses,
+// with the same key. One "please sign this attestation" request would then
+// yield a valid transport_sig for a MemberBinding of the requester's choosing,
+// defeating the proof-of-possession that binding verification rests on.
+//
+// Must stay byte-identical to `FILE_SIGN_CTX` in the Rust implementation
+// (src/strategy/pqc.rs) or detached signatures stop interoperating.
+static const std::vector<uint8_t> FILE_SIGN_CTX = {
+    'n','k','c','t','-','f','i','l','e','-','s','i','g','n','-','v','1'
+};
+
+// NKCS container version that signed under the empty context. Still *verified*
+// so signatures produced before this change keep validating; never produced.
+static constexpr uint16_t NKCS_VERSION_CTX_FREE = 1;
+// NKCS container version that signs under FILE_SIGN_CTX. What we produce.
+static constexpr uint16_t NKCS_VERSION_DOMAIN_SEP = 2;
+
 static void write_u16_le(std::vector<char>& buf, uint16_t val) {
     buf.push_back((char)(val & 0xff));
     buf.push_back((char)((val >> 8) & 0xff));
@@ -322,16 +342,19 @@ std::expected<void, CryptoError> PQCStrategy::prepareSigning(const std::filesyst
     std::ifstream ifs(priv, std::ios::binary);
     if (!ifs) return std::unexpected(CryptoError::FileReadError);
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    
+
     passphrase = nkCryptoToolUtils::getPassphraseIfNeeded(content, passphrase);
 
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PRIVATE KEY");
     if (!der) return std::unexpected(der.error());
-    auto backend = ::get_nk_backend();
-    auto hash = backend->createHash(algo);
-    if (!hash) return std::unexpected(hash.error());
-    hash_ctx_ = std::move(*hash);
-    return hash_ctx_->initSign(*der, passphrase);
+    // The key and passphrase are kept for signHash(): the signature is produced
+    // with mldsaSignCtx (a FIPS 204 context is required, see FILE_SIGN_CTX)
+    // rather than through the streaming digest path, which takes no context.
+    sign_key_der_ = *der;
+    sign_passphrase_ = passphrase;
+    sign_buffer_.clear();
+    sig_version_ = NKCS_VERSION_DOMAIN_SEP;
+    return {};
 }
 
 std::expected<void, CryptoError> PQCStrategy::prepareVerification(const std::filesystem::path& pub, const std::string& algo) {
@@ -341,34 +364,45 @@ std::expected<void, CryptoError> PQCStrategy::prepareVerification(const std::fil
     std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     auto der = nkCryptoToolUtils::unwrapFromPem(content, "PUBLIC KEY");
     if (!der) return std::unexpected(der.error());
-    auto backend = ::get_nk_backend();
-    auto hash = backend->createHash(algo);
-    if (!hash) return std::unexpected(hash.error());
-    hash_ctx_ = std::move(*hash);
-    return hash_ctx_->initVerify(*der);
+    // Kept for verifyHash(), which needs mldsaVerifyCtx to pass the context the
+    // NKCS version selects. `sig_version_` is filled in by
+    // deserializeSignatureHeader before verifyHash runs.
+    verify_key_der_ = *der;
+    sign_buffer_.clear();
+    return {};
 }
 
 void PQCStrategy::updateHash(const std::vector<char>& data) {
-    if (!hash_ctx_) return;
-    hash_ctx_->update(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    sign_buffer_.insert(sign_buffer_.end(), data.begin(), data.end());
 }
 
 std::expected<std::vector<char>, CryptoError> PQCStrategy::signHash() {
-    if (!hash_ctx_) return std::unexpected(CryptoError::ParameterError);
-    auto sig = hash_ctx_->finalizeSign();
+    if (sign_key_der_.empty()) return std::unexpected(CryptoError::ParameterError);
+    auto backend = ::get_nk_backend();
+    // Always the domain-separated context: a signature produced here must not
+    // be reusable as an MLS transport-binding signature made with the same key.
+    auto sig = backend->mldsaSignCtx(sign_key_der_, sign_buffer_, FILE_SIGN_CTX, sign_passphrase_);
     if (!sig) return std::unexpected(sig.error());
     return std::vector<char>(sig->begin(), sig->end());
 }
 
 std::expected<bool, CryptoError> PQCStrategy::verifyHash(const std::vector<char>& sig) {
-    if (!hash_ctx_) return std::unexpected(CryptoError::ParameterError);
-    return hash_ctx_->finalizeVerify(std::vector<uint8_t>(sig.begin(), sig.end()));
+    if (verify_key_der_.empty()) return std::unexpected(CryptoError::ParameterError);
+    auto backend = ::get_nk_backend();
+    // Verify under the context the container declares, so signatures written by
+    // an older build (NKCS v1, empty context) still validate. This does not
+    // reopen the cross-protocol reuse: that needs a freshly produced victim
+    // signature, and nothing emits v1 any more.
+    const std::vector<uint8_t> ctx =
+        (sig_version_ >= NKCS_VERSION_DOMAIN_SEP) ? FILE_SIGN_CTX : std::vector<uint8_t>{};
+    return backend->mldsaVerifyCtx(verify_key_der_, sign_buffer_,
+                                   std::vector<uint8_t>(sig.begin(), sig.end()), ctx);
 }
 
 std::vector<char> PQCStrategy::serializeSignatureHeader() const {
     std::vector<char> header;
     header.insert(header.end(), {'N', 'K', 'C', 'S'});
-    write_u16_le(header, 1);
+    write_u16_le(header, NKCS_VERSION_DOMAIN_SEP);
     header.push_back((char)getStrategyType());
     auto add_string = [&](const std::string& s) {
         write_u32_le(header, (uint32_t)s.size());
@@ -382,6 +416,14 @@ std::vector<char> PQCStrategy::serializeSignatureHeader() const {
 
 std::expected<size_t, CryptoError> PQCStrategy::deserializeSignatureHeader(const std::vector<char>& data) {
     if (data.size() < 7 || std::memcmp(data.data(), "NKCS", 4) != 0) return std::unexpected(CryptoError::ParameterError);
+    // The version selects the FIPS 204 context verifyHash() uses, so it has to
+    // be read rather than skipped. Reject anything unknown: guessing a context
+    // on an unknown container is exactly the ambiguity this version removes.
+    const uint16_t version = (uint16_t)((uint8_t)data[4]) | (uint16_t)((uint8_t)data[5] << 8);
+    if (version != NKCS_VERSION_CTX_FREE && version != NKCS_VERSION_DOMAIN_SEP) {
+        return std::unexpected(CryptoError::ParameterError);
+    }
+    sig_version_ = version;
     size_t pos = 7;
     auto read_string = [&](std::string& s) {
         uint32_t len;

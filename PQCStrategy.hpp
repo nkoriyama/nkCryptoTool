@@ -90,6 +90,17 @@ private:
     std::vector<uint8_t> sign_key_der_;
     std::vector<uint8_t> verify_key_der_;
 
+    // ---- detached file signatures (NKCS) ----
+    // ML-DSA is signed over the whole message with a FIPS 204 context, so the
+    // file is accumulated here rather than fed through a streaming digest.
+    // See FILE_SIGN_CTX in PQCStrategy.cpp for why the context is required.
+    std::vector<uint8_t> sign_buffer_;
+    SecureString sign_passphrase_;
+    // NKCS container version in play. Signing always emits
+    // NKCS_VERSION_DOMAIN_SEP; verification adopts whatever the file declares,
+    // which is what selects the context to verify under.
+    uint16_t sig_version_ = 2;
+
     std::string kem_algo_ = "ML-KEM-768";
     std::string dsa_algo_ = "ML-DSA-65";
     std::string pqc_kem_algo_ = "ML-KEM-768";
